@@ -1,0 +1,11 @@
+Metadata-Version: 2.4
+Name: telegram-arbitrage-bot
+Version: 0.1.0
+Summary: VIP-gated Telegram cross-exchange arbitrage scanner
+Requires-Python: >=3.11
+Requires-Dist: python-telegram-bot<22,>=20.8
+Requires-Dist: ccxt>=4.4.0
+Requires-Dist: aiosqlite>=0.20.0
+Requires-Dist: python-dotenv>=1.0.1
+Requires-Dist: pydantic-settings>=2.6.0
+Requires-Dist: psutil>=6.1.0

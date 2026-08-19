@@ -1,0 +1,1 @@
+"""Telegram arbitrage scanner application."""

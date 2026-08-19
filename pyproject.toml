@@ -1,0 +1,22 @@
+[project]
+name = "telegram-arbitrage-bot"
+version = "0.1.0"
+description = "VIP-gated Telegram cross-exchange arbitrage scanner"
+requires-python = ">=3.11"
+dependencies = [
+  "python-telegram-bot>=20.8,<22",
+  "ccxt>=4.4.0",
+  "aiosqlite>=0.20.0",
+  "python-dotenv>=1.0.1",
+  "pydantic-settings>=2.6.0",
+  "psutil>=6.1.0",
+]
+
+[project.scripts]
+arbitrage-bot = "app.main:run"
+
+[tool.ruff]
+line-length = 100
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
