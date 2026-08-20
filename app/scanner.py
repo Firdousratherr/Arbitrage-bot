@@ -27,7 +27,7 @@ class Scanner:
         async with self.semaphore:
             return await exchange.fetch_tickers(symbols)
 
-    async def run_cycle(self) -> list[Opportunity]:
+    async def run_cycle(self, *, require_matching_user: bool = True) -> list[Opportunity]:
         fetched = await asyncio.gather(*(self._fetch(exchange) for exchange in self.exchanges.values()), return_exceptions=True)
         by_symbol: dict[str, list[Ticker]] = {}
         for result in fetched:
@@ -51,7 +51,7 @@ class Scanner:
             opportunity = Opportunity(symbol, buy.exchange, sell.exchange, buy.ask, sell.bid, raw_spread, net_profit, buy.quote_volume, sell.quote_volume)
             if raw_spread <= 0:
                 continue
-            if not await self._has_matching_users(opportunity):
+            if require_matching_user and not await self._has_matching_users(opportunity):
                 continue
             opportunities.append(opportunity)
         gc.collect()

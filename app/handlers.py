@@ -546,14 +546,28 @@ async def scan_command(update, context):
         await update.effective_message.reply_text("Scanner is still starting. Try again shortly.")
         return
     await update.effective_message.reply_text("🔎 Scanning active exchanges...")
-    opportunities = await scanner.run_cycle()
+    opportunities = await scanner.run_cycle(require_matching_user=False)
     user = await get_db(context).get_user(update.effective_user.id)
     preferences = user_filters(user)
     selected = set(json.loads(user["selected_exchanges"] or "[]"))
     visible = [opportunity for opportunity in opportunities if opportunity.buy_exchange in selected and opportunity.sell_exchange in selected and matches(opportunity, preferences)]
     visible = sorted(visible, key=lambda opportunity: opportunity.net_profit, reverse=True)[:preferences["max_results"]]
-    details = "\n".join(f"{item.symbol}: {item.net_profit:.3f}% ({item.buy_exchange} -> {item.sell_exchange})" for item in visible)
-    await update.effective_message.reply_text(f"✅ SCAN COMPLETE\n\n🌐 Exchanges checked: {len(scanner.exchanges)}\n🎯 Results shown: {len(visible)} of {len(opportunities)}\n\n{details}".rstrip())
+    if visible:
+        details = "\n".join(
+            f"{index}. 🪙 {item.symbol} · {item.net_profit:.3f}% · {item.buy_exchange} → {item.sell_exchange}"
+            for index, item in enumerate(visible, 1)
+        )
+        result_text = f"🎯 TOP RESULTS\n\n{details}"
+    else:
+        result_text = (
+            "📭 No opportunities matched your current settings.\n\n"
+            "Try /myfilters to review them, /setminprofit 0.1 to lower the minimum, "
+            "or /exchanges to select at least two active exchanges."
+        )
+    await update.effective_message.reply_text(
+        f"✅ SCAN COMPLETE\n\n🌐 Exchanges checked: {len(scanner.exchanges)}\n"
+        f"🔎 Positive opportunities found: {len(opportunities)}\n🎯 Results shown: {len(visible)}\n\n{result_text}"
+    )
 
 
 def admin_only(db, admin_ids, handler):
