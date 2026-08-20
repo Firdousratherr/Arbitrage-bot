@@ -73,8 +73,7 @@ class Scanner:
         while self.running:
             try:
                 opportunities = await self.run_cycle()
-                for opportunity in opportunities:
-                    await alert_callback(opportunity)
+                await alert_callback(opportunities)
             except asyncio.CancelledError:
                 break
             except Exception:

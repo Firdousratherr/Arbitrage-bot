@@ -26,41 +26,47 @@ def run_app() -> None:
     exchanges = {}
     scanner = None
 
-    async def alert_opportunity(opportunity) -> None:
-        base_identifier = opportunity_id(opportunity)
-        loose_identifier = f"{base_identifier}-loose"
-        verified_identifier = f"{base_identifier}-verified"
-        normal_users = []
-        for user in await db.list_users("vip"):
-            selected = json.loads(user["selected_exchanges"] or "[]")
-            preferences = user_filters(user)
-            if opportunity.buy_exchange not in selected or opportunity.sell_exchange not in selected or preferences["paused"] or not matches(opportunity, preferences):
-                continue
-            if preferences["loose_mode"]:
-                loose_opportunity = replace(opportunity, loose_mode=True, verified=False)
-                await _send_alert(db, user["telegram_id"], loose_opportunity, loose_identifier, context.application)
-                continue
-            normal_users.append(user)
+    async def alert_opportunities(opportunities) -> None:
+        sent_counts: dict[int, int] = {}
+        for opportunity in sorted(opportunities, key=lambda item: item.net_profit, reverse=True):
+            base_identifier = opportunity_id(opportunity)
+            loose_identifier = f"{base_identifier}-loose"
+            verified_identifier = f"{base_identifier}-verified"
+            normal_users = []
+            for user in await db.list_users("vip"):
+                selected = json.loads(user["selected_exchanges"] or "[]")
+                preferences = user_filters(user)
+                user_id = user["telegram_id"]
+                if opportunity.buy_exchange not in selected or opportunity.sell_exchange not in selected or preferences["paused"] or not matches(opportunity, preferences):
+                    continue
+                if sent_counts.get(user_id, 0) >= preferences["max_results"]:
+                    continue
+                if preferences["loose_mode"]:
+                    loose_opportunity = replace(opportunity, loose_mode=True, verified=False)
+                    await _send_alert(db, user_id, loose_opportunity, loose_identifier, context.application)
+                    sent_counts[user_id] = sent_counts.get(user_id, 0) + 1
+                    continue
+                normal_users.append(user)
 
-        if not normal_users:
-            return
-        buy_adapter = exchanges.get(opportunity.buy_exchange)
-        sell_adapter = exchanges.get(opportunity.sell_exchange)
-        if not buy_adapter or not sell_adapter:
-            return
-        buy_available, buy_meta = await buy_adapter.verify_transfer(opportunity.symbol)
-        sell_available, sell_meta = await sell_adapter.verify_transfer(opportunity.symbol)
-        if not buy_available or not sell_available:
-            return
-        if not _matching_network_exists(buy_meta, sell_meta):
-            return
-        verified_opportunity = replace(
-            opportunity,
-            verified=True,
-            metadata={**opportunity.metadata, "buy_transfer": buy_meta, "sell_transfer": sell_meta},
-        )
-        for user in normal_users:
-            await _send_alert(db, user["telegram_id"], verified_opportunity, verified_identifier, context.application)
+            if not normal_users:
+                continue
+            buy_adapter = exchanges.get(opportunity.buy_exchange)
+            sell_adapter = exchanges.get(opportunity.sell_exchange)
+            if not buy_adapter or not sell_adapter:
+                continue
+            buy_available, buy_meta = await buy_adapter.verify_transfer(opportunity.symbol)
+            sell_available, sell_meta = await sell_adapter.verify_transfer(opportunity.symbol)
+            if not buy_available or not sell_available or not _matching_network_exists(buy_meta, sell_meta):
+                continue
+            verified_opportunity = replace(
+                opportunity,
+                verified=True,
+                metadata={**opportunity.metadata, "buy_transfer": buy_meta, "sell_transfer": sell_meta},
+            )
+            for user in normal_users:
+                user_id = user["telegram_id"]
+                await _send_alert(db, user_id, verified_opportunity, verified_identifier, context.application)
+                sent_counts[user_id] = sent_counts.get(user_id, 0) + 1
 
     async def post_init(application: Application) -> None:
         nonlocal scanner
@@ -69,7 +75,7 @@ def run_app() -> None:
         active_exchange_names = list(exchanges)
         scanner = Scanner(db, exchanges, settings.scan_interval_seconds, settings.max_exchange_concurrency)
         application.bot_data.update({"db": db, "admin_ids": settings.admin_id_set, "admin_secret_key": settings.admin_secret_key, "exchange_names": active_exchange_names, "exchanges": exchanges, "scanner": scanner})
-        scanner.task = asyncio.create_task(scanner.loop(alert_opportunity))
+        scanner.task = asyncio.create_task(scanner.loop(alert_opportunities))
         logger.info("bot started with exchanges: %s", ", ".join(exchanges))
 
     async def post_shutdown(application: Application) -> None:

@@ -25,6 +25,7 @@ DEFAULT_FILTERS = {
     "blacklist": [],
     "alert_cooldown": 300,
     "daily_cap": 50,
+    "max_results": 10,
     "paused": False,
     "loose_mode": False,
     "max_exchanges": 16,

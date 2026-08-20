@@ -12,7 +12,7 @@ from telegram.ext import (CallbackQueryHandler, CommandHandler, ContextTypes, Co
 
 from .db import DEFAULT_FILTERS, Database
 from .exchanges.registry import CCXT_NAMES
-from .filters import parse_float, user_filters
+from .filters import matches, parse_float, user_filters
 from .scanner import opportunity_id
 
 logger = logging.getLogger(__name__)
@@ -34,6 +34,7 @@ def build_handlers(db: Database, admin_ids: set[int], exchange_names: list[str],
     commands = [
         CommandHandler("admin", admin_access),
         CommandHandler("help", help_command), CommandHandler("status", status),
+        CommandHandler("scan", scan_command),
         CommandHandler("exchanges", exchanges), CommandHandler("setexchanges", exchanges),
         CommandHandler("filters", filters_menu), CommandHandler("myfilters", myfilters),
         CommandHandler("resetfilters", resetfilters), CommandHandler("loosemode", loosemode),
@@ -43,7 +44,8 @@ def build_handlers(db: Database, admin_ids: set[int], exchange_names: list[str],
         CommandHandler("setminvolume", numeric_filter("min_volume")), CommandHandler("setmintradesize", numeric_filter("min_trade_size")),
         CommandHandler("setmaxtradesize", numeric_filter("max_trade_size")), CommandHandler("setmaxslippage", numeric_filter("max_slippage")),
         CommandHandler("setnetworkfee", numeric_filter("network_fee")), CommandHandler("setalertfreq", integer_filter("alert_cooldown")),
-        CommandHandler("setdailycap", integer_filter("daily_cap")), CommandHandler("setquotecurrency", quote_currency),
+        CommandHandler("setdailycap", integer_filter("daily_cap")), CommandHandler("setmaxresults", positive_integer_filter("max_results")),
+        CommandHandler("setquotecurrency", quote_currency),
         CommandHandler("watchlist", list_filter("watchlist")), CommandHandler("blacklist", list_filter("blacklist")),
         CommandHandler("papertrade", papertrade), CommandHandler("paperstats", paperstats),
         CommandHandler("leaderboard", leaderboard), CommandHandler("setfeeadjusted", fee_adjusted),
@@ -166,7 +168,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     db = get_db(context)
     lines = ["Basic: /start /status /help"]
     if await db.active_vip(update.effective_user.id):
-        lines.append("VIP: /exchanges /filters /myfilters /loosemode /pause /resume /papertrade /paperstats /leaderboard")
+        lines.append("VIP: /scan /exchanges /filters /myfilters /setmaxresults /loosemode /pause /resume /papertrade /paperstats /leaderboard")
     if update.effective_user.id in context.application.bot_data["admin_ids"]:
         lines.append("Admin: /genkey /grantvip /revokevip /userinfo /listusers /ban /unban /broadcast /stats /exportusers /memstatus")
     await update.message.reply_text("\n".join(lines))
@@ -190,7 +192,7 @@ async def exchanges(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def filters_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await require_vip(update, context): return
-    await update.message.reply_text("Set filters with commands such as /setminprofit 1.0, /setminvolume 50000, /watchlist add BTC/USDT. View with /myfilters.")
+    await update.message.reply_text("Set filters with commands such as /setminprofit 1.0, /setminvolume 50000, /setmaxresults 10, /watchlist add BTC/USDT. View with /myfilters.")
 
 
 async def myfilters(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -223,6 +225,18 @@ def integer_filter(name: str):
         if not await require_vip(update, context): return
         try: value = int(context.args[0])
         except (IndexError, ValueError): await update.message.reply_text("Enter a whole number."); return
+        await update_filter(update, context, name, value)
+    return handler
+
+
+def positive_integer_filter(name: str):
+    async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await require_vip(update, context): return
+        try: value = int(context.args[0])
+        except (IndexError, ValueError): await update.message.reply_text("Enter a positive whole number."); return
+        if value <= 0:
+            await update.message.reply_text("Enter a positive whole number.")
+            return
         await update_filter(update, context, name, value)
     return handler
 
@@ -383,6 +397,24 @@ async def admin_access(update, context):
         return
     context.user_data["admin_unlocked"] = True
     await update.effective_message.reply_text("Admin settings unlocked for this session.")
+
+
+async def scan_command(update, context):
+    if not await require_vip(update, context):
+        return
+    scanner = context.application.bot_data.get("scanner")
+    if not scanner:
+        await update.effective_message.reply_text("Scanner is still starting. Try again shortly.")
+        return
+    await update.effective_message.reply_text("Scanning active exchanges...")
+    opportunities = await scanner.run_cycle()
+    user = await get_db(context).get_user(update.effective_user.id)
+    preferences = user_filters(user)
+    selected = set(json.loads(user["selected_exchanges"] or "[]"))
+    visible = [opportunity for opportunity in opportunities if opportunity.buy_exchange in selected and opportunity.sell_exchange in selected and matches(opportunity, preferences)]
+    visible = sorted(visible, key=lambda opportunity: opportunity.net_profit, reverse=True)[:preferences["max_results"]]
+    details = "\n".join(f"{item.symbol}: {item.net_profit:.3f}% ({item.buy_exchange} -> {item.sell_exchange})" for item in visible)
+    await update.effective_message.reply_text(f"Scan complete. Checked {len(scanner.exchanges)} exchanges; showing {len(visible)} of {len(opportunities)} opportunities.\n{details}".rstrip())
 
 
 def admin_only(db, admin_ids, handler):
