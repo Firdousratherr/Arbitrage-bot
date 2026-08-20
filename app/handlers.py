@@ -425,7 +425,7 @@ async def opportunity_details(update, context):
             f"💧 24h volume: {row['volume_buy']:.0f} / {row['volume_sell']:.0f}\n\n"
             f"🟩 BUY ORDER BOOK · {row['buy_exchange']}\n{_format_order_book(books[0].get('asks', []), 'asks')}\n\n"
             f"🟥 SELL ORDER BOOK · {row['sell_exchange']}\n{_format_order_book(books[1].get('bids', []), 'bids')}\n\n"
-            f"{'⚠️ Transfer route unverified' if row['loose_mode'] else '✅ Transfer route verified'}\n"
+            f"{'⚠️ Transfer route unverified' if row['loose_mode'] else ('⚠️ Transfer verification unavailable' if json.loads(row['payload'] or '{}').get('transfer_verification') else '✅ Transfer route verified')}\n"
             "⏱ Live order books fetched now. Re-check before trading."
         )
     except Exception:

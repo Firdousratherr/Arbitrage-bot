@@ -56,7 +56,23 @@ def run_app() -> None:
                 continue
             buy_available, buy_meta = await buy_adapter.verify_transfer(opportunity.symbol)
             sell_available, sell_meta = await sell_adapter.verify_transfer(opportunity.symbol)
-            if not buy_available or not sell_available or not _matching_network_exists(buy_meta, sell_meta):
+            verification_ok = buy_available and sell_available and _matching_network_exists(buy_meta, sell_meta)
+            if not verification_ok:
+                unverified_identifier = f"{base_identifier}-verification-pending"
+                unverified_opportunity = replace(
+                    opportunity,
+                    verified=False,
+                    metadata={
+                        **opportunity.metadata,
+                        "transfer_verification": "unavailable_or_no_matching_network",
+                        "buy_transfer": buy_meta,
+                        "sell_transfer": sell_meta,
+                    },
+                )
+                for user in normal_users:
+                    user_id = user["telegram_id"]
+                    await _send_alert(db, user_id, unverified_opportunity, unverified_identifier, context.application)
+                    sent_counts[user_id] = sent_counts.get(user_id, 0) + 1
                 continue
             verified_opportunity = replace(
                 opportunity,
@@ -105,7 +121,13 @@ def _matching_network_exists(buy_meta: dict, sell_meta: dict) -> bool:
 
 
 async def _send_alert(db: Database, user_id: int, opportunity, identifier: str, application: Application) -> None:
-    loose_label = "⚠️ Unverified transfer route - use caution" if opportunity.loose_mode else "✅ Transfer route verified"
+    verification_pending = opportunity.metadata.get("transfer_verification") == "unavailable_or_no_matching_network"
+    if opportunity.loose_mode:
+        loose_label = "⚠️ Unverified transfer route - use caution"
+    elif verification_pending:
+        loose_label = "⚠️ Transfer route could not be verified - review Details before acting"
+    else:
+        loose_label = "✅ Transfer route verified"
     message = (
         f"🚨 ARBITRAGE OPPORTUNITY\n"
         f"🪙 {opportunity.symbol}  ·  {identifier}\n\n"
