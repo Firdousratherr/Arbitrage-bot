@@ -27,7 +27,10 @@ def run_app() -> None:
     scanner = None
 
     async def alert_opportunity(opportunity) -> None:
-        identifier = opportunity_id(opportunity)
+        base_identifier = opportunity_id(opportunity)
+        loose_identifier = f"{base_identifier}-loose"
+        verified_identifier = f"{base_identifier}-verified"
+        normal_users = []
         for user in await db.list_users("vip"):
             selected = json.loads(user["selected_exchanges"] or "[]")
             preferences = user_filters(user)
@@ -35,25 +38,29 @@ def run_app() -> None:
                 continue
             if preferences["loose_mode"]:
                 loose_opportunity = replace(opportunity, loose_mode=True, verified=False)
-                await _send_alert(db, user["telegram_id"], loose_opportunity, identifier, context.application)
+                await _send_alert(db, user["telegram_id"], loose_opportunity, loose_identifier, context.application)
                 continue
-            buy_adapter = exchanges.get(opportunity.buy_exchange)
-            sell_adapter = exchanges.get(opportunity.sell_exchange)
-            if not buy_adapter or not sell_adapter:
-                continue
-            buy_available, buy_meta = await buy_adapter.verify_transfer(opportunity.symbol)
-            sell_available, sell_meta = await sell_adapter.verify_transfer(opportunity.symbol)
-            if not buy_available or not sell_available:
-                continue
-            verified = _matching_network_exists(buy_meta, sell_meta)
-            if not verified:
-                continue
-            verified_opportunity = replace(
-                opportunity,
-                verified=True,
-                metadata={**opportunity.metadata, "buy_transfer": buy_meta, "sell_transfer": sell_meta},
-            )
-            await _send_alert(db, user["telegram_id"], verified_opportunity, identifier, context.application)
+            normal_users.append(user)
+
+        if not normal_users:
+            return
+        buy_adapter = exchanges.get(opportunity.buy_exchange)
+        sell_adapter = exchanges.get(opportunity.sell_exchange)
+        if not buy_adapter or not sell_adapter:
+            return
+        buy_available, buy_meta = await buy_adapter.verify_transfer(opportunity.symbol)
+        sell_available, sell_meta = await sell_adapter.verify_transfer(opportunity.symbol)
+        if not buy_available or not sell_available:
+            return
+        if not _matching_network_exists(buy_meta, sell_meta):
+            return
+        verified_opportunity = replace(
+            opportunity,
+            verified=True,
+            metadata={**opportunity.metadata, "buy_transfer": buy_meta, "sell_transfer": sell_meta},
+        )
+        for user in normal_users:
+            await _send_alert(db, user["telegram_id"], verified_opportunity, verified_identifier, context.application)
 
     async def post_init(application: Application) -> None:
         nonlocal scanner

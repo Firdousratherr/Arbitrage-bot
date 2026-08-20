@@ -39,12 +39,13 @@ class Scanner:
 
         opportunities = []
         for symbol, tickers in by_symbol.items():
-            if len(tickers) < 2:
+            valid_tickers = [ticker for ticker in tickers if ticker.ask > 0 and ticker.bid > 0]
+            if len(valid_tickers) < 2:
                 continue
-            buy = min(tickers, key=lambda item: item.ask)
-            sell = max(tickers, key=lambda item: item.bid)
-            if buy.exchange == sell.exchange or not buy.ask or not sell.bid:
+            pairs = [(buy, sell) for buy in valid_tickers for sell in valid_tickers if buy.exchange != sell.exchange]
+            if not pairs:
                 continue
+            buy, sell = max(pairs, key=lambda pair: (pair[1].bid - pair[0].ask) / pair[0].ask)
             raw_spread = ((sell.bid - buy.ask) / buy.ask) * 100
             net_profit = raw_spread
             opportunity = Opportunity(symbol, buy.exchange, sell.exchange, buy.ask, sell.bid, raw_spread, net_profit, buy.quote_volume, sell.quote_volume)

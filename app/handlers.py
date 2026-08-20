@@ -364,8 +364,8 @@ async def leaderboard(update, context):
     if not await require_vip(update, context): return
     period = "alltime" if context.args and context.args[0].lower() == "alltime" else datetime.now(UTC).strftime("%G-%V")
     where = "1=1" if period == "alltime" else "period=?"; args = () if period == "alltime" else (period,)
-    cursor = await get_db(context)._db().execute(f"SELECT u.username, SUM(p.profit) total FROM paper_trades p JOIN users u ON u.telegram_id=p.user_id WHERE u.leaderboard_hidden=0 AND {where} GROUP BY p.user_id ORDER BY total DESC LIMIT 10", args); rows = await cursor.fetchall()
-    text = "LEADERBOARD\n" + "\n".join(f"{index}. @{row['username'] or row['total']} {row['total']:.4f}" for index, row in enumerate(rows, 1))
+    cursor = await get_db(context)._db().execute(f"SELECT u.username, u.telegram_id, SUM(p.profit) total FROM paper_trades p JOIN users u ON u.telegram_id=p.user_id WHERE u.leaderboard_hidden=0 AND {where} GROUP BY p.user_id ORDER BY total DESC LIMIT 10", args); rows = await cursor.fetchall()
+    text = "LEADERBOARD\n" + "\n".join(f"{index}. @{row['username'] or row['telegram_id']} {row['total']:.4f}" for index, row in enumerate(rows, 1))
     await update.message.reply_text(text or "No paper trades yet.")
 
 
@@ -381,7 +381,16 @@ def admin_only(db, admin_ids, handler):
 
 
 async def genkey(update, context):
-    duration = context.args[0] if context.args else "30"; key = await get_db(context).create_vip_key(update.effective_user.id, duration); await update.message.reply_text(f"Generated: {key}")
+    duration = context.args[0].lower() if context.args else "30"
+    if duration not in {"lifetime", "life", "0"}:
+        try:
+            if int(duration) <= 0:
+                raise ValueError
+        except ValueError:
+            await update.message.reply_text("Duration must be a positive number of days or lifetime.")
+            return
+    key = await get_db(context).create_vip_key(update.effective_user.id, duration)
+    await update.message.reply_text(f"Generated: {key}")
 
 
 async def listkeys(update, context):
