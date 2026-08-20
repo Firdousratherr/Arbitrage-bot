@@ -37,7 +37,7 @@ def build_handlers(db: Database, admin_ids: set[int], exchange_names: list[str],
         CommandHandler("vipkey", redeem_vip_key_command),
         CommandHandler("scan", scan_command),
         CommandHandler("exchanges", exchanges), CommandHandler("setexchanges", exchanges),
-        CommandHandler("filters", filters_menu), CommandHandler("myfilters", myfilters),
+        CommandHandler("filters", filters_menu), CommandHandler("myfilters", myfilters), CommandHandler("settings", myfilters),
         CommandHandler("resetfilters", resetfilters), CommandHandler("loosemode", loosemode),
         CommandHandler("pause", pause), CommandHandler("resume", resume),
         CommandHandler("setminprofit", numeric_filter("min_profit")), CommandHandler("setmaxprofit", numeric_filter("max_profit")),
@@ -201,7 +201,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             "/scan - scan selected exchanges now",
             "/exchanges - change exchange selection",
             "/filters - see filter instructions",
-            "/myfilters - view current filter values",
+            "/myfilters or /settings - view current saved values",
             "/setmaxresults N - show at most N results",
             "/setminprofit PERCENT - minimum profit filter",
             "/setmaxprofit PERCENT - maximum profit filter",
@@ -256,7 +256,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     filters = user_filters(user)
     expiry = user["vip_expiry"] or "lifetime"
-    await update.message.reply_text(f"👤 ACCOUNT STATUS\n\n💎 VIP: {user['vip_status']} ({expiry})\n🌐 Exchanges: {', '.join(json.loads(user['selected_exchanges']))}\n⚠️ Loose mode: {filters['loose_mode']}\n⏸ Paused: {filters['paused']}\n📈 Profit range: {filters['min_profit']}% to {filters['max_profit']}%\n🎯 Max results: {filters['max_results']}")
+    await update.message.reply_text(f"👤 ACCOUNT STATUS\n\n💎 VIP: {user['vip_status']} ({expiry})\n🌐 Exchanges: {', '.join(json.loads(user['selected_exchanges']))}\n⚠️ Loose mode: {filters['loose_mode']}\n⏸ Paused: {filters['paused']}\n📈 Profit range: {filters['min_profit']}% to {filters['max_profit']}%\n🎯 Max results: {filters['max_results']}\n🕒 Read from database: {datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%S UTC')}")
 
 
 async def exchanges(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -273,7 +273,7 @@ async def filters_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def myfilters(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await require_vip(update, context): return
     user = await get_db(context).get_user(update.effective_user.id)
-    await update.message.reply_text("🎛️ YOUR FILTERS\n\n" + json.dumps(user_filters(user), indent=2))
+    await update.message.reply_text("🎛️ CURRENT SAVED SETTINGS\n\n" + json.dumps(user_filters(user), indent=2) + f"\n\n🕒 Read from database: {datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%S UTC')}")
 
 
 async def resetfilters(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -313,8 +313,11 @@ def integer_filter(name: str):
 def positive_integer_filter(name: str):
     async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await require_vip(update, context): return
+        if len(context.args) != 1:
+            await update.message.reply_text(f"Usage: /{update.message.text.split()[0][1:]} POSITIVE_WHOLE_NUMBER")
+            return
         try: value = int(context.args[0])
-        except (IndexError, ValueError): await update.message.reply_text("Enter a positive whole number."); return
+        except ValueError: await update.message.reply_text("Enter a positive whole number."); return
         if value <= 0:
             await update.message.reply_text("Enter a positive whole number.")
             return
@@ -323,9 +326,19 @@ def positive_integer_filter(name: str):
 
 
 async def update_filter(update, context, name, value):
-    db = get_db(context); user = await db.get_user(update.effective_user.id); preferences = user_filters(user); preferences[name] = value
-    await db.set_user(update.effective_user.id, filters=preferences); await db.log_action(update.effective_user.id, "changed_filter", f"{name}={value}")
-    await update.message.reply_text(f"✅ Updated `{name}` to `{value}`.", parse_mode="Markdown")
+    db = get_db(context)
+    user = await db.get_user(update.effective_user.id)
+    preferences = user_filters(user)
+    preferences[name] = value
+    await db.set_user(update.effective_user.id, filters=preferences)
+    await db.log_action(update.effective_user.id, "changed_filter", f"{name}={value}")
+    saved = user_filters(await db.get_user(update.effective_user.id))
+    await update.message.reply_text(
+        f"✅ Saved `{name}` = `{saved[name]}`\n\n"
+        f"Use /settings to view all current values.\n"
+        f"🕒 Updated: {datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%S UTC')}",
+        parse_mode="Markdown",
+    )
 
 
 async def fee_adjusted(update, context):
@@ -425,7 +438,7 @@ async def opportunity_details(update, context):
             f"💧 24h volume: {row['volume_buy']:.0f} / {row['volume_sell']:.0f}\n\n"
             f"🟩 BUY ORDER BOOK · {row['buy_exchange']}\n{_format_order_book(books[0].get('asks', []), 'asks')}\n\n"
             f"🟥 SELL ORDER BOOK · {row['sell_exchange']}\n{_format_order_book(books[1].get('bids', []), 'bids')}\n\n"
-            f"{'⚠️ Transfer route unverified' if row['loose_mode'] else ('⚠️ Transfer verification unavailable' if json.loads(row['payload'] or '{}').get('transfer_verification') else '✅ Transfer route verified')}\n"
+            f"{'⚠️ Transfer route unverified' if row['loose_mode'] else ('⚠️ Transfer route not verified' if json.loads(row['payload'] or '{}').get('transfer_verification') in {'not_verified', 'unavailable_or_no_matching_network'} else '✅ Transfer route verified')}\n"
             "⏱ Live order books fetched now. Re-check before trading."
         )
     except Exception:
