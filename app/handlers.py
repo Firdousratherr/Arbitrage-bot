@@ -34,7 +34,7 @@ def build_handlers(db: Database, admin_ids: set[int], exchange_names: list[str],
     commands = [
         CommandHandler("admin", admin_access),
         CommandHandler("help", help_command), CommandHandler("status", status),
-            CommandHandler("vipkey", redeem_vip_key_command),
+        CommandHandler("vipkey", redeem_vip_key_command),
         CommandHandler("scan", scan_command),
         CommandHandler("exchanges", exchanges), CommandHandler("setexchanges", exchanges),
         CommandHandler("filters", filters_menu), CommandHandler("myfilters", myfilters),
@@ -92,7 +92,8 @@ async def capture_email(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
 def exchange_keyboard(context) -> InlineKeyboardMarkup:
     selected = set(context.user_data.get("selected_exchanges", []))
-    names = context.application.bot_data.get("exchange_names") or list(CCXT_NAMES)
+    configured = context.application.bot_data.get("exchange_names", [])
+    names = list(dict.fromkeys([*configured, *CCXT_NAMES]))
     rows = []
     for index in range(0, len(names), 2):
         row = []
