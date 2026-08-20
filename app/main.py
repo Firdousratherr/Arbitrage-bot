@@ -14,6 +14,7 @@ from .exchanges.registry import build_exchanges
 from .filters import matches, user_filters
 from .handlers import build_handlers
 from .logging_setup import configure_logging
+from .maintenance import MaintenanceAssistant
 from .scanner import Scanner, opportunity_id
 
 logger = logging.getLogger(__name__)
@@ -21,10 +22,11 @@ logger = logging.getLogger(__name__)
 
 def run_app() -> None:
     settings = get_settings()
-    configure_logging(settings.log_level)
+    configure_logging(settings.log_level, settings.ai_max_log_entries)
     db = Database(settings.database_path)
     exchanges = {}
     scanner = None
+    maintenance = MaintenanceAssistant(settings.ai_api_url, settings.ai_api_key, settings.ai_model)
 
     async def alert_opportunities(opportunities) -> None:
         sent_counts: dict[int, int] = {}
@@ -90,7 +92,7 @@ def run_app() -> None:
         exchanges.update(build_exchanges(settings.exchange_names, settings.exchange_credentials))
         active_exchange_names = list(exchanges)
         scanner = Scanner(db, exchanges, settings.scan_interval_seconds, settings.max_exchange_concurrency)
-        application.bot_data.update({"db": db, "admin_ids": settings.admin_id_set, "admin_secret_key": settings.admin_secret_key, "exchange_names": active_exchange_names, "exchanges": exchanges, "scanner": scanner})
+        application.bot_data.update({"db": db, "admin_ids": settings.admin_id_set, "admin_secret_key": settings.admin_secret_key, "exchange_names": active_exchange_names, "exchanges": exchanges, "scanner": scanner, "maintenance": maintenance})
         scanner.task = asyncio.create_task(scanner.loop(alert_opportunities))
         logger.info("bot started with exchanges: %s", ", ".join(exchanges))
 

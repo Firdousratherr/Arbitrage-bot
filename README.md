@@ -51,6 +51,8 @@ python3.11 -m venv .venv
 
 Set `TELEGRAM_BOT_TOKEN`, a comma-separated `ADMIN_IDS`, and `ADMIN_SECRET_KEY` in `.env`. An allowlisted admin must run `/admin 8767` before using admin commands. API credentials are optional for public ticker scanning; add exchange-specific credentials only when private endpoints are required.
 
+Optional AI maintenance support uses an OpenAI-compatible endpoint. Set `AI_API_URL`, `AI_API_KEY`, and `AI_MODEL` to enable `/diagnose` and `/fixerror`. These commands are admin-only. The assistant sends recent redacted errors and bounded application source context to the configured endpoint. `/fixerror` creates a proposal; `/approvefix PATCH_ID` validates it with `git apply --check` and saves it under `logs/ai-proposals/` for manual review. The bot never applies, restarts, or deploys AI-generated code automatically.
+
 Run with:
 
 ```bash
@@ -143,6 +145,10 @@ The Telegram user must be listed in `ADMIN_TELEGRAM_IDS`. Run `/admin 8767` once
 | `/health` | Check ticker access for every active exchange. |
 | `/exportusers` | Download the user CSV export. |
 | `/memstatus` | Show process memory usage. |
+| `/diagnose` | Ask the configured AI assistant to explain recent errors. |
+| `/fixerror` | Generate a minimal AI patch proposal from recent errors. |
+| `/patchstatus` | List proposals waiting for approval. |
+| `/approvefix PATCH_ID` | Save a proposal as a patch file for manual review. |
 
 Details buttons are intentionally on-demand. The base scan retains only best bid/ask, volume, and a compact metadata snapshot; it does not retain full order books for all symbols.
 

@@ -13,6 +13,7 @@ from telegram.ext import (CallbackQueryHandler, CommandHandler, ContextTypes, Co
 from .db import DEFAULT_FILTERS, Database
 from .exchanges.registry import CCXT_NAMES
 from .filters import matches, parse_float, user_filters
+from .maintenance import MaintenanceAssistant
 from .scanner import opportunity_id
 
 logger = logging.getLogger(__name__)
@@ -60,6 +61,10 @@ def build_handlers(db: Database, admin_ids: set[int], exchange_names: list[str],
         CommandHandler("broadcast", admin_only(db, admin_ids, broadcast)), CommandHandler("stats", admin_only(db, admin_ids, stats)),
         CommandHandler("exportusers", admin_only(db, admin_ids, exportusers)), CommandHandler("memstatus", admin_only(db, admin_ids, memstatus)),
         CommandHandler("health", admin_only(db, admin_ids, health)),
+        CommandHandler("diagnose", admin_only(db, admin_ids, diagnose)),
+        CommandHandler("fixerror", admin_only(db, admin_ids, fixerror)),
+        CommandHandler("patchstatus", admin_only(db, admin_ids, patchstatus)),
+        CommandHandler("approvefix", admin_only(db, admin_ids, approvefix)),
     ]
     callbacks = [CallbackQueryHandler(opportunity_details, pattern=r"^details:"), CallbackQueryHandler(paper_trade_callback, pattern=r"^paper:"), CallbackQueryHandler(leaderboard_callback, pattern=r"^leaderboard:")]
     return [registration, *commands, *admin_commands, *callbacks]
@@ -245,6 +250,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             "/health - check exchange connectivity",
             "/exportusers - download a CSV export",
             "/memstatus - view process memory",
+            "/diagnose - summarize recent bot errors with AI",
+            "/fixerror - propose a patch for review; never auto-applies",
+            "/patchstatus - list pending patch proposals",
+            "/approvefix PATCH_ID - save a patch artifact for manual review",
         ])
     await update.message.reply_text("\n".join(lines))
 
@@ -553,6 +562,41 @@ async def admin_access(update, context):
         return
     context.user_data["admin_unlocked"] = True
     await update.effective_message.reply_text("Admin settings unlocked for this session.")
+
+
+def maintenance_service(context) -> MaintenanceAssistant:
+    return context.application.bot_data["maintenance"]
+
+
+async def diagnose(update, context):
+    service = maintenance_service(context)
+    try:
+        result = await service.diagnose()
+    except Exception as exc:
+        logger.exception("AI diagnosis failed")
+        result = f"❌ AI diagnosis failed: {type(exc).__name__}: {exc}"
+    await update.effective_message.reply_text(result[:3900])
+
+
+async def fixerror(update, context):
+    service = maintenance_service(context)
+    try:
+        _, result = await service.propose_fix()
+    except Exception as exc:
+        logger.exception("AI fix proposal failed")
+        result = f"❌ AI fix proposal failed: {type(exc).__name__}: {exc}"
+    await update.effective_message.reply_text(result[:3900])
+
+
+async def patchstatus(update, context):
+    await update.effective_message.reply_text(maintenance_service(context).status())
+
+
+async def approvefix(update, context):
+    if len(context.args) != 1:
+        await update.effective_message.reply_text("Usage: /approvefix PATCH_ID\nThis saves the patch for manual review; it does not apply it automatically.")
+        return
+    await update.effective_message.reply_text(maintenance_service(context).approve(context.args[0]))
 
 
 async def scan_command(update, context):

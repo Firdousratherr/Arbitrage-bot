@@ -1,5 +1,6 @@
 from functools import lru_cache
 import os
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -8,6 +9,10 @@ class Settings(BaseSettings):
     admin_ids: str = ""
     admin_telegram_ids: str = ""
     admin_secret_key: str = "8767"
+    ai_api_url: str = ""
+    ai_api_key: str = ""
+    ai_model: str = ""
+    ai_max_log_entries: int = Field(default=40, ge=1, le=500)
     database_path: str = "data/arbitrage.sqlite3"
     log_level: str = "INFO"
     scan_interval_seconds: int = 30
