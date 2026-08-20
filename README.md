@@ -49,7 +49,7 @@ python3.11 -m venv .venv
 .venv/bin/python -m pip install -e .
 ```
 
-Set `TELEGRAM_BOT_TOKEN` and a comma-separated `ADMIN_IDS` in `.env`. API credentials are optional for public ticker scanning; add exchange-specific credentials only when private endpoints are required.
+Set `TELEGRAM_BOT_TOKEN`, a comma-separated `ADMIN_IDS`, and `ADMIN_SECRET_KEY` in `.env`. An allowlisted admin must run `/admin 8767` before using admin commands. API credentials are optional for public ticker scanning; add exchange-specific credentials only when private endpoints are required.
 
 Run with:
 
@@ -57,7 +57,7 @@ Run with:
 .venv/bin/arbitrage-bot
 ```
 
-The bot initializes SQLite, creates async CCXT clients for enabled exchanges, starts a scanner task, and closes all sessions during shutdown. Use `/start` to register. Admins can issue `/genkey 30`, then the user redeems the result during registration.
+The bot initializes SQLite, creates async CCXT clients for enabled exchanges, starts a scanner task, and closes all sessions during shutdown. Use `/start` to register. After unlocking with `/admin 8767`, admins create chosen VIP keys with `/genkey YOUR_KEY 30` or `/genkey YOUR_KEY lifetime`; the user redeems that key during registration.
 
 ## AWS EC2 Deployment
 

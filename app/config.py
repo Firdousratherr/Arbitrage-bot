@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     telegram_bot_token: str
     admin_ids: str = ""
     admin_telegram_ids: str = ""
+    admin_secret_key: str = "8767"
     database_path: str = "data/arbitrage.sqlite3"
     log_level: str = "INFO"
     scan_interval_seconds: int = 30
@@ -14,7 +15,7 @@ class Settings(BaseSettings):
     default_min_profit: float = 0.5
     default_min_volume: float = 10_000
     default_alert_cooldown: int = 300
-    enabled_exchanges: str = "binance,kucoin,gateio,bybit,mexc,okx,htx,kraken,bitget,lbank,coinbase,bitfinex,phemex,cryptocom,poloniex"
+    enabled_exchanges: str = "binance,kucoin,gateio,bybit,mexc,okx,htx,kraken,bitget,bitrue,lbank,coinbase,bitfinex,phemex,cryptocom,poloniex"
 
     model_config = SettingsConfigDict(env_file=".env", env_prefix="", case_sensitive=False, extra="ignore")
 

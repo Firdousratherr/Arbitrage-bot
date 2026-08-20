@@ -3,7 +3,6 @@ from __future__ import annotations
 import csv
 import io
 import json
-import secrets
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -145,10 +144,13 @@ class Database:
         await self._db().execute("INSERT INTO admin_actions(admin_id, action, details, timestamp) VALUES (?, ?, ?, ?)", (admin_id, action, details, now()))
         await self._db().commit()
 
-    async def create_vip_key(self, admin_id: int, duration: str) -> str:
-        key = "VIP-" + "-".join(secrets.token_hex(2).upper() for _ in range(3))
+    async def create_vip_key(self, admin_id: int, key: str, duration: str) -> str:
+        key = key.strip().upper()
         expiry = None if duration.lower() in {"lifetime", "life", "0"} else (datetime.now(UTC) + timedelta(days=int(duration))).isoformat()
-        await self._db().execute("INSERT INTO vip_keys(key, created_by, created_at, expiry_date) VALUES (?, ?, ?, ?)", (key, admin_id, now(), expiry))
+        try:
+            await self._db().execute("INSERT INTO vip_keys(key, created_by, created_at, expiry_date) VALUES (?, ?, ?, ?)", (key, admin_id, now(), expiry))
+        except aiosqlite.IntegrityError as exc:
+            raise ValueError("That VIP key already exists.") from exc
         await self._db().commit()
         return key
 

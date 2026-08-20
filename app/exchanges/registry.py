@@ -8,7 +8,7 @@ logger = logging.getLogger(__name__)
 
 CCXT_NAMES = {
     "binance": "binance", "kucoin": "kucoin", "gateio": "gate", "bybit": "bybit",
-    "mexc": "mexc", "okx": "okx", "htx": "htx", "kraken": "kraken", "bitget": "bitget",
+    "mexc": "mexc", "okx": "okx", "htx": "htx", "kraken": "kraken", "bitget": "bitget", "bitrue": "bitrue",
     "lbank": "lbank", "coinbase": "coinbase", "bitfinex": "bitfinex",
     "phemex": "phemex", "cryptocom": "cryptocom", "poloniex": "poloniex",
 }

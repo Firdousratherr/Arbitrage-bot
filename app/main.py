@@ -68,7 +68,7 @@ def run_app() -> None:
         exchanges.update(build_exchanges(settings.exchange_names, settings.exchange_credentials))
         active_exchange_names = list(exchanges)
         scanner = Scanner(db, exchanges, settings.scan_interval_seconds, settings.max_exchange_concurrency)
-        application.bot_data.update({"db": db, "admin_ids": settings.admin_id_set, "exchange_names": active_exchange_names, "exchanges": exchanges, "scanner": scanner})
+        application.bot_data.update({"db": db, "admin_ids": settings.admin_id_set, "admin_secret_key": settings.admin_secret_key, "exchange_names": active_exchange_names, "exchanges": exchanges, "scanner": scanner})
         scanner.task = asyncio.create_task(scanner.loop(alert_opportunity))
         logger.info("bot started with exchanges: %s", ", ".join(exchanges))
 
@@ -87,7 +87,7 @@ def run_app() -> None:
         await post_init(application)
 
     application = Application.builder().token(settings.telegram_bot_token).post_init(post_init_with_context).post_shutdown(post_shutdown).build()
-    for handler in build_handlers(db, settings.admin_id_set, settings.exchange_names):
+    for handler in build_handlers(db, settings.admin_id_set, settings.exchange_names, settings.admin_secret_key):
         application.add_handler(handler)
     application.run_polling(close_loop=False)
 

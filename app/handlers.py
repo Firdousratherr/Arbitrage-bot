@@ -20,7 +20,7 @@ EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 EMAIL_STAGE, EXCHANGES_STAGE, VIP_STAGE = range(3)
 
 
-def build_handlers(db: Database, admin_ids: set[int], exchange_names: list[str]):
+def build_handlers(db: Database, admin_ids: set[int], exchange_names: list[str], admin_secret_key: str):
     registration = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
@@ -32,6 +32,7 @@ def build_handlers(db: Database, admin_ids: set[int], exchange_names: list[str])
         allow_reentry=True,
     )
     commands = [
+        CommandHandler("admin", admin_access),
         CommandHandler("help", help_command), CommandHandler("status", status),
         CommandHandler("exchanges", exchanges), CommandHandler("setexchanges", exchanges),
         CommandHandler("filters", filters_menu), CommandHandler("myfilters", myfilters),
@@ -373,15 +374,38 @@ async def leaderboard_callback(update, context):
     await update.callback_query.answer()
 
 
+async def admin_access(update, context):
+    if update.effective_user.id not in context.application.bot_data["admin_ids"]:
+        await update.effective_message.reply_text("Admin access required.")
+        return
+    if len(context.args) != 1 or context.args[0] != context.application.bot_data["admin_secret_key"]:
+        await update.effective_message.reply_text("Invalid admin secret key.")
+        return
+    context.user_data["admin_unlocked"] = True
+    await update.effective_message.reply_text("Admin settings unlocked for this session.")
+
+
 def admin_only(db, admin_ids, handler):
     async def wrapped(update, context):
-        if update.effective_user.id not in admin_ids: await update.effective_message.reply_text("Admin access required."); return
+        if update.effective_user.id not in admin_ids:
+            await update.effective_message.reply_text("Admin access required.")
+            return
+        if not context.user_data.get("admin_unlocked"):
+            await update.effective_message.reply_text("Use /admin SECRET_KEY first.")
+            return
         await db.log_admin_action(update.effective_user.id, update.message.text.split()[0], " ".join(context.args)); return await handler(update, context)
     return wrapped
 
 
 async def genkey(update, context):
-    duration = context.args[0].lower() if context.args else "30"
+    if len(context.args) != 2:
+        await update.message.reply_text("Usage: /genkey YOUR_KEY DAYS_OR_LIFETIME")
+        return
+    key, duration = context.args
+    if not re.fullmatch(r"[A-Za-z0-9_-]{4,64}", key):
+        await update.message.reply_text("Key must be 4-64 characters using only letters, numbers, hyphens, or underscores.")
+        return
+    duration = duration.lower()
     if duration not in {"lifetime", "life", "0"}:
         try:
             if int(duration) <= 0:
@@ -389,8 +413,12 @@ async def genkey(update, context):
         except ValueError:
             await update.message.reply_text("Duration must be a positive number of days or lifetime.")
             return
-    key = await get_db(context).create_vip_key(update.effective_user.id, duration)
-    await update.message.reply_text(f"Generated: {key}")
+    try:
+        key = await get_db(context).create_vip_key(update.effective_user.id, key, duration)
+    except ValueError as exc:
+        await update.message.reply_text(str(exc))
+        return
+    await update.message.reply_text(f"VIP key created: {key}")
 
 
 async def listkeys(update, context):
