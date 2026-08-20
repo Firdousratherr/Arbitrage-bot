@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     default_min_profit: float = 0.5
     default_min_volume: float = 10_000
     default_alert_cooldown: int = 300
-    enabled_exchanges: str = "binance,kucoin,gateio,bybit,mexc,okx,htx,kraken,bitget,bitrue,lbank,coinbase,bitfinex,phemex,cryptocom,poloniex"
+    enabled_exchanges: str = "binance,kucoin,gateio,mexc,okx,htx,kraken,bitget,bitrue,lbank,coinbase,bitfinex,phemex,cryptocom,poloniex"
 
     model_config = SettingsConfigDict(env_file=".env", env_prefix="", case_sensitive=False, extra="ignore")
 

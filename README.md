@@ -84,7 +84,7 @@ Put the real `TELEGRAM_BOT_TOKEN` and `ADMIN_TELEGRAM_IDS` in `/opt/arbitrage-bo
 
 ## Commands
 
-Users get `/status`, `/exchanges`, `/filters`, `/myfilters`, `/scan`, `/setmaxresults`, filter setters, `/loosemode`, `/setfeeadjusted`, `/papertrade`, `/paperstats`, and `/leaderboard` after VIP activation. `/setmaxresults N` limits each user's alerts and manual scan results to the top N opportunities by net profit. Admins get key management including `/listkeys` and `/extendvip`, user auditing, bans, broadcasts, CSV export, statistics, `/health`, and `/memstatus`.
+Users get `/status`, `/exchanges`, `/filters`, `/myfilters`, `/scan`, `/vipkey`, `/setmaxresults`, filter setters, `/loosemode`, `/setfeeadjusted`, `/papertrade`, `/paperstats`, and `/leaderboard` after registration or VIP activation as applicable. `/vipkey YOUR_KEY` redeems a manually chosen VIP key after registration. `/setmaxresults N` limits each user's alerts and manual scan results to the top N opportunities by net profit. Admins get key management including `/listkeys` and `/extendvip`, user auditing, bans, broadcasts, CSV export, statistics, `/health`, and `/memstatus`.
 
 Details buttons are intentionally on-demand. The base scan retains only best bid/ask, volume, and a compact metadata snapshot; it does not retain full order books for all symbols.
 

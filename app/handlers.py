@@ -34,6 +34,7 @@ def build_handlers(db: Database, admin_ids: set[int], exchange_names: list[str],
     commands = [
         CommandHandler("admin", admin_access),
         CommandHandler("help", help_command), CommandHandler("status", status),
+            CommandHandler("vipkey", redeem_vip_key_command),
         CommandHandler("scan", scan_command),
         CommandHandler("exchanges", exchanges), CommandHandler("setexchanges", exchanges),
         CommandHandler("filters", filters_menu), CommandHandler("myfilters", myfilters),
@@ -91,7 +92,7 @@ async def capture_email(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
 def exchange_keyboard(context) -> InlineKeyboardMarkup:
     selected = set(context.user_data.get("selected_exchanges", []))
-    names = context.application.bot_data["exchange_names"]
+    names = context.application.bot_data.get("exchange_names") or list(CCXT_NAMES)
     rows = []
     for index in range(0, len(names), 2):
         row = []
@@ -150,6 +151,19 @@ async def redeem_key(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return ConversationHandler.END
 
 
+async def redeem_vip_key_command(update: Update, context) -> None:
+    if len(context.args) != 1:
+        await update.effective_message.reply_text("Usage: /vipkey YOUR_KEY")
+        return
+    user = await get_db(context).get_user(update.effective_user.id)
+    if not user or not user["email"]:
+        await update.effective_message.reply_text("Register first with /start, then use /vipkey YOUR_KEY.")
+        return
+    _, message = await get_db(context).redeem_vip_key(update.effective_user.id, context.args[0].strip())
+    await get_db(context).log_action(update.effective_user.id, "redeemed_vip_key", context.args[0].strip())
+    await update.effective_message.reply_text(message)
+
+
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text("Registration cancelled. Use /start when ready.")
     return ConversationHandler.END
@@ -166,7 +180,7 @@ async def require_vip(update: Update, context) -> bool:
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     db = get_db(context)
-    lines = ["Basic: /start /status /help"]
+    lines = ["Basic: /start /status /help /vipkey"]
     if await db.active_vip(update.effective_user.id):
         lines.append("VIP: /scan /exchanges /filters /myfilters /setmaxresults /loosemode /pause /resume /papertrade /paperstats /leaderboard")
     if update.effective_user.id in context.application.bot_data["admin_ids"]:
