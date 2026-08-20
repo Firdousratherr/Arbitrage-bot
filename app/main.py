@@ -66,8 +66,9 @@ def run_app() -> None:
         nonlocal scanner
         await db.connect()
         exchanges.update(build_exchanges(settings.exchange_names, settings.exchange_credentials))
+        active_exchange_names = list(exchanges)
         scanner = Scanner(db, exchanges, settings.scan_interval_seconds, settings.max_exchange_concurrency)
-        application.bot_data.update({"db": db, "admin_ids": settings.admin_id_set, "exchange_names": settings.exchange_names, "exchanges": exchanges, "scanner": scanner})
+        application.bot_data.update({"db": db, "admin_ids": settings.admin_id_set, "exchange_names": active_exchange_names, "exchanges": exchanges, "scanner": scanner})
         scanner.task = asyncio.create_task(scanner.loop(alert_opportunity))
         logger.info("bot started with exchanges: %s", ", ".join(exchanges))
 

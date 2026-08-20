@@ -11,8 +11,8 @@ logger = logging.getLogger(__name__)
 
 
 class CcxtExchangeAdapter:
-    def __init__(self, name: str, credentials: dict[str, str] | None = None):
-        self.name = name
+    def __init__(self, name: str, credentials: dict[str, str] | None = None, public_name: str | None = None):
+        self.name = public_name or name
         exchange_class = getattr(ccxt, name)
         self.client = exchange_class({"enableRateLimit": True, **(credentials or {})})
 
