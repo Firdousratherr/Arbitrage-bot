@@ -123,10 +123,14 @@ async def exchange_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await query.answer("Select at least two exchanges.", show_alert=True)
         return EXCHANGES_STAGE
     await query.answer()
-    user = await get_db(context).get_user(query.from_user.id)
-    if user:
-        await get_db(context).set_user(query.from_user.id, selected_exchanges=selected)
-        await get_db(context).log_action(query.from_user.id, "changed_exchanges", ",".join(selected))
+    db = get_db(context)
+    await db.upsert_user(
+        query.from_user.id,
+        query.from_user.username,
+        context.user_data["email"],
+        selected,
+    )
+    await db.log_action(query.from_user.id, "changed_exchanges", ",".join(selected))
     await query.edit_message_text("✅ Exchanges saved\n\n🔐 Enter your VIP key, or type NONE if you do not have one yet.")
     return VIP_STAGE
 
@@ -263,7 +267,7 @@ async def exchanges(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def filters_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await require_vip(update, context): return
-    await update.message.reply_text("🎛️ FILTER GUIDE\n\nUse /myfilters to view current values.\n/setminprofit 1\n/setminvolume 50000\n/setmaxresults 10\n/setquotecurrency USDT\n/watchlist add BTC/USDT\n/blacklist add DOGE/USDT\n\nUse /resetfilters to restore defaults. Values affect future scans and alerts.")
+    await update.message.reply_text("🎛️ FILTER GUIDE\n\nUse /myfilters to view current values.\n/setminprofit 1\n/setmaxprofit 50\n/setminspread 0.5\n/setmaxspread 20\n/setminvolume 50000\n/setmaxresults 10\n/setquotecurrency USDT\n/watchlist add BTC/USDT\n/blacklist add DOGE/USDT\n\nUse /resetfilters to restore defaults. Values affect future scans and alerts.")
 
 
 async def myfilters(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -550,7 +554,11 @@ async def scan_command(update, context):
     user = await get_db(context).get_user(update.effective_user.id)
     preferences = user_filters(user)
     selected = set(json.loads(user["selected_exchanges"] or "[]"))
-    visible = [opportunity for opportunity in opportunities if opportunity.buy_exchange in selected and opportunity.sell_exchange in selected and matches(opportunity, preferences)]
+    selected_candidates = [
+        opportunity for opportunity in opportunities
+        if opportunity.buy_exchange in selected and opportunity.sell_exchange in selected
+    ]
+    visible = [opportunity for opportunity in selected_candidates if matches(opportunity, preferences)]
     visible = sorted(visible, key=lambda opportunity: opportunity.net_profit, reverse=True)[:preferences["max_results"]]
     if visible:
         details = "\n".join(
@@ -561,12 +569,16 @@ async def scan_command(update, context):
     else:
         result_text = (
             "📭 No opportunities matched your current settings.\n\n"
-            "Try /myfilters to review them, /setminprofit 0.1 to lower the minimum, "
+            f"Selected-exchange candidates: {len(selected_candidates)}\n"
+            f"Filtered out: {len(selected_candidates) - len(visible)}\n\n"
+            "Try /myfilters to review filters, /setminprofit 0.1, /setminvolume 0, "
             "or /exchanges to select at least two active exchanges."
         )
     await update.effective_message.reply_text(
         f"✅ SCAN COMPLETE\n\n🌐 Exchanges checked: {len(scanner.exchanges)}\n"
-        f"🔎 Positive opportunities found: {len(opportunities)}\n🎯 Results shown: {len(visible)}\n\n{result_text}"
+        f"🔎 Positive opportunities found: {len(opportunities)}\n"
+        f"🌐 Matching your selected exchanges: {len(selected_candidates)}\n"
+        f"🎯 Results shown: {len(visible)}\n\n{result_text}"
     )
 
 
@@ -682,7 +694,16 @@ async def userinfo(update, context):
 
 
 async def listusers(update, context):
-    rows = await get_db(context).list_users(context.args[0] if context.args else "all"); await update.message.reply_text("\n".join(f"{row['telegram_id']} @{row['username']} {row['vip_status']} banned={row['banned']}" for row in rows) or "No users.")
+    status = context.args[0].lower() if context.args else "all"
+    if status not in {"all", "vip", "pending", "banned"}:
+        await update.message.reply_text("Usage: /listusers [all|vip|pending|banned]")
+        return
+    rows = await get_db(context).list_users(status)
+    text = "\n".join(
+        f"👤 {row['telegram_id']} · @{row['username'] or '-'} · VIP={row['vip_status']} · banned={bool(row['banned'])}"
+        for row in rows
+    )
+    await update.message.reply_text(f"👥 USERS ({status})\n\n{text}" if text else f"📭 No {status} users found.")
 
 
 async def ban(update, context):
