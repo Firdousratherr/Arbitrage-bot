@@ -105,10 +105,21 @@ def _matching_network_exists(buy_meta: dict, sell_meta: dict) -> bool:
 
 
 async def _send_alert(db: Database, user_id: int, opportunity, identifier: str, application: Application) -> None:
-    loose_label = "⚠️ LOOSE MODE - unverified, may not be executable\n" if opportunity.loose_mode else "✅ Transfer and contract verification passed\n"
-    message = f"Arbitrage opportunity {identifier}\n{opportunity.symbol}\nBuy {opportunity.buy_exchange}: {opportunity.buy_price}\nSell {opportunity.sell_exchange}: {opportunity.sell_price}\nRaw spread: {opportunity.raw_spread:.3f}%\nEstimated net: {opportunity.net_profit:.3f}%\n{loose_label}Data may be stale; re-check before trading."
+    loose_label = "⚠️ Unverified transfer route - use caution" if opportunity.loose_mode else "✅ Transfer route verified"
+    message = (
+        f"🚨 ARBITRAGE OPPORTUNITY\n"
+        f"🪙 {opportunity.symbol}  ·  {identifier}\n\n"
+        f"🟢 BUY  {opportunity.buy_exchange}: {opportunity.buy_price:.8f}\n"
+        f"🔴 SELL {opportunity.sell_exchange}: {opportunity.sell_price:.8f}\n\n"
+        f"📈 Gross spread: {opportunity.raw_spread:.3f}%\n"
+        f"💸 Fees: open Details for live taker rates\n"
+        f"💰 Est. net before live fees: {opportunity.net_profit:.3f}%\n"
+        f"📊 24h volume: {opportunity.volume_buy:.0f} / {opportunity.volume_sell:.0f}\n"
+        f"{loose_label}\n\n"
+        "🔎 Open Details for fills, order books, fees, and net profit."
+    )
     try:
-        await application.bot.send_message(user_id, message, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Details", callback_data=f"details:{identifier}")]]))
+        await application.bot.send_message(user_id, message, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Details + Order Book", callback_data=f"details:{identifier}"), InlineKeyboardButton("Paper Trade", callback_data=f"paper:{identifier}")]]))
         await db.save_opportunity(identifier, opportunity)
         await db.increment_stat("alerts_sent")
     except Exception:

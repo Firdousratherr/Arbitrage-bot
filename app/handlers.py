@@ -61,7 +61,7 @@ def build_handlers(db: Database, admin_ids: set[int], exchange_names: list[str],
         CommandHandler("exportusers", admin_only(db, admin_ids, exportusers)), CommandHandler("memstatus", admin_only(db, admin_ids, memstatus)),
         CommandHandler("health", admin_only(db, admin_ids, health)),
     ]
-    callbacks = [CallbackQueryHandler(opportunity_details, pattern=r"^details:"), CallbackQueryHandler(leaderboard_callback, pattern=r"^leaderboard:")]
+    callbacks = [CallbackQueryHandler(opportunity_details, pattern=r"^details:"), CallbackQueryHandler(paper_trade_callback, pattern=r"^paper:"), CallbackQueryHandler(leaderboard_callback, pattern=r"^leaderboard:")]
     return [registration, *commands, *admin_commands, *callbacks]
 
 
@@ -86,7 +86,7 @@ async def capture_email(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         return EMAIL_STAGE
     context.user_data["email"] = email
     context.user_data["selected_exchanges"] = []
-    await update.message.reply_text("Choose exchanges. Tap to toggle, then press Done.", reply_markup=exchange_keyboard(context))
+    await update.message.reply_text("🌐 Choose your exchanges\nTap to toggle, then press Done.", reply_markup=exchange_keyboard(context))
     return EXCHANGES_STAGE
 
 
@@ -127,7 +127,7 @@ async def exchange_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if user:
         await get_db(context).set_user(query.from_user.id, selected_exchanges=selected)
         await get_db(context).log_action(query.from_user.id, "changed_exchanges", ",".join(selected))
-    await query.edit_message_text("Enter your VIP key, or type NONE if you do not have one yet.")
+    await query.edit_message_text("✅ Exchanges saved\n\n🔐 Enter your VIP key, or type NONE if you do not have one yet.")
     return VIP_STAGE
 
 
@@ -148,7 +148,7 @@ async def redeem_key(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             except Exception:
                 logger.info("could not notify admin %s", admin_id)
     await db.log_action(user.id, "registered", f"exchanges={','.join(selected)}")
-    await update.message.reply_text(f"{message}\nSelected exchanges: {', '.join(selected)}\nUse /status to review your account.")
+    await update.message.reply_text(f"🎉 {message}\n\n🌐 Exchanges: {', '.join(selected)}\n📋 Use /status to review your account.")
     return ConversationHandler.END
 
 
@@ -162,18 +162,18 @@ async def redeem_vip_key_command(update: Update, context) -> None:
         return
     _, message = await get_db(context).redeem_vip_key(update.effective_user.id, context.args[0].strip())
     await get_db(context).log_action(update.effective_user.id, "redeemed_vip_key", context.args[0].strip())
-    await update.effective_message.reply_text(message)
+    await update.effective_message.reply_text(f"🔐 {message}")
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.message.reply_text("Registration cancelled. Use /start when ready.")
+    await update.message.reply_text("🛑 Registration cancelled. Use /start when ready.")
     return ConversationHandler.END
 
 
 async def require_vip(update: Update, context) -> bool:
     db = get_db(context)
     if not await db.active_vip(update.effective_user.id):
-        await update.effective_message.reply_text("This feature requires active VIP access. Register with /start and redeem a VIP key.")
+        await update.effective_message.reply_text("🔒 This feature requires active VIP access. Register with /start and redeem a VIP key.")
         return False
     await db.touch(update.effective_user.id)
     return True
@@ -181,11 +181,67 @@ async def require_vip(update: Update, context) -> bool:
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     db = get_db(context)
-    lines = ["Basic: /start /status /help /vipkey"]
+    lines = [
+        "📚 COMMAND GUIDE",
+        "",
+        "🆕 Getting started",
+        "/start - register and choose at least two exchanges",
+        "/vipkey YOUR_KEY - activate VIP after registration",
+        "/status - view account, VIP, and exchange status",
+        "/help - show this guide",
+    ]
     if await db.active_vip(update.effective_user.id):
-        lines.append("VIP: /scan /exchanges /filters /myfilters /setmaxresults /loosemode /pause /resume /papertrade /paperstats /leaderboard")
+        lines.extend([
+            "",
+            "💎 VIP tools",
+            "/scan - scan selected exchanges now",
+            "/exchanges - change exchange selection",
+            "/filters - see filter instructions",
+            "/myfilters - view current filter values",
+            "/setmaxresults N - show at most N results",
+            "/setminprofit PERCENT - minimum profit filter",
+            "/setmaxprofit PERCENT - maximum profit filter",
+            "/setminspread PERCENT - minimum spread filter",
+            "/setmaxspread PERCENT - maximum spread filter",
+            "/setminvolume AMOUNT - minimum 24h volume",
+            "/setmintradesize AMOUNT - minimum paper-trade size",
+            "/setmaxtradesize AMOUNT - maximum paper-trade size",
+            "/setmaxslippage PERCENT - maximum allowed slippage",
+            "/setnetworkfee AMOUNT - network-fee estimate",
+            "/setalertfreq SECONDS - alert cooldown",
+            "/setdailycap COUNT - daily alert limit",
+            "/setquotecurrency USDT|USDC|BTC - quote currency",
+            "/watchlist add|remove SYMBOL - limit symbols",
+            "/blacklist add|remove SYMBOL - ignore symbols",
+            "/loosemode on|off - skip transfer verification",
+            "/setfeeadjusted on|off - use fee-adjusted filtering",
+            "/pause and /resume - pause or resume alerts",
+            "/papertrade OPPORTUNITY_ID SIZE - record a simulation",
+            "/paperstats - view simulated trading results",
+            "/leaderboard [alltime] - view paper-trade rankings",
+            "Use the Paper Trade button on a result for the safest workflow.",
+        ])
     if update.effective_user.id in context.application.bot_data["admin_ids"]:
-        lines.append("Admin: /genkey /grantvip /revokevip /userinfo /listusers /ban /unban /broadcast /stats /exportusers /memstatus")
+        lines.extend([
+            "",
+            "🛡️ Admin tools",
+            "/admin 8767 - unlock admin tools for this session",
+            "/genkey YOUR_KEY DAYS|lifetime - create your chosen VIP key",
+            "/listkeys [unused|active|expired|revoked] - list keys",
+            "/revokekey KEY - revoke a key",
+            "/extendvip USER_ID DAYS - extend VIP access",
+            "/grantvip USER_ID [DAYS] - grant VIP access",
+            "/revokevip USER_ID - remove VIP access",
+            "/userinfo USER_ID_OR_USERNAME - inspect a user",
+            "/listusers [all|vip|pending|banned] - list users",
+            "/ban USER_ID REASON - ban a user",
+            "/unban USER_ID - remove a ban",
+            "/broadcast MESSAGE - message active VIP users",
+            "/stats - view bot statistics",
+            "/health - check exchange connectivity",
+            "/exportusers - download a CSV export",
+            "/memstatus - view process memory",
+        ])
     await update.message.reply_text("\n".join(lines))
 
 
@@ -196,24 +252,24 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     filters = user_filters(user)
     expiry = user["vip_expiry"] or "lifetime"
-    await update.message.reply_text(f"VIP: {user['vip_status']} ({expiry})\nExchanges: {', '.join(json.loads(user['selected_exchanges']))}\nLoose mode: {filters['loose_mode']}\nPaused: {filters['paused']}\nMin profit: {filters['min_profit']}%")
+    await update.message.reply_text(f"👤 ACCOUNT STATUS\n\n💎 VIP: {user['vip_status']} ({expiry})\n🌐 Exchanges: {', '.join(json.loads(user['selected_exchanges']))}\n⚠️ Loose mode: {filters['loose_mode']}\n⏸ Paused: {filters['paused']}\n📈 Profit range: {filters['min_profit']}% to {filters['max_profit']}%\n🎯 Max results: {filters['max_results']}")
 
 
 async def exchanges(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await require_vip(update, context): return
     context.user_data["selected_exchanges"] = json.loads((await get_db(context).get_user(update.effective_user.id))["selected_exchanges"])
-    await update.message.reply_text("Update your exchange selection.", reply_markup=exchange_keyboard(context))
+    await update.message.reply_text("🌐 EXCHANGE SELECTION\nTap an exchange to toggle it. Select at least two, then tap Done.", reply_markup=exchange_keyboard(context))
 
 
 async def filters_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await require_vip(update, context): return
-    await update.message.reply_text("Set filters with commands such as /setminprofit 1.0, /setminvolume 50000, /setmaxresults 10, /watchlist add BTC/USDT. View with /myfilters.")
+    await update.message.reply_text("🎛️ FILTER GUIDE\n\nUse /myfilters to view current values.\n/setminprofit 1\n/setminvolume 50000\n/setmaxresults 10\n/setquotecurrency USDT\n/watchlist add BTC/USDT\n/blacklist add DOGE/USDT\n\nUse /resetfilters to restore defaults. Values affect future scans and alerts.")
 
 
 async def myfilters(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await require_vip(update, context): return
     user = await get_db(context).get_user(update.effective_user.id)
-    await update.message.reply_text(json.dumps(user_filters(user), indent=2))
+    await update.message.reply_text("🎛️ YOUR FILTERS\n\n" + json.dumps(user_filters(user), indent=2))
 
 
 async def resetfilters(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -221,7 +277,7 @@ async def resetfilters(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     db = get_db(context)
     await db.set_user(update.effective_user.id, filters=DEFAULT_FILTERS)
     await db.log_action(update.effective_user.id, "reset_filters")
-    await update.message.reply_text("Filters reset to defaults.")
+    await update.message.reply_text("♻️ Filters reset to defaults.")
 
 
 def numeric_filter(name: str):
@@ -238,8 +294,14 @@ def numeric_filter(name: str):
 def integer_filter(name: str):
     async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await require_vip(update, context): return
+        if len(context.args) != 1:
+            await update.message.reply_text(f"Usage: /{update.message.text.split()[0][1:]} WHOLE_NUMBER")
+            return
         try: value = int(context.args[0])
-        except (IndexError, ValueError): await update.message.reply_text("Enter a whole number."); return
+        except ValueError: await update.message.reply_text("❌ Enter a whole number."); return
+        if value < 0:
+            await update.message.reply_text("❌ Enter zero or a positive whole number.")
+            return
         await update_filter(update, context, name, value)
     return handler
 
@@ -259,7 +321,7 @@ def positive_integer_filter(name: str):
 async def update_filter(update, context, name, value):
     db = get_db(context); user = await db.get_user(update.effective_user.id); preferences = user_filters(user); preferences[name] = value
     await db.set_user(update.effective_user.id, filters=preferences); await db.log_action(update.effective_user.id, "changed_filter", f"{name}={value}")
-    await update.message.reply_text(f"Updated {name} to {value}.")
+    await update.message.reply_text(f"✅ Updated `{name}` to `{value}`.", parse_mode="Markdown")
 
 
 async def fee_adjusted(update, context):
@@ -274,7 +336,9 @@ async def fee_adjusted(update, context):
 async def quote_currency(update, context):
     if not await require_vip(update, context): return
     value = context.args[0].upper() if context.args else ""
-    if value not in {"USDT", "USDC", "BTC"}: await update.message.reply_text("Supported quote currencies: USDT, USDC, BTC"); return
+    if value not in {"USDT", "USDC", "BTC"}:
+        await update.message.reply_text("Usage: /setquotecurrency USDT|USDC|BTC")
+        return
     await update_filter(update, context, "quote_currency", value)
 
 
@@ -335,20 +399,58 @@ async def opportunity_details(update, context):
         size = user_filters(user)["max_trade_size"]
         buy_fill, buy_slippage = _book_fill(books[0].get("asks", []), size, ascending=True)
         sell_fill, sell_slippage = _book_fill(books[1].get("bids", []), size, ascending=False)
+        fee_rates = await asyncio.gather(
+            buy_exchange.get_taker_fee(row["symbol"]),
+            sell_exchange.get_taker_fee(row["symbol"]),
+        )
+        gross_profit = max(0.0, (sell_fill - buy_fill) * size)
+        fee_cost = (buy_fill * size * fee_rates[0]) + (sell_fill * size * fee_rates[1])
+        net_profit = gross_profit - fee_cost
         message = (
-            f"{row['symbol']} live details\n"
-            f"Buy {row['buy_exchange']}: {buy_fill:.8f} (scan {row['buy_price']})\n"
-            f"Sell {row['sell_exchange']}: {sell_fill:.8f} (scan {row['sell_price']})\n"
-            f"Estimated slippage: buy {buy_slippage:.3f}% / sell {sell_slippage:.3f}%\n"
-            f"Raw spread: {row['raw_spread']:.3f}%\n"
-            f"24h volume: {row['volume_buy']:.0f} / {row['volume_sell']:.0f}\n"
-            f"{'⚠️ LOOSE MODE - unverified' if row['loose_mode'] else '✅ Transfer verification passed'}\n"
-            "Live order books fetched now. Data may be stale; re-check before trading."
+            f"🪙 {row['symbol']}  ·  ARBITRAGE DETAILS\n\n"
+            f"🟢 BUY {row['buy_exchange']}: {buy_fill:.8f} (scan {row['buy_price']:.8f})\n"
+            f"🔴 SELL {row['sell_exchange']}: {sell_fill:.8f} (scan {row['sell_price']:.8f})\n"
+            f"📦 Trade size: {size:.4f} base units\n\n"
+            f"📈 Gross profit: {gross_profit:.4f} ({((sell_fill - buy_fill) / buy_fill) * 100:.3f}%)\n"
+            f"💸 Buy fee: {fee_rates[0] * 100:.4f}% ({buy_fill * size * fee_rates[0]:.4f})\n"
+            f"💸 Sell fee: {fee_rates[1] * 100:.4f}% ({sell_fill * size * fee_rates[1]:.4f})\n"
+            f"🧾 Total fees: {fee_cost:.4f}\n"
+            f"💰 Estimated net profit: {net_profit:.4f}\n"
+            f"📉 Slippage: buy {buy_slippage:.3f}% / sell {sell_slippage:.3f}%\n"
+            f"📊 Raw scan spread: {row['raw_spread']:.3f}%\n"
+            f"💧 24h volume: {row['volume_buy']:.0f} / {row['volume_sell']:.0f}\n\n"
+            f"🟩 BUY ORDER BOOK · {row['buy_exchange']}\n{_format_order_book(books[0].get('asks', []), 'asks')}\n\n"
+            f"🟥 SELL ORDER BOOK · {row['sell_exchange']}\n{_format_order_book(books[1].get('bids', []), 'bids')}\n\n"
+            f"{'⚠️ Transfer route unverified' if row['loose_mode'] else '✅ Transfer route verified'}\n"
+            "⏱ Live order books fetched now. Re-check before trading."
         )
     except Exception:
         logger.exception("live details failed for %s", row["id"])
-        message = "Live order book data is temporarily unavailable. Re-check the opportunity later."
-    await query.edit_message_text(message)
+        message = "⚠️ Live order-book data is temporarily unavailable. Re-check this opportunity later."
+    await query.edit_message_text(message, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Paper Trade", callback_data=f"paper:{row['id']}")]]))
+
+
+async def paper_trade_callback(update, context):
+    query = update.callback_query
+    await query.answer()
+    db = get_db(context)
+    if not await db.active_vip(query.from_user.id):
+        await query.answer("Active VIP access required.", show_alert=True)
+        return
+    row = await db.get_opportunity(query.data.split(":", 1)[1])
+    if not row:
+        await query.answer("Opportunity has expired.", show_alert=True)
+        return
+    user = await db.get_user(query.from_user.id)
+    size = user_filters(user)["max_trade_size"]
+    profit = size * (row["net_profit"] / 100)
+    period = datetime.now(UTC).strftime("%G-%V")
+    await db._db().execute(
+        "INSERT INTO paper_trades(user_id, opportunity_id, size, profit, created_at, period) VALUES (?, ?, ?, ?, ?, ?)",
+        (query.from_user.id, row["id"], size, profit, datetime.now(UTC).isoformat(), period),
+    )
+    await db._db().commit()
+    await query.message.reply_text(f"🧪 PAPER TRADE RECORDED\n\n🪙 {row['symbol']}\n📦 Size: {size}\n💰 Estimated P&L: {profit:.4f}\n\n✅ Simulation only. No real order was placed.")
 
 
 def _book_fill(levels, size: float, *, ascending: bool) -> tuple[float, float]:
@@ -374,29 +476,48 @@ def _book_fill(levels, size: float, *, ascending: bool) -> tuple[float, float]:
     return average, abs(slippage)
 
 
+def _format_order_book(levels, side: str) -> str:
+    rows = []
+    for level in levels[:5]:
+        if len(level) >= 2:
+            rows.append(f"{float(level[0]):.8f} x {float(level[1]):.6f}")
+    return "\n".join(rows) or "unavailable"
+
+
 async def papertrade(update, context):
     if not await require_vip(update, context): return
-    if len(context.args) != 2: await update.message.reply_text("Usage: /papertrade OPPORTUNITY_ID SIZE"); return
+    if len(context.args) != 2: await update.message.reply_text("🧪 Usage: /papertrade OPPORTUNITY_ID SIZE"); return
     db = get_db(context); row = await db.get_opportunity(context.args[0])
     if not row: await update.message.reply_text("Opportunity not found or expired."); return
-    size = float(context.args[1]); profit = size * (row["net_profit"] / 100); period = datetime.now(UTC).strftime("%G-%V")
+    try:
+        size = float(context.args[1])
+    except ValueError:
+        await update.message.reply_text("❌ SIZE must be a positive number, for example: /papertrade ID123 100")
+        return
+    if size <= 0:
+        await update.message.reply_text("❌ SIZE must be greater than zero.")
+        return
+    profit = size * (row["net_profit"] / 100); period = datetime.now(UTC).strftime("%G-%V")
     await db._db().execute("INSERT INTO paper_trades(user_id, opportunity_id, size, profit, created_at, period) VALUES (?, ?, ?, ?, ?, ?)", (update.effective_user.id, context.args[0], size, profit, datetime.now(UTC).isoformat(), period)); await db._db().commit()
-    await update.message.reply_text(f"SIMULATED PAPER TRADE\nSize: {size}\nEstimated P&L: {profit:.4f}\nThis did not place a real trade.")
+    await update.message.reply_text(f"🧪 PAPER TRADE RECORDED\n\n📦 Size: {size}\n💰 Estimated P&L: {profit:.4f}\n\n✅ Simulation only. No real order was placed.")
 
 
 async def paperstats(update, context):
     if not await require_vip(update, context): return
     cursor = await get_db(context)._db().execute("SELECT COUNT(*) count, COALESCE(SUM(profit), 0) total, COALESCE(MAX(profit), 0) best, COALESCE(AVG(profit > 0), 0) win_rate FROM paper_trades WHERE user_id=?", (update.effective_user.id,)); row = await cursor.fetchone()
-    await update.message.reply_text(f"SIMULATED PAPER STATS\nTrades: {row['count']}\nWin rate: {row['win_rate'] * 100:.1f}%\nTotal P&L: {row['total']:.4f}\nBest trade: {row['best']:.4f}")
+    await update.message.reply_text(f"📊 PAPER TRADE STATS\n\n🧪 Trades: {row['count']}\n🏆 Win rate: {row['win_rate'] * 100:.1f}%\n💰 Total P&L: {row['total']:.4f}\n⭐ Best trade: {row['best']:.4f}")
 
 
 async def leaderboard(update, context):
     if not await require_vip(update, context): return
+    if context.args and context.args[0].lower() != "alltime":
+        await update.message.reply_text("Usage: /leaderboard or /leaderboard alltime")
+        return
     period = "alltime" if context.args and context.args[0].lower() == "alltime" else datetime.now(UTC).strftime("%G-%V")
     where = "1=1" if period == "alltime" else "period=?"; args = () if period == "alltime" else (period,)
     cursor = await get_db(context)._db().execute(f"SELECT u.username, u.telegram_id, SUM(p.profit) total FROM paper_trades p JOIN users u ON u.telegram_id=p.user_id WHERE u.leaderboard_hidden=0 AND {where} GROUP BY p.user_id ORDER BY total DESC LIMIT 10", args); rows = await cursor.fetchall()
     text = "LEADERBOARD\n" + "\n".join(f"{index}. @{row['username'] or row['telegram_id']} {row['total']:.4f}" for index, row in enumerate(rows, 1))
-    await update.message.reply_text(text or "No paper trades yet.")
+    await update.message.reply_text(text or "📭 No paper trades yet.")
 
 
 async def leaderboard_callback(update, context):
@@ -405,10 +526,13 @@ async def leaderboard_callback(update, context):
 
 async def admin_access(update, context):
     if update.effective_user.id not in context.application.bot_data["admin_ids"]:
-        await update.effective_message.reply_text("Admin access required.")
+        await update.effective_message.reply_text("🛡️ Admin access required.")
         return
-    if len(context.args) != 1 or context.args[0] != context.application.bot_data["admin_secret_key"]:
-        await update.effective_message.reply_text("Invalid admin secret key.")
+    if len(context.args) != 1:
+        await update.effective_message.reply_text("Usage: /admin 8767")
+        return
+    if context.args[0] != context.application.bot_data["admin_secret_key"]:
+        await update.effective_message.reply_text("❌ Invalid admin secret key.")
         return
     context.user_data["admin_unlocked"] = True
     await update.effective_message.reply_text("Admin settings unlocked for this session.")
@@ -421,7 +545,7 @@ async def scan_command(update, context):
     if not scanner:
         await update.effective_message.reply_text("Scanner is still starting. Try again shortly.")
         return
-    await update.effective_message.reply_text("Scanning active exchanges...")
+    await update.effective_message.reply_text("🔎 Scanning active exchanges...")
     opportunities = await scanner.run_cycle()
     user = await get_db(context).get_user(update.effective_user.id)
     preferences = user_filters(user)
@@ -429,7 +553,7 @@ async def scan_command(update, context):
     visible = [opportunity for opportunity in opportunities if opportunity.buy_exchange in selected and opportunity.sell_exchange in selected and matches(opportunity, preferences)]
     visible = sorted(visible, key=lambda opportunity: opportunity.net_profit, reverse=True)[:preferences["max_results"]]
     details = "\n".join(f"{item.symbol}: {item.net_profit:.3f}% ({item.buy_exchange} -> {item.sell_exchange})" for item in visible)
-    await update.effective_message.reply_text(f"Scan complete. Checked {len(scanner.exchanges)} exchanges; showing {len(visible)} of {len(opportunities)} opportunities.\n{details}".rstrip())
+    await update.effective_message.reply_text(f"✅ SCAN COMPLETE\n\n🌐 Exchanges checked: {len(scanner.exchanges)}\n🎯 Results shown: {len(visible)} of {len(opportunities)}\n\n{details}".rstrip())
 
 
 def admin_only(db, admin_ids, handler):
@@ -446,7 +570,7 @@ def admin_only(db, admin_ids, handler):
 
 async def genkey(update, context):
     if len(context.args) != 2:
-        await update.message.reply_text("Usage: /genkey YOUR_KEY DAYS_OR_LIFETIME")
+        await update.message.reply_text("Usage: /genkey YOUR_KEY DAYS_OR_LIFETIME\nExample: /genkey VIP2026 30")
         return
     key, duration = context.args
     if not re.fullmatch(r"[A-Za-z0-9_-]{4,64}", key):
@@ -475,8 +599,8 @@ async def listkeys(update, context):
     except ValueError:
         await update.message.reply_text("Status must be unused, active, expired, or revoked.")
         return
-    text = "\n".join(f"{row['key']} {row['status']} expiry={row['expiry_date'] or 'lifetime'}" for row in rows)
-    await update.message.reply_text(text or "No VIP keys found.")
+    text = "\n".join(f"🔑 {row['key']} · {row['status']} · expiry={row['expiry_date'] or 'lifetime'}" for row in rows)
+    await update.message.reply_text(text or "📭 No VIP keys found.")
 
 
 async def extend_vip(update, context):
@@ -487,7 +611,7 @@ async def extend_vip(update, context):
         user_id, days = int(context.args[0]), int(context.args[1])
         updated = await get_db(context).extend_vip(user_id, days)
     except ValueError:
-        await update.message.reply_text("USER_ID and DAYS must be whole numbers; DAYS must be positive.")
+        await update.message.reply_text("❌ USER_ID and DAYS must be whole numbers; DAYS must be positive.")
         return
     await update.message.reply_text("VIP extended." if updated else "User not found.")
 
@@ -504,20 +628,40 @@ async def health(update, context):
 
 
 async def revoke_key(update, context):
-    if not context.args: await update.message.reply_text("Usage: /revokekey KEY"); return
+    if len(context.args) != 1: await update.message.reply_text("Usage: /revokekey KEY"); return
     await get_db(context)._db().execute("UPDATE vip_keys SET status='revoked' WHERE key=?", (context.args[0].upper(),)); await get_db(context)._db().commit(); await update.message.reply_text("Key revoked.")
 
 
 async def grant_vip(update, context):
-    if not context.args: await update.message.reply_text("Usage: /grantvip USER_ID [days]"); return
-    expiry = None if len(context.args) < 2 else (datetime.now(UTC) + timedelta(days=int(context.args[1]))).isoformat(); await get_db(context).set_user(int(context.args[0]), vip_status="active", vip_expiry=expiry); await update.message.reply_text("VIP granted.")
+    if len(context.args) not in {1, 2}: await update.message.reply_text("Usage: /grantvip USER_ID [DAYS]"); return
+    try:
+        user_id = int(context.args[0])
+        days = int(context.args[1]) if len(context.args) == 2 else None
+        if days is not None and days <= 0: raise ValueError
+    except ValueError:
+        await update.message.reply_text("❌ USER_ID must be a number and DAYS must be positive.")
+        return
+    expiry = None if days is None else (datetime.now(UTC) + timedelta(days=days)).isoformat()
+    await get_db(context).set_user(user_id, vip_status="active", vip_expiry=expiry)
+    await update.message.reply_text("✅ VIP access granted." if await get_db(context).get_user(user_id) else "❌ User not found.")
 
 
 async def revoke_vip(update, context):
-    await get_db(context).set_user(int(context.args[0]), vip_status="revoked"); await update.message.reply_text("VIP revoked.")
+    if len(context.args) != 1:
+        await update.message.reply_text("Usage: /revokevip USER_ID")
+        return
+    try: user_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("❌ USER_ID must be a number.")
+        return
+    await get_db(context).set_user(user_id, vip_status="revoked")
+    await update.message.reply_text("✅ VIP revoked.")
 
 
 async def userinfo(update, context):
+    if len(context.args) != 1:
+        await update.message.reply_text("Usage: /userinfo USER_ID_OR_USERNAME")
+        return
     row = await get_db(context).find_user(context.args[0]);
     if not row: await update.message.reply_text("User not found."); return
     actions = await get_db(context).user_actions(row["telegram_id"]); await update.message.reply_text(json.dumps(dict(row), indent=2) + "\nActions:\n" + "\n".join(f"{a['timestamp']} {a['action']} {a['details']}" for a in actions))
@@ -528,14 +672,33 @@ async def listusers(update, context):
 
 
 async def ban(update, context):
-    await get_db(context).set_user(int(context.args[0]), banned=1, ban_reason=" ".join(context.args[1:])); await update.message.reply_text("User banned.")
+    if len(context.args) < 1:
+        await update.message.reply_text("Usage: /ban USER_ID REASON")
+        return
+    try: user_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("❌ USER_ID must be a number.")
+        return
+    await get_db(context).set_user(user_id, banned=1, ban_reason=" ".join(context.args[1:]) or "No reason provided")
+    await update.message.reply_text("✅ User banned.")
 
 
 async def unban(update, context):
-    await get_db(context).set_user(int(context.args[0]), banned=0, ban_reason=None); await update.message.reply_text("User unbanned.")
+    if len(context.args) != 1:
+        await update.message.reply_text("Usage: /unban USER_ID")
+        return
+    try: user_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("❌ USER_ID must be a number.")
+        return
+    await get_db(context).set_user(user_id, banned=0, ban_reason=None)
+    await update.message.reply_text("✅ User unbanned.")
 
 
 async def broadcast(update, context):
+    if not context.args:
+        await update.message.reply_text("Usage: /broadcast YOUR_MESSAGE")
+        return
     message = " ".join(context.args); sent = 0
     for row in await get_db(context).list_users("vip"):
         try: await context.bot.send_message(row["telegram_id"], message); sent += 1

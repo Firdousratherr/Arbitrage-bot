@@ -84,7 +84,65 @@ Put the real `TELEGRAM_BOT_TOKEN` and `ADMIN_TELEGRAM_IDS` in `/opt/arbitrage-bo
 
 ## Commands
 
-Users get `/status`, `/exchanges`, `/filters`, `/myfilters`, `/scan`, `/vipkey`, `/setmaxresults`, filter setters, `/loosemode`, `/setfeeadjusted`, `/papertrade`, `/paperstats`, and `/leaderboard` after registration or VIP activation as applicable. `/vipkey YOUR_KEY` redeems a manually chosen VIP key after registration. `/setmaxresults N` limits each user's alerts and manual scan results to the top N opportunities by net profit. Admins get key management including `/listkeys` and `/extendvip`, user auditing, bans, broadcasts, CSV export, statistics, `/health`, and `/memstatus`.
+## User Commands
+
+Start with `/start`, enter a valid email, select at least two exchanges, and tap **Done**. Enter a VIP key during registration or use `/vipkey YOUR_KEY` later.
+
+| Command | Purpose and example |
+| --- | --- |
+| `/help` | Show the in-bot command guide. |
+| `/status` | Show VIP status, selected exchanges, and key settings. |
+| `/vipkey YOUR_KEY` | Redeem a VIP key after registration. |
+| `/exchanges` | Open the exchange selection menu; select at least two exchanges. |
+| `/scan` | Run an immediate scan of the selected exchanges. |
+| `/filters` | Show filter instructions. |
+| `/myfilters` | Show current filter values. |
+| `/resetfilters` | Restore default filters. |
+| `/setmaxresults 10` | Limit displayed alerts and scan results. |
+| `/setminprofit 1` | Require at least 1% estimated profit. |
+| `/setmaxprofit 50` | Ignore opportunities above 50%. |
+| `/setminspread 0.5` | Require at least 0.5% raw spread. |
+| `/setmaxspread 20` | Ignore unusually large spreads. |
+| `/setminvolume 50000` | Require minimum 24h quote volume. |
+| `/setmintradesize 10` | Set minimum paper-trade size. |
+| `/setmaxtradesize 1000` | Set maximum paper-trade size and button size. |
+| `/setmaxslippage 2` | Set maximum slippage preference. |
+| `/setnetworkfee 1` | Set estimated network fee. |
+| `/setalertfreq 300` | Set alert cooldown in seconds. |
+| `/setdailycap 50` | Set the daily alert limit. |
+| `/setquotecurrency USDT` | Use `USDT`, `USDC`, or `BTC`. |
+| `/watchlist add BTC/USDT` | Include only selected symbols. Use `remove` to remove one. |
+| `/blacklist add DOGE/USDT` | Ignore a symbol. Use `remove` to remove one. |
+| `/loosemode on` | Allow unverified transfer routes. Use only with caution. |
+| `/setfeeadjusted on` | Enable fee-adjusted filtering. |
+| `/pause` or `/resume` | Pause or resume automatic alerts. |
+| `/papertrade OPPORTUNITY_ID SIZE` | Record a simulation manually; result buttons are easier. |
+| `/paperstats` | View simulated trade statistics. |
+| `/leaderboard` | View this period's paper-trade ranking. Add `alltime` for all history. |
+
+Coin alerts include buy/sell prices, gross spread, live fee details, net estimate, liquidity, order books, and a **Paper Trade** button. Paper trading never places a real exchange order.
+
+## Admin Commands
+
+The Telegram user must be listed in `ADMIN_TELEGRAM_IDS`. Run `/admin 8767` once per session before using admin commands.
+
+| Command | Purpose and example |
+| --- | --- |
+| `/genkey VIP2026 30` | Create a manually chosen 30-day VIP key. Use `lifetime` instead of `30` for no expiry. |
+| `/listkeys [status]` | List keys; status can be `unused`, `active`, `expired`, or `revoked`. |
+| `/revokekey KEY` | Revoke a key that should no longer work. |
+| `/extendvip USER_ID 30` | Add 30 days to a user's VIP access. |
+| `/grantvip USER_ID [DAYS]` | Grant lifetime VIP or a fixed number of days. |
+| `/revokevip USER_ID` | Remove VIP access. |
+| `/userinfo USER_ID_OR_USERNAME` | Inspect a user's account and recent actions. |
+| `/listusers [all\|vip\|pending\|banned]` | List users by status. |
+| `/ban USER_ID REASON` | Ban a user and record the reason. |
+| `/unban USER_ID` | Remove a ban. |
+| `/broadcast MESSAGE` | Send a message to active VIP users. |
+| `/stats` | Show user, scan, and alert counts. |
+| `/health` | Check ticker access for every active exchange. |
+| `/exportusers` | Download the user CSV export. |
+| `/memstatus` | Show process memory usage. |
 
 Details buttons are intentionally on-demand. The base scan retains only best bid/ask, volume, and a compact metadata snapshot; it does not retain full order books for all symbols.
 

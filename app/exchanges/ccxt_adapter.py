@@ -32,6 +32,18 @@ class CcxtExchangeAdapter:
     async def fetch_order_book(self, symbol: str, limit: int = 10) -> dict[str, Any]:
         return await self.client.fetch_order_book(symbol, limit)
 
+    async def get_taker_fee(self, symbol: str) -> float:
+        try:
+            await self.client.load_markets()
+            market = self.client.market(symbol)
+            fee = market.get("taker")
+            if fee is None:
+                fee = self.client.fees.get("trading", {}).get("taker")
+            return float(fee if fee is not None else 0.001)
+        except Exception as exc:
+            logger.info("%s fee metadata unavailable for %s: %s", self.name, symbol, exc)
+            return 0.001
+
     async def verify_transfer(self, symbol: str) -> tuple[bool, dict[str, Any]]:
         currency = symbol.split("/")[0]
         try:
