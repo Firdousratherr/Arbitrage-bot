@@ -3,7 +3,7 @@ from __future__ import annotations
 from .ccxt_adapter import CcxtExchangeAdapter
 
 CCXT_NAMES = {
-    "binance": "binance", "kucoin": "kucoin", "gateio": "gateio", "bybit": "bybit",
+    "binance": "binance", "kucoin": "kucoin", "gateio": "gate", "bybit": "bybit",
     "mexc": "mexc", "okx": "okx", "htx": "htx", "kraken": "kraken", "bitget": "bitget",
     "bitmart": "bitmart", "lbank": "lbank", "coinbase": "coinbase", "bitfinex": "bitfinex",
     "phemex": "phemex", "cryptocom": "cryptocom", "poloniex": "poloniex",
