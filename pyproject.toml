@@ -10,10 +10,14 @@ dependencies = [
   "python-dotenv>=1.0.1",
   "pydantic-settings>=2.6.0",
   "psutil>=6.1.0",
+  "groq>=0.15.0",
 ]
 
 [project.scripts]
 arbitrage-bot = "app.main:run"
+
+[tool.setuptools]
+packages = ["app"]
 
 [tool.ruff]
 line-length = 100

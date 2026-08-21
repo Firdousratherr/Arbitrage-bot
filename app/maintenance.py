@@ -6,12 +6,12 @@ import json
 import logging
 import re
 import subprocess
-import urllib.error
-import urllib.request
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
+
+from groq import APIConnectionError, APIStatusError, APITimeoutError, AsyncGroq
 
 
 _SUPPORTED_TEMPERATURE_MODELS = (
@@ -53,6 +53,20 @@ class MaintenanceAssistant:
         self.proposals: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self.proposal_dir = Path("logs/ai-proposals")
         self.last_model = ""
+        self._groq_client: AsyncGroq | None = None
+
+    def _sdk_base_url(self) -> str:
+        normalized = self.api_url.rstrip("/")
+        if normalized.endswith("/openai/v1"):
+            return normalized.rsplit("/openai/v1", 1)[0]
+        return normalized
+
+    def _client(self) -> AsyncGroq:
+        if not self.api_key:
+            raise MaintenanceError("AI_API_KEY is not configured.")
+        if self._groq_client is None:
+            self._groq_client = AsyncGroq(api_key=self.api_key, base_url=self._sdk_base_url(), timeout=45.0)
+        return self._groq_client
 
     @property
     def configured(self) -> bool:
@@ -330,101 +344,100 @@ class MaintenanceAssistant:
         payload: dict[str, Any] = {"model": model, "messages": messages}
         if self._supports_temperature(model):
             payload["temperature"] = 0.1
-        body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
-        endpoint = self.api_url.rstrip("/")
-        if not endpoint.endswith("/chat/completions"):
-            endpoint = f"{endpoint}/chat/completions"
-        request = urllib.request.Request(
-            endpoint,
-            data=body,
-            headers={
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-                "Authorization": f"Bearer {self.api_key}",
-            },
-            method="POST",
-        )
 
-        def call() -> str:
-            try:
-                with urllib.request.urlopen(request, timeout=45) as response:
-                    response_body = response.read().decode("utf-8")
-                try:
-                    payload = json.loads(response_body)
-                except json.JSONDecodeError as exc:
-                    raise MaintenanceError("AI provider returned malformed JSON.") from exc
-            except urllib.error.HTTPError as exc:
+        try:
+            client = self._client()
+            response = await client.chat.completions.create(**payload)
+        except Exception as exc:
+            if self._looks_like_provider_status_error(exc):
                 raise self._http_error_to_maintenance_error(exc) from exc
-            except (urllib.error.URLError, TimeoutError, OSError) as exc:
-                raise MaintenanceError(self._classify_network_error(exc)) from exc
+            if isinstance(exc, APITimeoutError):
+                raise MaintenanceError("AI provider request timed out.") from exc
+            if isinstance(exc, APIConnectionError):
+                raise MaintenanceError(self._classify_network_error(str(exc))) from exc
+            raise MaintenanceError(self._classify_network_error(str(exc))) from exc
 
-            try:
-                choices = payload.get("choices") or []
-                first_choice = choices[0]
-                content = first_choice.get("message", {}).get("content")
-                if content is None:
-                    raise KeyError("missing message content")
-                return str(content)
-            except (KeyError, IndexError, TypeError, AttributeError) as exc:
-                raise MaintenanceError("AI provider returned an invalid response.") from exc
+        try:
+            return str(response.choices[0].message.content)
+        except (IndexError, AttributeError, TypeError) as exc:
+            raise MaintenanceError("AI provider returned an invalid response.") from exc
 
-        return await asyncio.to_thread(call)
+    @staticmethod
+    def _looks_like_provider_status_error(exc: object) -> bool:
+        return isinstance(exc, APIStatusError) or (hasattr(exc, "status_code") and hasattr(exc, "body"))
 
-    def _http_error_to_maintenance_error(self, exc: urllib.error.HTTPError) -> MaintenanceError:
-        status_code = int(getattr(exc, "code", 0) or 0)
-        provider_message, provider_type, provider_code = self._extract_provider_error(exc)
-        sanitized_message = self._redact(provider_message)
-        sanitized_type = self._redact(provider_type)
-        sanitized_code = self._redact(provider_code)
-
-        detail = ["AI provider request failed.", f"HTTP: {status_code}", f"Provider message: {sanitized_message or 'provider request rejected'}"]
-        if sanitized_type:
-            detail.append(f"Provider type: {sanitized_type}")
-        if sanitized_code:
-            detail.append(f"Provider code: {sanitized_code}")
+    def _http_error_to_maintenance_error(self, exc: object) -> MaintenanceError:
+        status_code = int(getattr(exc, "status_code", 0) or 0)
+        provider_message = self._safe_provider_message(exc)
+        provider_type = self._safe_provider_type(exc)
+        provider_code = self._safe_provider_code(exc)
+        detail = ["AI provider request failed.", f"HTTP: {status_code}", f"Provider message: {provider_message or 'provider request rejected'}"]
+        if provider_type:
+            detail.append(f"Provider type: {provider_type}")
+        if provider_code:
+            detail.append(f"Provider code: {provider_code}")
         return MaintenanceError("\n".join(detail))
 
     @staticmethod
-    def _extract_provider_error(exc: urllib.error.HTTPError) -> tuple[str, str, str]:
-        body = ""
+    def _safe_provider_message(exc: object) -> str:
+        raw = getattr(exc, "body", None) or ""
+        text = str(raw)
+        if not text:
+            return str(exc)
         try:
-            raw = exc.read()
-            if isinstance(raw, (bytes, bytearray)):
-                body = raw.decode("utf-8", errors="replace")
-            elif raw is not None:
-                body = str(raw)
-        except Exception:
-            body = ""
-
-        if not body:
-            return "provider request rejected", "", str(getattr(exc, "code", "unknown"))
-
-        try:
-            payload = json.loads(body)
+            payload = json.loads(text)
         except json.JSONDecodeError:
-            message = body.strip()[:1000]
-            return message or "provider request rejected", "", str(getattr(exc, "code", "unknown"))
-
+            return text[:1000]
         if isinstance(payload, dict):
-            error_block = payload.get("error") or payload
-            if isinstance(error_block, dict):
-                message = str(error_block.get("message") or error_block.get("detail") or "provider request rejected")
-                error_type = str(error_block.get("type") or "")
-                error_code = str(error_block.get("code") or "")
-                return message, error_type, error_code
-            message = str(payload.get("message") or payload.get("detail") or "provider request rejected")
-            return message, str(payload.get("type") or ""), str(payload.get("code") or "")
-
-        return str(payload)[:1000], "", str(getattr(exc, "code", "unknown"))
+            error_detail = payload.get("error") or payload
+            if isinstance(error_detail, dict):
+                return str(error_detail.get("message") or error_detail.get("detail") or text)[:1000]
+            return str(payload.get("message") or payload.get("detail") or text)[:1000]
+        return str(payload)[:1000]
 
     @staticmethod
-    def _classify_network_error(exc: Exception) -> str:
+    def _safe_provider_type(exc: object) -> str:
+        raw = getattr(exc, "body", None) or ""
+        if not raw:
+            return ""
+        try:
+            payload = json.loads(str(raw))
+        except json.JSONDecodeError:
+            return ""
+        if isinstance(payload, dict):
+            error_detail = payload.get("error") or payload
+            if isinstance(error_detail, dict):
+                return str(error_detail.get("type") or "")[:500]
+            return str(payload.get("type") or "")[:500]
+        return ""
+
+    @staticmethod
+    def _safe_provider_code(exc: object) -> str:
+        raw = getattr(exc, "body", None) or ""
+        if not raw:
+            return ""
+        try:
+            payload = json.loads(str(raw))
+        except json.JSONDecodeError:
+            return ""
+        if isinstance(payload, dict):
+            error_detail = payload.get("error") or payload
+            if isinstance(error_detail, dict):
+                return str(error_detail.get("code") or "")[:500]
+            return str(payload.get("code") or "")[:500]
+        return ""
+
+    @staticmethod
+    def _classify_network_error(exc: Exception | str) -> str:
         message = str(exc)
-        if "timed out" in message.lower() or "timeout" in message.lower():
+        lowered = message.lower()
+        if "timed out" in lowered or "timeout" in lowered:
             return "AI provider request timed out."
-        if "name or service not known" in message.lower() or "temporary failure" in message.lower() or "dns" in message.lower():
+        if "cloudflare" in lowered or "1010" in lowered or "site owner has blocked access" in lowered:
+            return "AI provider is being blocked by an upstream Cloudflare layer. The request could not reach the Groq server."
+        if "name or service not known" in lowered or "temporary failure" in lowered or "dns" in lowered:
             return "AI provider URL could not be resolved. Check AI_API_URL and network connectivity."
-        if "connection" in message.lower() or "refused" in message.lower() or "unreachable" in message.lower():
+        if "connection" in lowered or "refused" in lowered or "unreachable" in lowered:
             return "AI provider connection failed. Check network access and AI_API_URL."
         return "AI provider network request failed."
 
@@ -469,8 +482,8 @@ class MaintenanceAssistant:
             message = str(exc)
             if "HTTP: 401" in message or "invalid api key" in message.lower():
                 results["status"] = "credential problem: the configured API key was rejected."
-            elif "HTTP: 403" in message or "forbidden" in message.lower() or "access denied" in message.lower() or "permission" in message.lower():
-                results["status"] = "permission problem: the provider rejected access to the configured model."
+            elif "HTTP: 403" in message or "forbidden" in message.lower() or "access denied" in message.lower() or "permission" in message.lower() or "cloudflare" in message.lower():
+                results["status"] = "permission or network problem: the request was rejected before reaching the Groq model."
             elif "HTTP: 404" in message or "model not found" in message.lower():
                 results["status"] = "model problem: the configured model is unavailable or not permitted."
             elif "rate limit" in message.lower():
@@ -489,3 +502,11 @@ class MaintenanceAssistant:
             else:
                 results["fallback_status"] = "fallback model is reachable."
         return results
+
+    async def provider_connectivity_test(self) -> str:
+        if not self.configured:
+            raise MaintenanceError("AI maintenance is not configured. Set AI_API_URL, AI_API_KEY, and AI_MODEL first.")
+        response = await self._request(self.model, "Reply only OK")
+        if response.strip() == "OK":
+            return "OK"
+        return response.strip() or "OK"

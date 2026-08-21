@@ -51,33 +51,45 @@ def test_rejects_invalid_proposal_fields():
 def test_successful_groq_request(monkeypatch):
     assistant = MaintenanceAssistant("https://api.groq.com/openai/v1", "key", "openai/gpt-oss-120b")
 
+    class FakeMessage:
+        content = "ok"
+
+    class FakeChoice:
+        message = FakeMessage()
+
     class FakeResponse:
-        def __enter__(self):
-            return self
+        choices = [FakeChoice()]
 
-        def __exit__(self, exc_type, exc, tb):
-            return False
+    class FakeClient:
+        class chat:
+            class completions:
+                @staticmethod
+                async def create(**kwargs):
+                    return FakeResponse()
 
-        def read(self):
-            return json.dumps({"choices": [{"message": {"content": "ok"}}]}).encode()
-
-    monkeypatch.setattr("urllib.request.urlopen", lambda *args, **kwargs: FakeResponse())
+    monkeypatch.setattr(assistant, "_client", lambda: FakeClient())
     assert asyncio.run(assistant._request("openai/gpt-oss-120b", "hello")) == "ok"
 
 
 def test_provider_http_403_with_json_error(monkeypatch):
     assistant = MaintenanceAssistant("https://api.groq.com/openai/v1", "key", "openai/gpt-oss-120b")
 
-    def fake_urlopen(request, timeout):
-        raise urllib.error.HTTPError(
-            request.full_url,
-            403,
-            "Forbidden",
-            {"Content-Type": "application/json"},
-            io.BytesIO(json.dumps({"error": {"message": "model access denied", "type": "invalid_request_error", "code": "forbidden"}}).encode()),
-        )
+    class FakeError(Exception):
+        pass
 
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    class FakeAPIStatusError(Exception):
+        def __init__(self, body, status_code=403):
+            self.body = body
+            self.status_code = status_code
+
+    class FakeClient:
+        class chat:
+            class completions:
+                @staticmethod
+                async def create(**kwargs):
+                    raise FakeAPIStatusError(json.dumps({"error": {"message": "model access denied", "type": "invalid_request_error", "code": "forbidden"}}), 403)
+
+    monkeypatch.setattr(assistant, "_client", lambda: FakeClient())
     with pytest.raises(MaintenanceError, match=r"Provider message: model access denied"):
         asyncio.run(assistant._request("openai/gpt-oss-120b", "hello"))
 
@@ -85,10 +97,19 @@ def test_provider_http_403_with_json_error(monkeypatch):
 def test_provider_http_401_is_reported(monkeypatch):
     assistant = MaintenanceAssistant("https://api.groq.com/openai/v1", "key", "openai/gpt-oss-120b")
 
-    def fake_urlopen(request, timeout):
-        raise urllib.error.HTTPError(request.full_url, 401, "Unauthorized", {}, io.BytesIO(json.dumps({"error": {"message": "invalid API key"}}).encode()))
+    class FakeAPIStatusError(Exception):
+        def __init__(self, body, status_code=401):
+            self.body = body
+            self.status_code = status_code
 
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    class FakeClient:
+        class chat:
+            class completions:
+                @staticmethod
+                async def create(**kwargs):
+                    raise FakeAPIStatusError(json.dumps({"error": {"message": "invalid API key"}}), 401)
+
+    monkeypatch.setattr(assistant, "_client", lambda: FakeClient())
     with pytest.raises(MaintenanceError, match=r"Provider message: invalid API key"):
         asyncio.run(assistant._request("openai/gpt-oss-120b", "hello"))
 
@@ -96,10 +117,19 @@ def test_provider_http_401_is_reported(monkeypatch):
 def test_provider_http_404_model_not_found(monkeypatch):
     assistant = MaintenanceAssistant("https://api.groq.com/openai/v1", "key", "openai/gpt-oss-120b")
 
-    def fake_urlopen(request, timeout):
-        raise urllib.error.HTTPError(request.full_url, 404, "Not Found", {}, io.BytesIO(json.dumps({"error": {"message": "model not found", "code": "model_not_found"}}).encode()))
+    class FakeAPIStatusError(Exception):
+        def __init__(self, body, status_code=404):
+            self.body = body
+            self.status_code = status_code
 
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    class FakeClient:
+        class chat:
+            class completions:
+                @staticmethod
+                async def create(**kwargs):
+                    raise FakeAPIStatusError(json.dumps({"error": {"message": "model not found", "code": "model_not_found"}}), 404)
+
+    monkeypatch.setattr(assistant, "_client", lambda: FakeClient())
     with pytest.raises(MaintenanceError, match=r"Provider message: model not found"):
         asyncio.run(assistant._request("openai/gpt-oss-120b", "hello"))
 
@@ -107,10 +137,19 @@ def test_provider_http_404_model_not_found(monkeypatch):
 def test_provider_http_429_is_ratelimit(monkeypatch):
     assistant = MaintenanceAssistant("https://api.groq.com/openai/v1", "key", "openai/gpt-oss-120b")
 
-    def fake_urlopen(request, timeout):
-        raise urllib.error.HTTPError(request.full_url, 429, "Too Many Requests", {}, io.BytesIO(json.dumps({"error": {"message": "rate limit exceeded", "code": "rate_limit_exceeded"}}).encode()))
+    class FakeAPIStatusError(Exception):
+        def __init__(self, body, status_code=429):
+            self.body = body
+            self.status_code = status_code
 
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    class FakeClient:
+        class chat:
+            class completions:
+                @staticmethod
+                async def create(**kwargs):
+                    raise FakeAPIStatusError(json.dumps({"error": {"message": "rate limit exceeded", "code": "rate_limit_exceeded"}}), 429)
+
+    monkeypatch.setattr(assistant, "_client", lambda: FakeClient())
     with pytest.raises(MaintenanceError, match=r"Provider message: rate limit exceeded"):
         asyncio.run(assistant._request("openai/gpt-oss-120b", "hello"))
 
@@ -145,18 +184,20 @@ def test_both_models_fail_reports_both_provider_errors(monkeypatch):
 def test_malformed_json_response_is_handled(monkeypatch):
     assistant = MaintenanceAssistant("https://api.groq.com/openai/v1", "key", "openai/gpt-oss-120b")
 
-    class FakeResponse:
-        def __enter__(self):
-            return self
+    class FakeAPIStatusError(Exception):
+        def __init__(self, body, status_code=400):
+            self.body = body
+            self.status_code = status_code
 
-        def __exit__(self, exc_type, exc, tb):
-            return False
+    class FakeClient:
+        class chat:
+            class completions:
+                @staticmethod
+                async def create(**kwargs):
+                    raise FakeAPIStatusError("not-json", 400)
 
-        def read(self):
-            return b"not-json"
-
-    monkeypatch.setattr("urllib.request.urlopen", lambda *args, **kwargs: FakeResponse())
-    with pytest.raises(MaintenanceError, match="malformed JSON"):
+    monkeypatch.setattr(assistant, "_client", lambda: FakeClient())
+    with pytest.raises(MaintenanceError, match=r"Provider message: not-json"):
         asyncio.run(assistant._request("openai/gpt-oss-120b", "hello"))
 
 

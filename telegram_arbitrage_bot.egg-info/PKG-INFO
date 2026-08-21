@@ -9,3 +9,4 @@ Requires-Dist: aiosqlite>=0.20.0
 Requires-Dist: python-dotenv>=1.0.1
 Requires-Dist: pydantic-settings>=2.6.0
 Requires-Dist: psutil>=6.1.0
+Requires-Dist: groq>=0.15.0

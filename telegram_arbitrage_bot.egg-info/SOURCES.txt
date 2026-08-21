@@ -7,6 +7,7 @@ app/filters.py
 app/handlers.py
 app/logging_setup.py
 app/main.py
+app/maintenance.py
 app/scanner.py
 app/exchanges/__init__.py
 app/exchanges/base.py
@@ -18,3 +19,4 @@ telegram_arbitrage_bot.egg-info/dependency_links.txt
 telegram_arbitrage_bot.egg-info/entry_points.txt
 telegram_arbitrage_bot.egg-info/requires.txt
 telegram_arbitrage_bot.egg-info/top_level.txt
+tests/test_maintenance.py
