@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 from dataclasses import replace
+from datetime import UTC, datetime
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application
@@ -27,6 +28,7 @@ def run_app() -> None:
     exchanges = {}
     scanner = None
     maintenance = MaintenanceAssistant(settings.ai_api_url, settings.ai_api_key, settings.ai_model)
+    last_alerts: dict[tuple[int, str, str, str], datetime] = {}
 
     async def alert_opportunities(opportunities) -> None:
         sent_counts: dict[int, int] = {}
@@ -43,9 +45,14 @@ def run_app() -> None:
                     continue
                 if sent_counts.get(user_id, 0) >= preferences["max_results"]:
                     continue
+                alert_key = (user_id, opportunity.symbol, opportunity.buy_exchange, opportunity.sell_exchange)
+                last_sent = last_alerts.get(alert_key)
+                if last_sent and (datetime.now(UTC) - last_sent).total_seconds() < preferences["alert_cooldown"]:
+                    continue
                 if preferences["loose_mode"]:
                     loose_opportunity = replace(opportunity, loose_mode=True, verified=False)
                     await _send_alert(db, user_id, loose_opportunity, loose_identifier, context.application)
+                    last_alerts[alert_key] = datetime.now(UTC)
                     sent_counts[user_id] = sent_counts.get(user_id, 0) + 1
                     continue
                 normal_users.append(user)
@@ -73,17 +80,27 @@ def run_app() -> None:
                 )
                 for user in normal_users:
                     user_id = user["telegram_id"]
+                    alert_key = (user_id, opportunity.symbol, opportunity.buy_exchange, opportunity.sell_exchange)
+                    last_sent = last_alerts.get(alert_key)
+                    if last_sent and (datetime.now(UTC) - last_sent).total_seconds() < user_filters(user)["alert_cooldown"]:
+                        continue
                     await _send_alert(db, user_id, unverified_opportunity, unverified_identifier, context.application)
+                    last_alerts[alert_key] = datetime.now(UTC)
                     sent_counts[user_id] = sent_counts.get(user_id, 0) + 1
                 continue
             verified_opportunity = replace(
                 opportunity,
                 verified=True,
-                metadata={**opportunity.metadata, "buy_transfer": buy_meta, "sell_transfer": sell_meta},
+                metadata={**opportunity.metadata, "buy_transfer": buy_meta, "sell_transfer": sell_meta, "matching_network": _matching_network(buy_meta, sell_meta)},
             )
             for user in normal_users:
                 user_id = user["telegram_id"]
+                alert_key = (user_id, opportunity.symbol, opportunity.buy_exchange, opportunity.sell_exchange)
+                last_sent = last_alerts.get(alert_key)
+                if last_sent and (datetime.now(UTC) - last_sent).total_seconds() < user_filters(user)["alert_cooldown"]:
+                    continue
                 await _send_alert(db, user_id, verified_opportunity, verified_identifier, context.application)
+                last_alerts[alert_key] = datetime.now(UTC)
                 sent_counts[user_id] = sent_counts.get(user_id, 0) + 1
 
     async def post_init(application: Application) -> None:
@@ -117,9 +134,42 @@ def run_app() -> None:
 
 
 def _matching_network_exists(buy_meta: dict, sell_meta: dict) -> bool:
-    buy_networks = {item.get("network"): item.get("contract") for item in buy_meta.get("networks", []) if item.get("deposit")}
-    sell_networks = {item.get("network"): item.get("contract") for item in sell_meta.get("networks", []) if item.get("withdraw")}
-    return any(network in sell_networks and buy_networks[network] and buy_networks[network] == sell_networks[network] for network in buy_networks)
+    return _matching_network(buy_meta, sell_meta) is not None
+
+
+def _network_key(value: object) -> str:
+    normalized = "".join(character for character in str(value or "").lower() if character.isalnum())
+    aliases = {
+        "eth": "ethereum", "erc20": "ethereum", "ethereum": "ethereum",
+        "bsc": "bsc", "bep20": "bsc", "binancesmartchain": "bsc",
+        "matic": "polygon", "polygon": "polygon", "polygonpos": "polygon",
+        "arb": "arbitrum", "arbitrum": "arbitrum",
+        "op": "optimism", "optimism": "optimism",
+        "trx": "tron", "trc20": "tron", "tron": "tron",
+    }
+    return aliases.get(normalized, normalized)
+
+
+def _contract_key(value: object) -> str:
+    return str(value or "").lower().removeprefix("0x").strip()
+
+
+def _matching_network(buy_meta: dict, sell_meta: dict) -> str | None:
+    buy_networks = {
+        _network_key(item.get("network")): item
+        for item in buy_meta.get("networks", [])
+        if item.get("deposit")
+    }
+    sell_networks = {
+        _network_key(item.get("network")): item
+        for item in sell_meta.get("networks", [])
+        if item.get("withdraw")
+    }
+    for network, buy in buy_networks.items():
+        sell = sell_networks.get(network)
+        if sell and _contract_key(buy.get("contract")) and _contract_key(buy.get("contract")) == _contract_key(sell.get("contract")):
+            return buy.get("network") or network
+    return None
 
 
 async def _send_alert(db: Database, user_id: int, opportunity, identifier: str, application: Application) -> None:
@@ -142,7 +192,9 @@ async def _send_alert(db: Database, user_id: int, opportunity, identifier: str, 
         f"💸 Fees: open Details for live taker rates\n"
         f"💰 Est. net before live fees: {opportunity.net_profit:.3f}%\n"
         f"📊 24h volume: {opportunity.volume_buy:.0f} / {opportunity.volume_sell:.0f}\n"
-        f"{loose_label}\n\n"
+        f"{loose_label}\n"
+        f"🟢 Deposit on {opportunity.buy_exchange}: {_transfer_summary(opportunity.metadata.get('buy_transfer'), 'deposit')}\n"
+        f"🔴 Withdrawal on {opportunity.sell_exchange}: {_transfer_summary(opportunity.metadata.get('sell_transfer'), 'withdraw')}\n\n"
         "🔎 Open Details for fills, order books, fees, and net profit."
     )
     try:
@@ -151,6 +203,13 @@ async def _send_alert(db: Database, user_id: int, opportunity, identifier: str, 
         await db.increment_stat("alerts_sent")
     except Exception:
         logger.exception("failed to alert user %s", user_id)
+
+
+def _transfer_summary(metadata: dict | None, action: str) -> str:
+    if not metadata:
+        return "verification pending"
+    networks = [item.get("network", "unknown") for item in metadata.get("networks", []) if item.get(action)]
+    return ", ".join(networks[:3]) if networks else "not available"
 
 
 def run() -> None:

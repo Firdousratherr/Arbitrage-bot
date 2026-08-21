@@ -50,10 +50,16 @@ class CcxtExchangeAdapter:
             currencies = await self.client.fetch_currencies()
             info = currencies.get(currency, {})
             networks = info.get("networks", {}) or {}
-            available = [
-                {"network": key, "contract": value.get("contract"), "deposit": value.get("deposit", True), "withdraw": value.get("withdraw", True)}
-                for key, value in networks.items()
-            ]
+            available = []
+            for key, value in networks.items():
+                value = value or {}
+                info = value.get("info", {}) or {}
+                available.append({
+                    "network": key,
+                    "contract": value.get("contract") or info.get("contractAddress") or info.get("contract_address"),
+                    "deposit": value.get("deposit") is not False,
+                    "withdraw": value.get("withdraw") is not False,
+                })
             return bool(available), {"currency": currency, "networks": available}
         except Exception as exc:
             logger.info("%s transfer metadata unavailable for %s: %s", self.name, currency, exc)

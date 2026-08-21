@@ -66,7 +66,13 @@ def build_handlers(db: Database, admin_ids: set[int], exchange_names: list[str],
         CommandHandler("patchstatus", admin_only(db, admin_ids, patchstatus)),
         CommandHandler("approvefix", admin_only(db, admin_ids, approvefix)),
     ]
-    callbacks = [CallbackQueryHandler(opportunity_details, pattern=r"^details:"), CallbackQueryHandler(paper_trade_callback, pattern=r"^paper:"), CallbackQueryHandler(leaderboard_callback, pattern=r"^leaderboard:")]
+    callbacks = [
+        CallbackQueryHandler(exchange_toggle, pattern=r"^exchange:"),
+        CallbackQueryHandler(exchange_confirm, pattern=r"^exchange_done$"),
+        CallbackQueryHandler(opportunity_details, pattern=r"^details:"),
+        CallbackQueryHandler(paper_trade_callback, pattern=r"^paper:"),
+        CallbackQueryHandler(leaderboard_callback, pattern=r"^leaderboard:"),
+    ]
     return [registration, *commands, *admin_commands, *callbacks]
 
 
@@ -129,6 +135,12 @@ async def exchange_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return EXCHANGES_STAGE
     await query.answer()
     db = get_db(context)
+    existing = await db.get_user(query.from_user.id)
+    if existing and existing["email"] and "email" not in context.user_data:
+        await db.set_user(query.from_user.id, selected_exchanges=selected)
+        await db.log_action(query.from_user.id, "changed_exchanges", ",".join(selected))
+        await query.edit_message_text(f"✅ Exchanges saved\n\n🌐 {', '.join(selected)}")
+        return ConversationHandler.END
     await db.upsert_user(
         query.from_user.id,
         query.from_user.username,
@@ -432,6 +444,7 @@ async def opportunity_details(update, context):
         gross_profit = max(0.0, (sell_fill - buy_fill) * size)
         fee_cost = (buy_fill * size * fee_rates[0]) + (sell_fill * size * fee_rates[1])
         net_profit = gross_profit - fee_cost
+        transfer_text = _format_transfer_checks(json.loads(row["payload"] or "{}"))
         message = (
             f"🪙 {row['symbol']}  ·  ARBITRAGE DETAILS\n\n"
             f"🟢 BUY {row['buy_exchange']}: {buy_fill:.8f} (scan {row['buy_price']:.8f})\n"
@@ -447,13 +460,33 @@ async def opportunity_details(update, context):
             f"💧 24h volume: {row['volume_buy']:.0f} / {row['volume_sell']:.0f}\n\n"
             f"🟩 BUY ORDER BOOK · {row['buy_exchange']}\n{_format_order_book(books[0].get('asks', []), 'asks')}\n\n"
             f"🟥 SELL ORDER BOOK · {row['sell_exchange']}\n{_format_order_book(books[1].get('bids', []), 'bids')}\n\n"
-            f"{'⚠️ Transfer route unverified' if row['loose_mode'] else ('⚠️ Transfer route not verified' if json.loads(row['payload'] or '{}').get('transfer_verification') in {'not_verified', 'unavailable_or_no_matching_network'} else '✅ Transfer route verified')}\n"
+            f"{transfer_text}\n"
             "⏱ Live order books fetched now. Re-check before trading."
         )
     except Exception:
         logger.exception("live details failed for %s", row["id"])
         message = "⚠️ Live order-book data is temporarily unavailable. Re-check this opportunity later."
     await query.edit_message_text(message, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Paper Trade", callback_data=f"paper:{row['id']}")]]))
+
+
+def _format_transfer_checks(metadata: dict) -> str:
+    if metadata.get("transfer_verification") == "loose_mode":
+        return "⚠️ Transfer checks skipped (loose mode)"
+    buy = metadata.get("buy_transfer", {})
+    sell = metadata.get("sell_transfer", {})
+    matching = metadata.get("matching_network")
+    buy_status = _transfer_status(buy, "deposit")
+    sell_status = _transfer_status(sell, "withdraw")
+    route = f"✅ Matching route: {matching}" if matching else "⚠️ No matching deposit/withdrawal network"
+    return f"{route}\n🟢 Buy deposit: {buy_status}\n🔴 Sell withdrawal: {sell_status}"
+
+
+def _transfer_status(metadata: dict, action: str) -> str:
+    networks = metadata.get("networks", [])
+    available = [item.get("network", "unknown") for item in networks if item.get(action)]
+    if metadata.get("unavailable"):
+        return "verification pending"
+    return ", ".join(available[:4]) if available else "not available"
 
 
 async def paper_trade_callback(update, context):

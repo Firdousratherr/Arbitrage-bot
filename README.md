@@ -160,7 +160,7 @@ Details buttons are intentionally on-demand. The base scan retains only best bid
 - The scanner uses batch `fetch_tickers()` where supported and discards raw responses after extracting compact ticker fields.
 - Paper trading is simulated only and never submits an exchange order.
 - Transfer metadata is fetched through each exchange's CCXT currency endpoint for one exchange at a time; missing metadata fails closed unless loose mode is explicitly enabled. The `exchange_overrides` table remains available for a future admin-managed override resolver.
-- Before production use, add deployment secrets management, integration tests with mocked CCXT responses, alert cooldown/daily-cap enforcement, and a review of each exchange's network metadata semantics. Never treat an arbitrage alert as an instruction to trade.
+- Alert cooldown is applied per user, symbol, and exchange route; daily-cap enforcement and integration tests with mocked CCXT responses remain recommended before production use. Review each exchange's network metadata semantics, and never treat an arbitrage alert as an instruction to trade.
 
 ## Verification
 

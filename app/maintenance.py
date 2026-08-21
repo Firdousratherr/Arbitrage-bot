@@ -138,8 +138,9 @@ class MaintenanceAssistant:
                 {"role": "user", "content": prompt},
             ],
         }).encode("utf-8")
+        endpoint = self.api_url if self.api_url.endswith("/chat/completions") else f"{self.api_url}/chat/completions"
         request = urllib.request.Request(
-            f"{self.api_url}/chat/completions",
+            endpoint,
             data=body,
             headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.api_key}"},
             method="POST",
