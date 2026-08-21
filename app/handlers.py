@@ -14,6 +14,14 @@ from .db import DEFAULT_FILTERS, Database
 from .filters import matches, parse_float, user_filters
 from .maintenance import MaintenanceAssistant
 from .scanner import opportunity_id
+from .ui import (
+    format_error,
+    format_opportunity_card,
+    format_opportunity_details,
+    format_paper_trade,
+    format_scan_summary,
+    opportunity_buttons,
+)
 
 logger = logging.getLogger(__name__)
 EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -450,23 +458,19 @@ async def opportunity_details(update, context):
         fee_cost = (buy_fill * size * fee_rates[0]) + (sell_fill * size * fee_rates[1])
         net_profit = gross_profit - fee_cost
         transfer_text = _format_transfer_checks(json.loads(row["payload"] or "{}"))
-        message = (
-            f"🪙 {row['symbol']}  ·  ARBITRAGE DETAILS\n\n"
-            f"🟢 BUY {row['buy_exchange']}: {buy_fill:.8f} (scan {row['buy_price']:.8f})\n"
-            f"🔴 SELL {row['sell_exchange']}: {sell_fill:.8f} (scan {row['sell_price']:.8f})\n"
-            f"📦 Trade size: {size:.4f} base units\n\n"
-            f"📈 Gross profit: {gross_profit:.4f} ({((sell_fill - buy_fill) / buy_fill) * 100:.3f}%)\n"
-            f"💸 Buy fee: {fee_rates[0] * 100:.4f}% ({buy_fill * size * fee_rates[0]:.4f})\n"
-            f"💸 Sell fee: {fee_rates[1] * 100:.4f}% ({sell_fill * size * fee_rates[1]:.4f})\n"
-            f"🧾 Total fees: {fee_cost:.4f}\n"
-            f"💰 Estimated net profit: {net_profit:.4f}\n"
-            f"📉 Slippage: buy {buy_slippage:.3f}% / sell {sell_slippage:.3f}%\n"
-            f"📊 Raw scan spread: {row['raw_spread']:.3f}%\n"
-            f"💧 24h volume: {row['volume_buy']:.0f} / {row['volume_sell']:.0f}\n\n"
-            f"🟩 BUY ORDER BOOK · {row['buy_exchange']}\n{_format_order_book(books[0].get('asks', []), 'asks')}\n\n"
-            f"🟥 SELL ORDER BOOK · {row['sell_exchange']}\n{_format_order_book(books[1].get('bids', []), 'bids')}\n\n"
-            f"{transfer_text}\n"
-            "⏱ Live order books fetched now. Re-check before trading."
+        message = format_opportunity_details(
+            row,
+            buy_fill,
+            sell_fill,
+            fee_rates[0],
+            fee_rates[1],
+            gross_profit,
+            net_profit,
+            buy_slippage,
+            sell_slippage,
+            transfer_text,
+            books[0].get("asks", []),
+            books[1].get("bids", []),
         )
     except Exception:
         logger.exception("live details failed for %s", row["id"])
@@ -507,6 +511,7 @@ async def paper_trade_callback(update, context):
         return
     user = await db.get_user(query.from_user.id)
     size = user_filters(user)["max_trade_size"]
+    expected_gross = size * (row["raw_spread"] / 100)
     profit = size * (row["net_profit"] / 100)
     period = datetime.now(UTC).strftime("%G-%V")
     await db._db().execute(
@@ -514,7 +519,16 @@ async def paper_trade_callback(update, context):
         (query.from_user.id, row["id"], size, profit, datetime.now(UTC).isoformat(), period),
     )
     await db._db().commit()
-    await query.message.reply_text(f"🧪 PAPER TRADE RECORDED\n\n🪙 {row['symbol']}\n📦 Size: {size}\n💰 Estimated P&L: {profit:.4f}\n\n✅ Simulation only. No real order was placed.")
+    message = format_paper_trade(
+        type("OpportunityShim", (), {"symbol": row["symbol"], "buy_exchange": row["buy_exchange"], "sell_exchange": row["sell_exchange"]})(),
+        buy_price=row["buy_price"],
+        sell_price=row["sell_price"],
+        size=size,
+        expected_gross=expected_gross,
+        estimated_net=row["net_profit"],
+        profit=profit,
+    )
+    await query.message.reply_text(message)
 
 
 def _book_fill(levels, size: float, *, ascending: bool) -> tuple[float, float]:
@@ -561,9 +575,19 @@ async def papertrade(update, context):
     if size <= 0:
         await update.message.reply_text("❌ SIZE must be greater than zero.")
         return
+    expected_gross = size * (row["raw_spread"] / 100)
     profit = size * (row["net_profit"] / 100); period = datetime.now(UTC).strftime("%G-%V")
     await db._db().execute("INSERT INTO paper_trades(user_id, opportunity_id, size, profit, created_at, period) VALUES (?, ?, ?, ?, ?, ?)", (update.effective_user.id, context.args[0], size, profit, datetime.now(UTC).isoformat(), period)); await db._db().commit()
-    await update.message.reply_text(f"🧪 PAPER TRADE RECORDED\n\n📦 Size: {size}\n💰 Estimated P&L: {profit:.4f}\n\n✅ Simulation only. No real order was placed.")
+    message = format_paper_trade(
+        type("OpportunityShim", (), {"symbol": row["symbol"], "buy_exchange": row["buy_exchange"], "sell_exchange": row["sell_exchange"]})(),
+        buy_price=row["buy_price"],
+        sell_price=row["sell_price"],
+        size=size,
+        expected_gross=expected_gross,
+        estimated_net=row["net_profit"],
+        profit=profit,
+    )
+    await update.message.reply_text(message)
 
 
 async def paperstats(update, context):
@@ -718,26 +742,19 @@ async def scan_command(update, context):
     ]
     visible = [opportunity for opportunity in selected_candidates if matches(opportunity, preferences)]
     visible = sorted(visible, key=lambda opportunity: opportunity.net_profit, reverse=True)[:preferences["max_results"]]
-    if visible:
-        details = "\n".join(
-            f"{index}. 🪙 {item.symbol} · {item.net_profit:.3f}% · {item.buy_exchange} → {item.sell_exchange}"
-            for index, item in enumerate(visible, 1)
-        )
-        result_text = f"🎯 TOP RESULTS\n\n{details}"
-    else:
-        result_text = (
-            "📭 No opportunities matched your current settings.\n\n"
-            f"Selected-exchange candidates: {len(selected_candidates)}\n"
-            f"Filtered out: {len(selected_candidates) - len(visible)}\n\n"
-            "Try /myfilters to review filters, /setminprofit 0.1, /setminvolume 0, "
-            "or /exchanges to select at least two active exchanges."
-        )
-    await update.effective_message.reply_text(
-        f"✅ SCAN COMPLETE\n\n🌐 Exchanges checked: {len(scanner.exchanges)}\n"
-        f"🔎 Positive opportunities found: {len(opportunities)}\n"
-        f"🌐 Matching your selected exchanges: {len(selected_candidates)}\n"
-        f"🎯 Results shown: {len(visible)}\n\n{result_text}"
+    summary = format_scan_summary(
+        visible,
+        exchange_count=len(scanner.exchanges),
+        opportunities_found=len(opportunities),
+        matching_selected=len(selected_candidates),
+        results_shown=len(visible),
     )
+    await update.effective_message.reply_text(summary)
+    for item in visible:
+        await update.effective_message.reply_text(
+            format_opportunity_card(item, opportunity_id(item)),
+            reply_markup=opportunity_buttons(opportunity_id(item)),
+        )
 
 
 def admin_only(db, admin_ids, handler):

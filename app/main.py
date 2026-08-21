@@ -17,6 +17,7 @@ from .handlers import build_handlers
 from .logging_setup import configure_logging
 from .maintenance import MaintenanceAssistant
 from .scanner import Scanner, opportunity_id
+from .ui import format_background_alert, opportunity_buttons
 
 logger = logging.getLogger(__name__)
 
@@ -183,32 +184,13 @@ def _matching_network(buy_meta: dict, sell_meta: dict) -> str | None:
 
 
 async def _send_alert(db: Database, user_id: int, opportunity, identifier: str, application: Application) -> None:
-    verification_pending = opportunity.metadata.get("transfer_verification") in {
-        "not_verified",
-        "unavailable_or_no_matching_network",
-    }
-    if opportunity.loose_mode:
-        loose_label = "⚠️ Unverified transfer route - use caution"
-    elif verification_pending:
-        loose_label = "⚠️ Transfer route not verified - review Details before acting"
-    else:
-        loose_label = "✅ Transfer route verified"
-    message = (
-        f"🚨 ARBITRAGE OPPORTUNITY\n"
-        f"🪙 {opportunity.symbol}  ·  {identifier}\n\n"
-        f"🟢 BUY  {opportunity.buy_exchange}: {opportunity.buy_price:.8f}\n"
-        f"🔴 SELL {opportunity.sell_exchange}: {opportunity.sell_price:.8f}\n\n"
-        f"📈 Gross spread: {opportunity.raw_spread:.3f}%\n"
-        f"💸 Fees: open Details for live taker rates\n"
-        f"💰 Est. net before live fees: {opportunity.net_profit:.3f}%\n"
-        f"📊 24h volume: {opportunity.volume_buy:.0f} / {opportunity.volume_sell:.0f}\n"
-        f"{loose_label}\n"
-        f"🟢 Deposit on {opportunity.buy_exchange}: {_transfer_summary(opportunity.metadata.get('buy_transfer'), 'deposit')}\n"
-        f"🔴 Withdrawal on {opportunity.sell_exchange}: {_transfer_summary(opportunity.metadata.get('sell_transfer'), 'withdraw')}\n\n"
-        "🔎 Open Details for fills, order books, fees, and net profit."
-    )
+    message = format_background_alert(opportunity, identifier)
     try:
-        await application.bot.send_message(user_id, message, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Details + Order Book", callback_data=f"details:{identifier}"), InlineKeyboardButton("Paper Trade", callback_data=f"paper:{identifier}")]]))
+        await application.bot.send_message(
+            user_id,
+            message,
+            reply_markup=opportunity_buttons(identifier),
+        )
         await db.save_opportunity(identifier, opportunity)
         await db.increment_stat("alerts_sent")
     except Exception:
