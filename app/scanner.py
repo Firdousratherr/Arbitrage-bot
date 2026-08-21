@@ -30,10 +30,13 @@ class Scanner:
     async def run_cycle(self, *, require_matching_user: bool = True) -> list[Opportunity]:
         fetched = await asyncio.gather(*(self._fetch(exchange) for exchange in self.exchanges.values()), return_exceptions=True)
         by_symbol: dict[str, list[Ticker]] = {}
-        for result in fetched:
+        successful_exchanges = 0
+        for exchange, result in zip(self.exchanges.values(), fetched):
             if isinstance(result, Exception):
-                logger.warning("exchange scan failed: %s", result)
+                logger.warning("%s exchange scan failed: %s", exchange.name, result)
                 continue
+            if result:
+                successful_exchanges += 1
             for ticker in result:
                 by_symbol.setdefault(ticker.symbol, []).append(ticker)
 
@@ -56,6 +59,13 @@ class Scanner:
             opportunities.append(opportunity)
         gc.collect()
         await self.db.increment_stat("scans_run")
+        logger.info(
+            "scan complete: %s/%s exchanges returned data, %s symbols, %s opportunities",
+            successful_exchanges,
+            len(self.exchanges),
+            len(by_symbol),
+            len(opportunities),
+        )
         return opportunities
 
     async def _has_matching_users(self, opportunity: Opportunity) -> bool:

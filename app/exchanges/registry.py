@@ -12,11 +12,15 @@ CCXT_NAMES = {
     "lbank": "lbank", "coinbase": "coinbase", "bitfinex": "bitfinex",
     "phemex": "phemex", "cryptocom": "cryptocom", "poloniex": "poloniex",
 }
+DISABLED_EXCHANGES = {"bitmart"}
 
 
 def build_exchanges(names: list[str], credentials_provider) -> dict[str, CcxtExchangeAdapter]:
     result = {}
     for name in names:
+        if name.lower() in DISABLED_EXCHANGES:
+            logger.warning("exchange %s is disabled", name)
+            continue
         if name in CCXT_NAMES:
             try:
                 result[name] = CcxtExchangeAdapter(CCXT_NAMES[name], credentials_provider(name), public_name=name)

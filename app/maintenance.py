@@ -30,6 +30,19 @@ class MaintenanceAssistant:
         secure = parsed.scheme == "https" or parsed.hostname in {"localhost", "127.0.0.1", "::1"}
         return bool(self.api_url and self.api_key and self.model and secure)
 
+    @property
+    def missing_settings(self) -> list[str]:
+        missing = []
+        if not self.api_url:
+            missing.append("AI_API_URL")
+        if not self.api_key:
+            missing.append("AI_API_KEY")
+        if not self.model:
+            missing.append("AI_MODEL")
+        if self.api_url and not (urlparse(self.api_url).scheme in {"https", "http"}):
+            missing.append("AI_API_URL must be an HTTP(S) URL")
+        return missing
+
     def error_report(self) -> str:
         errors = recent_errors()
         if not errors:
@@ -39,7 +52,8 @@ class MaintenanceAssistant:
     async def diagnose(self) -> str:
         report = self.error_report()
         if not self.configured:
-            return f"AI maintenance is not configured.\n\nRecent errors:\n{report}"
+            missing = ", ".join(self.missing_settings)
+            return f"AI maintenance is not configured. Missing or invalid: {missing}.\n\nRecent errors:\n{report}"
         result = await self._ask(
             "Diagnose this Python Telegram bot error report. Explain the likely root cause, "
             "affected subsystem, and the safest next check. Do not invent files or claim a fix was applied.\n\n"
@@ -47,15 +61,16 @@ class MaintenanceAssistant:
         )
         return result
 
-    async def propose_fix(self) -> tuple[str, str]:
+    async def propose_fix(self, issue: str = "") -> tuple[str, str]:
         report = self.error_report()
         if not self.configured:
             raise RuntimeError("Set AI_API_URL, AI_API_KEY, and AI_MODEL before requesting a fix.")
+        issue_context = f"\n\nUser-reported issue:\n{issue.strip()}" if issue.strip() else ""
         response = await self._ask(
             "You are a cautious Python maintenance assistant. Analyze this error report and propose a minimal fix. "
             "Return exactly JSON with keys diagnosis, patch, tests. The patch must be a unified diff, or an empty "
             "string if the evidence is insufficient. Never include secrets and never claim the patch was applied.\n\n"
-            + report + "\n\nApplication source context:\n" + self._source_snapshot()
+            + report + issue_context + "\n\nApplication source context:\n" + self._source_snapshot()
         )
         payload = self._parse_json(response)
         diagnosis = str(payload.get("diagnosis", "No diagnosis returned."))

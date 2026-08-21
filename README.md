@@ -146,7 +146,7 @@ The Telegram user must be listed in `ADMIN_TELEGRAM_IDS`. Run `/admin 8767` once
 | `/exportusers` | Download the user CSV export. |
 | `/memstatus` | Show process memory usage. |
 | `/diagnose` | Ask the configured AI assistant to explain recent errors. |
-| `/fixerror` | Generate a minimal AI patch proposal from recent errors. |
+| `/fixerror ISSUE` | Generate a minimal AI patch proposal from recent errors and your issue description. Example: `/fixerror scanner stopped returning opportunities`. |
 | `/patchstatus` | List proposals waiting for approval. |
 | `/approvefix PATCH_ID` | Save a proposal as a patch file for manual review. |
 

@@ -106,12 +106,17 @@ def run_app() -> None:
     async def post_init(application: Application) -> None:
         nonlocal scanner
         await db.connect()
+        cleaned_users = await db.remove_exchange_from_selections("bitmart")
+        if cleaned_users:
+            logger.info("removed disabled bitmart selection from %s users", cleaned_users)
         exchanges.update(build_exchanges(settings.exchange_names, settings.exchange_credentials))
         active_exchange_names = list(exchanges)
         scanner = Scanner(db, exchanges, settings.scan_interval_seconds, settings.max_exchange_concurrency)
         application.bot_data.update({"db": db, "admin_ids": settings.admin_id_set, "admin_secret_key": settings.admin_secret_key, "exchange_names": active_exchange_names, "exchanges": exchanges, "scanner": scanner, "maintenance": maintenance})
         scanner.task = asyncio.create_task(scanner.loop(alert_opportunities))
-        logger.info("bot started with exchanges: %s", ", ".join(exchanges))
+        if len(exchanges) < 2:
+            logger.error("fewer than two exchanges are active; arbitrage results are impossible")
+        logger.info("bot started with exchanges: %s", ", ".join(exchanges) or "none")
 
     async def post_shutdown(application: Application) -> None:
         if scanner:

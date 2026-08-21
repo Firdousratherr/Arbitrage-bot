@@ -31,7 +31,11 @@ class Settings(BaseSettings):
 
     @property
     def exchange_names(self) -> list[str]:
-        return [value.strip().lower() for value in self.enabled_exchanges.split(",") if value.strip()]
+        return [
+            value.strip().lower()
+            for value in self.enabled_exchanges.split(",")
+            if value.strip() and value.strip().lower() != "bitmart"
+        ]
 
     def exchange_credentials(self, name: str) -> dict[str, str]:
         prefix = name.upper()

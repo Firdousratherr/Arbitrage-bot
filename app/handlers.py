@@ -263,7 +263,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             "/exportusers - download a CSV export",
             "/memstatus - view process memory",
             "/diagnose - summarize recent bot errors with AI",
-            "/fixerror - propose a patch for review; never auto-applies",
+            "/fixerror ISSUE - propose a patch for a reported issue; never auto-applies",
             "/patchstatus - list pending patch proposals",
             "/approvefix PATCH_ID - save a patch artifact for manual review",
         ])
@@ -613,8 +613,9 @@ async def diagnose(update, context):
 
 async def fixerror(update, context):
     service = maintenance_service(context)
+    issue = " ".join(context.args).strip()
     try:
-        _, result = await service.propose_fix()
+        _, result = await service.propose_fix(issue)
     except Exception as exc:
         logger.exception("AI fix proposal failed")
         result = f"❌ AI fix proposal failed: {type(exc).__name__}: {exc}"

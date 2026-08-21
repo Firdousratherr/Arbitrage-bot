@@ -109,6 +109,16 @@ class Database:
         cursor = await self._db().execute("SELECT * FROM users WHERE telegram_id = ?", (telegram_id,))
         return await cursor.fetchone()
 
+    async def remove_exchange_from_selections(self, exchange: str) -> int:
+        changed = 0
+        for user in await self.list_users():
+            selected = json.loads(user["selected_exchanges"] or "[]")
+            cleaned = [name for name in selected if name.lower() != exchange.lower()]
+            if cleaned != selected:
+                await self.set_user(user["telegram_id"], selected_exchanges=cleaned)
+                changed += 1
+        return changed
+
     async def find_user(self, value: str) -> aiosqlite.Row | None:
         cursor = await self._db().execute("SELECT * FROM users WHERE telegram_id = ? OR lower(username) = lower(?)", (value, value.lstrip("@")))
         return await cursor.fetchone()
