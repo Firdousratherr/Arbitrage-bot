@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     ai_model: str = ""
     ai_fallback_model: str = ""
     ai_max_log_entries: int = Field(default=40, ge=1, le=500)
+    ai_max_input_tokens: int = Field(default=5500, ge=1000, le=12000)
     database_path: str = "data/arbitrage.sqlite3"
     log_level: str = "INFO"
     scan_interval_seconds: int = 30
@@ -22,6 +23,7 @@ class Settings(BaseSettings):
     default_min_profit: float = 0.5
     default_min_volume: float = 10_000
     default_alert_cooldown: int = 300
+    opportunity_ttl_seconds: int = Field(default=300, ge=1)
     enabled_exchanges: str = "xt,kucoin,gateio,mexc,okx,htx,kraken,bitget,bitrue,lbank,coinbase,bitfinex,phemex,cryptocom,poloniex"
 
     model_config = SettingsConfigDict(

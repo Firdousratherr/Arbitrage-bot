@@ -38,18 +38,19 @@ class MaintenanceError(RuntimeError):
 class MaintenanceAssistant:
     """Approval-gated maintenance operations with a deliberately small command surface."""
 
-    MAX_SOURCE_BYTES = 30_000
+    MAX_SOURCE_BYTES = 16_000
     ALLOWED_FILES = ("app/",)
     SAFE_COMMANDS = {
         "syntax": ["python", "-m", "compileall", "-q", "app"],
         "tests": ["python", "-m", "pytest", "-q"],
     }
 
-    def __init__(self, api_url: str, api_key: str, model: str, fallback_model: str = ""):
+    def __init__(self, api_url: str, api_key: str, model: str, fallback_model: str = "", max_input_tokens: int = 5500):
         self.api_url = api_url.rstrip("/")
         self.api_key = api_key
         self.model = model
         self.fallback_model = fallback_model
+        self.max_input_tokens = max_input_tokens
         self.proposals: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self.proposal_dir = Path("logs/ai-proposals")
         self.last_model = ""
@@ -87,7 +88,7 @@ class MaintenanceAssistant:
     def error_report(self) -> str:
         errors = recent_errors()
         return "No recent application errors have been captured." if not errors else "\n".join(
-            self._redact(error) for error in errors[-40:]
+            self._redact(error)[:800] for error in errors[-12:]
         )
 
     async def diagnose(self) -> str:
@@ -100,7 +101,7 @@ class MaintenanceAssistant:
             "The summary must be a short readable statement. affected_files must be an array of app-relative paths. "
             "recommended_fix must be a concise actionable fix. confidence must be a number from 0 to 1. "
             "model_used must be the model name used. Do not claim changes were made.\n\n"
-            + report + "\n\nApplication source context:\n" + self._source_snapshot()
+            + report + "\n\nApplication source context:\n" + self._source_snapshot(report)
         )
         parsed = self._parse_json(response)
         if isinstance(parsed, dict):
@@ -132,7 +133,7 @@ class MaintenanceAssistant:
             "safe commands from compileall/pytest), risk (low|medium|high). The patch must only modify app/*.py; "
             "never modify .env, credentials, Docker files, logs, or the database. Use an empty patch when evidence "
             "is insufficient. Never include secrets or claim the patch was applied.\n\n"
-            + self.error_report() + issue_context + "\n\nApplication source context:\n" + self._source_snapshot()
+            + self.error_report() + issue_context + "\n\nApplication source context:\n" + self._source_snapshot(issue_context)
         )
         payload = self._validate_proposal(self._parse_json(response))
         patch = self._clean_patch(payload["patch"])
@@ -243,14 +244,25 @@ class MaintenanceAssistant:
         (self.proposal_dir / f"{proposal['id']}.json").write_text(json.dumps(proposal), encoding="utf-8")
 
     @classmethod
-    def _source_snapshot(cls) -> str:
+    def _source_snapshot(cls, context: str = "") -> str:
         chunks, total = [], 0
-        for path in sorted(Path("app").rglob("*.py")):
-            content = cls._redact(path.read_text(encoding="utf-8")[:5000])
+        paths = sorted(Path("app").rglob("*.py"))
+        context_lower = context.lower()
+        paths.sort(key=lambda path: (str(path).lower() not in context_lower, str(path)))
+        for path in paths:
+            content = cls._redact(path.read_text(encoding="utf-8")[:2500])
             chunk = f"\n--- {path} ---\n{content}"
             if total + len(chunk) > cls.MAX_SOURCE_BYTES: break
             chunks.append(chunk); total += len(chunk)
         return "".join(chunks) or "No application source files were available."
+
+    def _fit_prompt(self, prompt: str, max_chars: int | None = None) -> str:
+        limit = max_chars or max(4000, self.max_input_tokens * 4)
+        if len(prompt) <= limit:
+            return prompt
+        head = int(limit * 0.65)
+        tail = limit - head
+        return prompt[:head] + "\n\n[context trimmed to token budget]\n\n" + prompt[-tail:]
 
     @staticmethod
     def _redact(value: str) -> str:
@@ -336,7 +348,8 @@ class MaintenanceAssistant:
         normalized = model.lower()
         return any(token in normalized for token in _SUPPORTED_TEMPERATURE_MODELS)
 
-    async def _request(self, model: str, prompt: str) -> str:
+    async def _request(self, model: str, prompt: str, _retry_reduced: bool = True) -> str:
+        prompt = self._fit_prompt(prompt)
         messages = [
             {"role": "system", "content": "You are a read-only software maintenance assistant."},
             {"role": "user", "content": prompt},
@@ -350,6 +363,9 @@ class MaintenanceAssistant:
             response = await client.chat.completions.create(**payload)
         except Exception as exc:
             if self._looks_like_provider_status_error(exc):
+                if int(getattr(exc, "status_code", 0) or 0) == 413 and _retry_reduced:
+                    logger.warning("AI maintenance request exceeded provider context limit; retrying with reduced context")
+                    return await self._request(model, self._fit_prompt(prompt, 12000), False)
                 raise self._http_error_to_maintenance_error(exc) from exc
             if isinstance(exc, APITimeoutError):
                 raise MaintenanceError("AI provider request timed out.") from exc

@@ -5,7 +5,7 @@ from typing import Iterable, Sequence
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 
-SECTION_SEPARATOR = "━━━━━━━━━━━━━━━━━━"
+SECTION_SEPARATOR = "━━━━━━━━━━━━━━"
 
 
 def _compact_number(value: float | int, digits: int = 8) -> str:
@@ -22,61 +22,36 @@ def _safe_text(value: object) -> str:
 
 def _transfer_status_text(metadata: dict | None, mode: str) -> str:
     if not metadata:
-        return "❌ Not available"
+        return "❌"
     networks = []
     for item in metadata.get("networks", []) or []:
         if item.get(mode):
             network = item.get("network") or "unknown"
             networks.append(str(network))
     if not networks:
-        return "❌ Not available"
-    return "✅ Available (" + ", ".join(networks[:3]) + ")"
+        return "❌"
+    return "✅ " + ", ".join(networks[:2])
+
+
+def _transfer_row(opportunity) -> str:
+    metadata = getattr(opportunity, "metadata", {}) or {}
+    if metadata.get("transfer_verification") == "loose_mode":
+        return "⚠️ Transfer checks skipped"
+    buy = _transfer_status_text(metadata.get("buy_transfer"), "deposit")
+    sell = _transfer_status_text(metadata.get("sell_transfer"), "withdraw")
+    return f"⚠️ Transfer: Deposit {buy} • Withdrawal {sell}"
 
 
 def format_opportunity_card(opportunity, identifier: str, title: str = "🚨 ARBITRAGE OPPORTUNITY") -> str:
     buy_label = opportunity.buy_exchange or "buy"
     sell_label = opportunity.sell_exchange or "sell"
-    transfer_status = "⚠️ TRANSFER NOT VERIFIED" if not getattr(opportunity, "verified", False) else "✅ TRANSFER ROUTE VERIFIED"
-    buy_status = _transfer_status_text(getattr(opportunity, "metadata", {}).get("buy_transfer"), "deposit")
-    sell_status = _transfer_status_text(getattr(opportunity, "metadata", {}).get("sell_transfer"), "withdraw")
-
     lines = [
-        f"{title}",
-        "",
-        f"🪙 {opportunity.symbol}",
-        f"🆔 {identifier}",
-        "",
-        SECTION_SEPARATOR,
-        "",
-        "🟢 BUY",
-        f"   {buy_label}",
-        f"   {_compact_number(opportunity.buy_price, 8)}",
-        "",
-        "🔴 SELL",
-        f"   {sell_label}",
-        f"   {_compact_number(opportunity.sell_price, 8)}",
-        "",
-        SECTION_SEPARATOR,
-        "",
-        "📈 Gross spread",
-        f"   {float(opportunity.raw_spread):.3f}%",
-        "",
-        "💰 Estimated net",
-        f"   {float(opportunity.net_profit):.3f}%",
-        "",
-        "💸 Fees",
-        "   Open Details for live taker rates",
-        "",
-        "📊 24h volume",
-        f"   {_compact_number(opportunity.volume_buy)} / {_compact_number(opportunity.volume_sell)}",
-        "",
-        SECTION_SEPARATOR,
-        "",
-        transfer_status,
-        f"🟢 Deposit on {buy_label}: {buy_status}",
-        f"🔴 Withdrawal on {sell_label}: {sell_status}",
-        "",
-        "🔎 Review Details before acting.",
+        f"{title} • {opportunity.symbol}",
+        f"🟢 BUY {buy_label} {_compact_number(opportunity.buy_price, 8)}",
+        f"🔴 SELL {sell_label} {_compact_number(opportunity.sell_price, 8)}",
+        f"📈 Spread {float(opportunity.raw_spread):+.2f}% • 💰 Net {float(opportunity.net_profit):+.2f}%",
+        f"💸 Fees live • 📊 Vol {_compact_number(opportunity.volume_buy)} / {_compact_number(opportunity.volume_sell)}",
+        _transfer_row(opportunity),
     ]
     return "\n".join(lines)
 
@@ -91,33 +66,21 @@ def opportunity_buttons(identifier: str) -> InlineKeyboardMarkup:
 
 
 def format_background_alert(opportunity, identifier: str) -> str:
-    return format_opportunity_card(opportunity, identifier, "🚨 NEW ARBITRAGE OPPORTUNITY")
+    return format_opportunity_card(opportunity, identifier, "🚨 NEW ARBITRAGE")
 
 
 def format_scan_summary(opportunities: Sequence[object], *, exchange_count: int, opportunities_found: int, matching_selected: int, results_shown: int) -> str:
     visible = list(opportunities)[:3]
     lines = [
-        "🔎 ARBITRAGE SCAN",
-        "",
-        SECTION_SEPARATOR,
-        "",
-        "✅ SCAN COMPLETE",
-        "",
-        f"🌐 Exchanges checked: {exchange_count}",
-        f"🔎 Opportunities found: {opportunities_found}",
-        f"🎯 Matching selected exchanges: {matching_selected}",
-        f"📋 Results shown: {results_shown}",
-        "",
-        SECTION_SEPARATOR,
-        "",
+        "🔎 SCAN COMPLETE",
+        f"🌐 {exchange_count} exchanges • 🎯 {opportunities_found} found",
+        f"🎯 {matching_selected} matched • 📋 {results_shown} shown" if matching_selected != opportunities_found else f"📋 {results_shown} results shown",
         "🏆 TOP OPPORTUNITIES",
     ]
     for index, opportunity in enumerate(visible, 1):
         label = ["1️⃣", "2️⃣", "3️⃣"][index - 1]
         lines.extend([
-            "",
-            f"{label} 🪙 {opportunity.symbol}",
-            f"   📈 {float(opportunity.raw_spread):.3f}%",
+            f"{label} {opportunity.symbol}  📈 {float(opportunity.raw_spread):+.2f}%",
             f"   {opportunity.buy_exchange} → {opportunity.sell_exchange}",
         ])
     return "\n".join(lines)
@@ -128,79 +91,35 @@ def format_order_book(levels: Iterable[Sequence[float]], *, title: str) -> str:
     for level in list(levels)[:5]:
         if len(level) >= 2:
             rows.append(f"{float(level[0]):.8f} x {float(level[1]):.6f}")
-    return f"{title}\n" + ("\n".join(rows) if rows else "unavailable")
+    body = " • ".join(rows) if rows else "unavailable"
+    return f"{title}{body}" if title else body
 
 
 def format_opportunity_details(row: dict, buy_fill: float, sell_fill: float, buy_fee: float, sell_fee: float, gross_profit: float, net_profit: float, buy_slippage: float, sell_slippage: float, transfer_text: str, buy_book: Sequence[Sequence[float]], sell_book: Sequence[Sequence[float]]) -> str:
     lines = [
-        "🔎 OPPORTUNITY DETAILS",
-        "",
-        f"🪙 {row['symbol']}",
-        "",
-        SECTION_SEPARATOR,
-        "",
-        "🌐 EXCHANGES",
-        "",
-        "🟢 BUY",
-        f"{row['buy_exchange']}",
-        f"Price: {_compact_number(buy_fill, 8)}",
-        "",
-        "🔴 SELL",
-        f"{row['sell_exchange']}",
-        f"Price: {_compact_number(sell_fill, 8)}",
-        "",
-        SECTION_SEPARATOR,
-        "",
+        f"🔎 DETAILS • {row['symbol']}",
+        f"🔄 {row['buy_exchange']} → {row['sell_exchange']}",
+        f"💰 Buy {_compact_number(buy_fill, 8)} • Sell {_compact_number(sell_fill, 8)}",
+        f"📈 Spread {float(row['raw_spread']):+.2f}% • 💰 Net {float(net_profit):+.2f}%",
+        f"💸 Fees {buy_fee:.4f} / {sell_fee:.4f} • Slippage {buy_slippage:.2f}% / {sell_slippage:.2f}%",
+        f"📊 Volume {_compact_number(row['volume_buy'])} / {_compact_number(row['volume_sell'])}",
         "📖 ORDER BOOK",
-        "",
-        "BUY SIDE",
-        format_order_book(buy_book, title=""),
-        "",
-        "SELL SIDE",
-        format_order_book(sell_book, title=""),
-        "",
-        SECTION_SEPARATOR,
-        "",
-        "💸 FEES",
-        f"Exchange fees: {buy_fee:.4f} / {sell_fee:.4f}",
-        "",
-        "📈 PROFIT ANALYSIS",
-        f"Gross: {gross_profit:.4f}",
-        f"Estimated net: {net_profit:.4f}",
-        "",
-        "⚠️ Risk / transfer verification:",
-        transfer_text,
+        f"🟢 Ask: {format_order_book(buy_book, title='')}",
+        f"🔴 Bid: {format_order_book(sell_book, title='')}",
+        f"📊 Depth {len(buy_book)} / {len(sell_book)} levels • Gross {_compact_number(gross_profit, 4)}",
+        "🛡 TRANSFER",
+        transfer_text.replace("\n", " • "),
     ]
     return "\n".join(lines)
 
 
 def format_paper_trade(opportunity, *, buy_price: float, sell_price: float, size: float, expected_gross: float, estimated_net: float, profit: float) -> str:
     lines = [
-        "🧪 PAPER TRADE",
-        "",
-        SECTION_SEPARATOR,
-        "",
-        f"🪙 {opportunity.symbol}",
-        "",
-        "🟢 BUY",
-        f"{opportunity.buy_exchange} @ {_compact_number(buy_price, 8)}",
-        "",
-        "🔴 SELL",
-        f"{opportunity.sell_exchange} @ {_compact_number(sell_price, 8)}",
-        "",
-        "💵 Simulated capital:",
-        f"{_compact_number(size, 6)}",
-        "",
-        "📈 Expected gross:",
-        f"{_compact_number(expected_gross, 6)}",
-        "",
-        "💰 Estimated net:",
-        f"{_compact_number(estimated_net, 6)}",
-        "",
-        "📊 Estimated P/L:",
-        f"{_compact_number(profit, 6)}",
-        "",
-        "⚠️ This is a simulation. No real funds are used.",
+        f"🧪 PAPER TRADE • {opportunity.symbol}",
+        f"🟢 {opportunity.buy_exchange} {_compact_number(buy_price, 8)} → 🔴 {opportunity.sell_exchange} {_compact_number(sell_price, 8)}",
+        f"💵 Size {_compact_number(size, 6)} • 📈 Gross {_compact_number(expected_gross, 6)}",
+        f"💰 Net {_compact_number(estimated_net, 6)} • 📊 P/L {_compact_number(profit, 6)}",
+        "⚠️ Simulation only • no real funds used",
     ]
     return "\n".join(lines)
 

@@ -3,6 +3,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from app.exchanges.base import Opportunity
 from app.ui import (
     format_opportunity_card,
+    format_opportunity_details,
     format_paper_trade,
     format_scan_summary,
     opportunity_buttons,
@@ -19,8 +20,10 @@ def test_format_opportunity_card_has_key_sections():
     assert "ENA3L/USDT" in card
     assert "BUY" in card
     assert "SELL" in card
-    assert "Gross spread" in card or "Gross spread:" in card
-    assert "TRANSFER" in card or "Review Details" in card
+    assert "Spread" in card
+    assert "Net" in card
+    assert "Transfer" in card
+    assert "\n\n" not in card
 
 
 def test_format_scan_summary_includes_summary_and_top_items():
@@ -28,9 +31,9 @@ def test_format_scan_summary_includes_summary_and_top_items():
         _opp(symbol="MSFT3L/USDT", raw_spread=99.108, net_profit=24.5),
         _opp(symbol="ENA3L/USDT", raw_spread=87.946, net_profit=19.1),
     ], exchange_count=15, opportunities_found=644, matching_selected=644, results_shown=10)
-    assert "ARBITRAGE SCAN" in summary
-    assert "Exchanges checked: 15" in summary
-    assert "Opportunities found: 644" in summary
+    assert "SCAN COMPLETE" in summary
+    assert "15 exchanges" in summary
+    assert "644 found" in summary
     assert "MSFT3L/USDT" in summary
     assert "1️⃣" in summary
 
@@ -48,3 +51,19 @@ def test_opportunity_buttons_keep_callback_ids():
     data = [item.callback_data for row in buttons.inline_keyboard for item in row]
     assert "details:abc123" in data
     assert "paper:abc123" in data
+
+
+def test_details_and_background_alerts_are_compact():
+    opportunity = _opp()
+    details = format_opportunity_details(
+        {"symbol": opportunity.symbol, "buy_exchange": opportunity.buy_exchange, "sell_exchange": opportunity.sell_exchange,
+         "raw_spread": opportunity.raw_spread, "volume_buy": opportunity.volume_buy, "volume_sell": opportunity.volume_sell},
+        0.0025, 0.0048, 0.001, 0.001, 2.3, 2.1, 0.1, 0.2,
+        "✅ Matching route: ERC20\n🟢 Buy deposit: ERC20\n🔴 Sell withdrawal: ERC20",
+        [[0.0025, 100]], [[0.0048, 100]],
+    )
+    alert = format_opportunity_card(opportunity, "stable-id", "🚨 NEW ARBITRAGE")
+    assert "ORDER BOOK" in details
+    assert "TRANSFER" in details
+    assert "\n\n" not in details
+    assert "stable-id" not in alert

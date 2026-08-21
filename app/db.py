@@ -37,8 +37,9 @@ def now() -> str:
 
 
 class Database:
-    def __init__(self, path: str):
+    def __init__(self, path: str, opportunity_ttl_seconds: int = 300):
         self.path = path
+        self.opportunity_ttl_seconds = opportunity_ttl_seconds
         self.connection: aiosqlite.Connection | None = None
 
     async def connect(self) -> None:
@@ -243,7 +244,16 @@ class Database:
 
     async def get_opportunity(self, opportunity_id: str) -> aiosqlite.Row | None:
         cursor = await self._db().execute("SELECT * FROM opportunities WHERE id = ?", (opportunity_id,))
-        return await cursor.fetchone()
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        try:
+            created_at = datetime.fromisoformat(row["created_at"])
+        except (TypeError, ValueError):
+            return None
+        if (datetime.now(UTC) - created_at).total_seconds() > self.opportunity_ttl_seconds:
+            return None
+        return row
 
     async def increment_stat(self, key: str, amount: int = 1) -> None:
         await self._db().execute("INSERT INTO stats(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=value+excluded.value", (key, amount))

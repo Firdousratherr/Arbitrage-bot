@@ -11,6 +11,7 @@ from telegram.ext import (CallbackQueryHandler, CommandHandler, ContextTypes, Co
                           MessageHandler, filters as telegram_filters)
 
 from .db import DEFAULT_FILTERS, Database
+from .exchanges.base import Opportunity
 from .filters import matches, parse_float, user_filters
 from .maintenance import MaintenanceAssistant
 from .scanner import opportunity_id
@@ -81,6 +82,7 @@ def build_handlers(db: Database, admin_ids: set[int], exchange_names: list[str],
         CallbackQueryHandler(exchange_confirm, pattern=r"^exchange_done$"),
         CallbackQueryHandler(opportunity_details, pattern=r"^details:"),
         CallbackQueryHandler(paper_trade_callback, pattern=r"^paper:"),
+        CallbackQueryHandler(opportunity_back, pattern=r"^back:"),
         CallbackQueryHandler(leaderboard_callback, pattern=r"^leaderboard:"),
         CallbackQueryHandler(maintenance_callback, pattern=r"^maintenance:"),
     ]
@@ -431,9 +433,10 @@ async def opportunity_details(update, context):
     if not await db.active_vip(query.from_user.id):
         await query.edit_message_text("This feature requires active VIP access.")
         return
+    await query.edit_message_text("⏳ Loading order book…")
     row = await db.get_opportunity(query.data.split(":", 1)[1])
     if not row:
-        await query.edit_message_text("Opportunity has expired.")
+        await query.edit_message_text("⚠️ Opportunity expired\nRun /scan for fresh data.")
         return
     exchanges = context.application.bot_data.get("exchanges", {})
     buy_exchange = exchanges.get(row["buy_exchange"])
@@ -475,7 +478,44 @@ async def opportunity_details(update, context):
     except Exception:
         logger.exception("live details failed for %s", row["id"])
         message = "⚠️ Live order-book data is temporarily unavailable. Re-check this opportunity later."
-    await query.edit_message_text(message, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Paper Trade", callback_data=f"paper:{row['id']}")]]))
+    await query.edit_message_text(
+        message,
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔄 Refresh", callback_data=f"details:{row['id']}"), InlineKeyboardButton("📄 Paper Trade", callback_data=f"paper:{row['id']}")],
+            [InlineKeyboardButton("⬅️ Back", callback_data=f"back:{row['id']}")],
+        ]),
+    )
+
+
+def _opportunity_from_row(row) -> Opportunity:
+    return Opportunity(
+        symbol=row["symbol"],
+        buy_exchange=row["buy_exchange"],
+        sell_exchange=row["sell_exchange"],
+        buy_price=row["buy_price"],
+        sell_price=row["sell_price"],
+        raw_spread=row["raw_spread"],
+        net_profit=row["net_profit"],
+        volume_buy=row["volume_buy"] or 0,
+        volume_sell=row["volume_sell"] or 0,
+        verified=bool(row["verified"]),
+        loose_mode=bool(row["loose_mode"]),
+        metadata=json.loads(row["payload"] or "{}"),
+    )
+
+
+async def opportunity_back(update, context):
+    query = update.callback_query
+    await query.answer()
+    row = await get_db(context).get_opportunity(query.data.split(":", 1)[1])
+    if not row:
+        await query.edit_message_text("⚠️ Opportunity expired\nRun /scan for fresh data.")
+        return
+    identifier = row["id"]
+    await query.edit_message_text(
+        format_opportunity_card(_opportunity_from_row(row), identifier),
+        reply_markup=opportunity_buttons(identifier),
+    )
 
 
 def _format_transfer_checks(metadata: dict) -> str:
@@ -505,9 +545,10 @@ async def paper_trade_callback(update, context):
     if not await db.active_vip(query.from_user.id):
         await query.answer("Active VIP access required.", show_alert=True)
         return
+    await query.edit_message_text("⏳ Preparing paper trade…")
     row = await db.get_opportunity(query.data.split(":", 1)[1])
     if not row:
-        await query.answer("Opportunity has expired.", show_alert=True)
+        await query.edit_message_text("⚠️ Opportunity expired\nRun /scan for fresh data.")
         return
     user = await db.get_user(query.from_user.id)
     size = user_filters(user)["max_trade_size"]
@@ -520,7 +561,7 @@ async def paper_trade_callback(update, context):
     )
     await db._db().commit()
     message = format_paper_trade(
-        type("OpportunityShim", (), {"symbol": row["symbol"], "buy_exchange": row["buy_exchange"], "sell_exchange": row["sell_exchange"]})(),
+        _opportunity_from_row(row),
         buy_price=row["buy_price"],
         sell_price=row["sell_price"],
         size=size,
@@ -528,7 +569,10 @@ async def paper_trade_callback(update, context):
         estimated_net=row["net_profit"],
         profit=profit,
     )
-    await query.message.reply_text(message)
+    await query.edit_message_text(
+        message,
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data=f"back:{row['id']}")]]),
+    )
 
 
 def _book_fill(levels, size: float, *, ascending: bool) -> tuple[float, float]:
@@ -722,7 +766,7 @@ async def scan_command(update, context):
     if not scanner:
         await update.effective_message.reply_text("Scanner is still starting. Try again shortly.")
         return
-    await update.effective_message.reply_text("🔎 Scanning active exchanges...")
+    await update.effective_message.reply_text(f"🔍 Scanning {len(scanner.exchanges)} exchanges…")
     user = await get_db(context).get_user(update.effective_user.id)
     preferences = user_filters(user)
     selected = set(json.loads(user["selected_exchanges"] or "[]"))
@@ -750,10 +794,13 @@ async def scan_command(update, context):
         results_shown=len(visible),
     )
     await update.effective_message.reply_text(summary)
+    db = get_db(context)
     for item in visible:
+        identifier = opportunity_id(item)
+        await db.save_opportunity(identifier, item)
         await update.effective_message.reply_text(
-            format_opportunity_card(item, opportunity_id(item)),
-            reply_markup=opportunity_buttons(opportunity_id(item)),
+            format_opportunity_card(item, identifier),
+            reply_markup=opportunity_buttons(identifier),
         )
 
 

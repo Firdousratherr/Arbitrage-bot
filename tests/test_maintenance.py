@@ -154,6 +154,40 @@ def test_provider_http_429_is_ratelimit(monkeypatch):
         asyncio.run(assistant._request("openai/gpt-oss-120b", "hello"))
 
 
+def test_provider_http_413_retries_with_reduced_context(monkeypatch):
+    assistant = MaintenanceAssistant("https://api.groq.com/openai/v1", "key", "openai/gpt-oss-120b")
+    prompts = []
+
+    class FakeAPIStatusError(Exception):
+        def __init__(self, body, status_code=413):
+            self.body = body
+            self.status_code = status_code
+
+    class FakeMessage:
+        content = "recovered"
+
+    class FakeChoice:
+        message = FakeMessage()
+
+    class FakeResponse:
+        choices = [FakeChoice()]
+
+    class FakeClient:
+        class chat:
+            class completions:
+                @staticmethod
+                async def create(**kwargs):
+                    prompts.append(kwargs["messages"][1]["content"])
+                    if len(prompts) == 1:
+                        raise FakeAPIStatusError(json.dumps({"error": {"message": "too many tokens"}}))
+                    return FakeResponse()
+
+    monkeypatch.setattr(assistant, "_client", lambda: FakeClient())
+    assert asyncio.run(assistant._request("openai/gpt-oss-120b", "x" * 30000)) == "recovered"
+    assert len(prompts) == 2
+    assert len(prompts[1]) < len(prompts[0])
+
+
 def test_fallback_model_used_when_primary_rejected(monkeypatch):
     assistant = MaintenanceAssistant("https://api.groq.com/openai/v1", "key", "openai/gpt-oss-120b", "openai/gpt-oss-20b")
     calls = []

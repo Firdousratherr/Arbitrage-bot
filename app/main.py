@@ -25,10 +25,16 @@ logger = logging.getLogger(__name__)
 def run_app() -> None:
     settings = get_settings()
     configure_logging(settings.log_level, settings.ai_max_log_entries)
-    db = Database(settings.database_path)
+    db = Database(settings.database_path, settings.opportunity_ttl_seconds)
     exchanges = {}
     scanner = None
-    maintenance = MaintenanceAssistant(settings.ai_api_url, settings.ai_api_key, settings.ai_model, settings.ai_fallback_model)
+    maintenance = MaintenanceAssistant(
+        settings.ai_api_url,
+        settings.ai_api_key,
+        settings.ai_model,
+        settings.ai_fallback_model,
+        settings.ai_max_input_tokens,
+    )
     logger.info(
         "AI maintenance configured: %s%s",
         maintenance.configured,
@@ -186,12 +192,12 @@ def _matching_network(buy_meta: dict, sell_meta: dict) -> str | None:
 async def _send_alert(db: Database, user_id: int, opportunity, identifier: str, application: Application) -> None:
     message = format_background_alert(opportunity, identifier)
     try:
+        await db.save_opportunity(identifier, opportunity)
         await application.bot.send_message(
             user_id,
             message,
             reply_markup=opportunity_buttons(identifier),
         )
-        await db.save_opportunity(identifier, opportunity)
         await db.increment_stat("alerts_sent")
     except Exception:
         logger.exception("failed to alert user %s", user_id)
