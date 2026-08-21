@@ -51,7 +51,7 @@ python3.11 -m venv .venv
 
 Set `TELEGRAM_BOT_TOKEN`, a comma-separated `ADMIN_IDS`, and `ADMIN_SECRET_KEY` in `.env`. An allowlisted admin must run `/admin 8767` before using admin commands. API credentials are optional for public ticker scanning; add exchange-specific credentials only when private endpoints are required.
 
-Optional AI maintenance support uses an OpenAI-compatible endpoint. Set `AI_API_URL`, `AI_API_KEY`, and `AI_MODEL` to enable `/diagnose` and `/fixerror`. These commands are admin-only. The assistant sends recent redacted errors and bounded application source context to the configured endpoint. `/fixerror` creates a proposal; `/approvefix PATCH_ID` validates it with `git apply --check` and saves it under `logs/ai-proposals/` for manual review. The bot never applies, restarts, or deploys AI-generated code automatically.
+Optional AI maintenance support uses an OpenAI-compatible endpoint. Set `AI_API_URL`, `AI_API_KEY`, and `AI_MODEL` to enable `/diagnose` and `/fixerror`; `AI_FALLBACK_MODEL` is optional. These commands are admin-only. The assistant sends recent redacted errors and bounded application source context to the configured endpoint. `/fixerror` creates and validates a structured proposal, `/validatefix PATCH_ID` revalidates it, `/rejectfix PATCH_ID` rejects it, and `/approvefix PATCH_ID` applies it only after explicit admin approval. Protected files such as `.env`, Docker credentials, logs, and the database cannot be patched. Syntax and local import health checks run after application; failures trigger automatic reverse rollback. Restarting or rebuilding the Docker image remains an explicit deployment operation reported to the administrator.
 
 Run with:
 

@@ -27,7 +27,7 @@ def run_app() -> None:
     db = Database(settings.database_path)
     exchanges = {}
     scanner = None
-    maintenance = MaintenanceAssistant(settings.ai_api_url, settings.ai_api_key, settings.ai_model)
+    maintenance = MaintenanceAssistant(settings.ai_api_url, settings.ai_api_key, settings.ai_model, settings.ai_fallback_model)
     logger.info(
         "AI maintenance configured: %s%s",
         maintenance.configured,

@@ -64,6 +64,8 @@ def build_handlers(db: Database, admin_ids: set[int], exchange_names: list[str],
         CommandHandler("diagnose", admin_only(db, admin_ids, diagnose)),
         CommandHandler("fixerror", admin_only(db, admin_ids, fixerror)),
         CommandHandler("patchstatus", admin_only(db, admin_ids, patchstatus)),
+        CommandHandler("validatefix", admin_only(db, admin_ids, validatefix)),
+        CommandHandler("rejectfix", admin_only(db, admin_ids, rejectfix)),
         CommandHandler("approvefix", admin_only(db, admin_ids, approvefix)),
     ]
     callbacks = [
@@ -72,6 +74,7 @@ def build_handlers(db: Database, admin_ids: set[int], exchange_names: list[str],
         CallbackQueryHandler(opportunity_details, pattern=r"^details:"),
         CallbackQueryHandler(paper_trade_callback, pattern=r"^paper:"),
         CallbackQueryHandler(leaderboard_callback, pattern=r"^leaderboard:"),
+        CallbackQueryHandler(maintenance_callback, pattern=r"^maintenance:"),
     ]
     return [registration, *commands, *admin_commands, *callbacks]
 
@@ -265,7 +268,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             "/diagnose - summarize recent bot errors with AI",
             "/fixerror ISSUE - propose a patch for a reported issue; never auto-applies",
             "/patchstatus - list pending patch proposals",
-            "/approvefix PATCH_ID - save a patch artifact for manual review",
+            "/validatefix PATCH_ID - validate a proposed patch",
+            "/approvefix PATCH_ID - apply a validated patch (admin approval required)",
+            "/rejectfix PATCH_ID - reject a proposed patch",
         ])
     await update.message.reply_text("\n".join(lines))
 
@@ -616,6 +621,7 @@ async def aistatus(update, context):
     if service.configured:
         await update.effective_message.reply_text(
             f"✅ AI maintenance is configured.\nEndpoint: {service.api_url}\nModel: {service.model}"
+            + (f"\nFallback: {service.fallback_model}" if service.fallback_model else "")
         )
         return
     missing = ", ".join(service.missing_settings) or "unknown configuration error"
@@ -629,22 +635,57 @@ async def fixerror(update, context):
     service = maintenance_service(context)
     issue = " ".join(context.args).strip()
     try:
-        _, result = await service.propose_fix(issue)
+        proposal_id, result = await service.propose_fix(issue)
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("Validate", callback_data=f"maintenance:validate:{proposal_id}"),
+            InlineKeyboardButton("Approve", callback_data=f"maintenance:approve:{proposal_id}"),
+            InlineKeyboardButton("Reject", callback_data=f"maintenance:reject:{proposal_id}"),
+        ]])
     except Exception as exc:
         logger.exception("AI fix proposal failed")
         result = f"❌ AI fix proposal failed: {type(exc).__name__}: {exc}"
-    await update.effective_message.reply_text(result[:3900])
+        keyboard = None
+    await update.effective_message.reply_text(result[:3900], reply_markup=keyboard)
 
 
 async def patchstatus(update, context):
     await update.effective_message.reply_text(maintenance_service(context).status())
 
 
+async def validatefix(update, context):
+    if len(context.args) != 1:
+        await update.effective_message.reply_text("Usage: /validatefix PATCH_ID")
+        return
+    await update.effective_message.reply_text(maintenance_service(context).validate(context.args[0]))
+
+
+async def rejectfix(update, context):
+    if len(context.args) != 1:
+        await update.effective_message.reply_text("Usage: /rejectfix PATCH_ID")
+        return
+    await update.effective_message.reply_text(maintenance_service(context).reject(context.args[0]))
+
+
 async def approvefix(update, context):
     if len(context.args) != 1:
-        await update.effective_message.reply_text("Usage: /approvefix PATCH_ID\nThis saves the patch for manual review; it does not apply it automatically.")
+        await update.effective_message.reply_text("Usage: /approvefix PATCH_ID\nThis applies a previously validated patch.")
         return
     await update.effective_message.reply_text(maintenance_service(context).approve(context.args[0]))
+
+
+async def maintenance_callback(update, context):
+    query = update.callback_query
+    if query.from_user.id not in context.application.bot_data["admin_ids"] or not context.user_data.get("admin_unlocked"):
+        await query.answer("Admin access required.", show_alert=True)
+        return
+    await query.answer()
+    _, action, proposal_id = query.data.split(":", 2)
+    service = maintenance_service(context)
+    actions = {"validate": service.validate, "approve": service.approve, "reject": service.reject}
+    if action not in actions:
+        await query.edit_message_text("Unknown maintenance action.")
+        return
+    await query.edit_message_text(actions[action](proposal_id))
 
 
 async def scan_command(update, context):

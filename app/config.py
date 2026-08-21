@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     ai_api_url: str = ""
     ai_api_key: str = ""
     ai_model: str = ""
+    ai_fallback_model: str = ""
     ai_max_log_entries: int = Field(default=40, ge=1, le=500)
     database_path: str = "data/arbitrage.sqlite3"
     log_level: str = "INFO"
