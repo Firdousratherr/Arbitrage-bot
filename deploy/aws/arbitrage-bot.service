@@ -9,11 +9,14 @@ WorkingDirectory=/opt/arbitrage-bot
 EnvironmentFile=/opt/arbitrage-bot/.env
 ExecStartPre=/usr/bin/mkdir -p /opt/arbitrage-bot/data /opt/arbitrage-bot/logs
 ExecStartPre=/usr/bin/chown -R 10001:10001 /opt/arbitrage-bot/data /opt/arbitrage-bot/logs
+ExecStartPre=/usr/bin/chown -R 10001:10001 /opt/arbitrage-bot
 ExecStartPre=-/usr/bin/docker rm arbitrage-bot
 ExecStart=/usr/bin/docker run --name arbitrage-bot --restart=always \
   --env-file /opt/arbitrage-bot/.env \
   -v /opt/arbitrage-bot/data:/app/data \
   -v /opt/arbitrage-bot/logs:/app/logs \
+  -v /opt/arbitrage-bot:/maintenance/repo:rw \
+  -e MAINTENANCE_REPO_PATH=/maintenance/repo \
   arbitrage-bot:latest
 ExecStop=/usr/bin/docker stop -t 30 arbitrage-bot
 Restart=always

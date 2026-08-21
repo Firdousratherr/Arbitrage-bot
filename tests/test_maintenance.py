@@ -270,6 +270,13 @@ def test_repository_discovery_excludes_sensitive_files(tmp_path):
     assert assistant.search_repository("investigate_error")[0]["path"] == "app/feature.py"
 
 
+def test_repository_context_reads_the_matched_source_window():
+    assistant = MaintenanceAssistant("", "", "", repo_path=str(Path.cwd()))
+    context = assistant.repository_context("opportunity_details")
+    assert "async def opportunity_details" in context
+    assert "CallbackQueryHandler" in context
+
+
 def test_prompt_budget_is_below_configured_limit(monkeypatch):
     assistant = MaintenanceAssistant("https://api.groq.com/openai/v1", "key", "model", max_input_tokens=5500)
     captured = []

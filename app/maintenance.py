@@ -137,6 +137,27 @@ class MaintenanceAssistant:
         root = self._ensure_repo()
         return [str(path.relative_to(root)) for path in self._repository_files()]
 
+    def _safe_repository_path(self, relative_path: str) -> Path:
+        root = self._ensure_repo()
+        candidate = (root / relative_path).resolve()
+        if not candidate.is_relative_to(root) or self._is_protected_path(candidate.relative_to(root)):
+            raise MaintenanceError("Repository path is outside the permitted readable files.")
+        if not candidate.is_file():
+            raise MaintenanceError(f"Repository file not found: {relative_path}")
+        return candidate
+
+    def read_repository_file(self, relative_path: str, start_line: int = 1, end_line: int = 240) -> str:
+        path = self._safe_repository_path(relative_path)
+        if path.stat().st_size > self.MAX_FILE_BYTES:
+            raise MaintenanceError("Repository file is too large for a bounded read.")
+        start = max(1, start_line)
+        end = max(start, min(end_line, start + 239))
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        return "\n".join(
+            f"{number}: {self._redact(line)[:1000]}"
+            for number, line in enumerate(lines[start - 1:end], start)
+        )
+
     def search_repository(self, query: str, max_results: int = 40) -> list[dict[str, Any]]:
         root = self._ensure_repo()
         terms = [term.lower() for term in re.findall(r"[A-Za-z0-9_./:-]+", query) if len(term) > 1]
@@ -169,6 +190,8 @@ class MaintenanceAssistant:
             snippets = []
             lines = text.splitlines()
             matched_lines = [index for index, line in enumerate(lines) if any(term in line.lower() for term in terms)]
+            if len(matched_lines) > 8:
+                matched_lines = matched_lines[:4] + matched_lines[-4:]
             included_lines = set()
             for index in matched_lines:
                 for nearby in range(max(0, index - 2), min(len(lines), index + 3)):
@@ -221,9 +244,25 @@ class MaintenanceAssistant:
         sections = ["Repository: " + str(self.repo_path), "Files discovered: " + str(len(self.list_repository_files()))]
         sections.append("Relevant search results:")
         for item in matches:
-            sections.append(f"[{item['score']}] {item['path']}\n" + "\n".join(item["snippets"]))
+            line_numbers = [
+                int(snippet.split(":", 1)[0])
+                for snippet in item["snippets"]
+                if snippet.split(":", 1)[0].isdigit()
+            ]
+            first_match = min(line_numbers or [1])
+            last_match = max(line_numbers or [120])
+            first_line = max(1, first_match - 12)
+            source_window = self.read_repository_file(item["path"], first_line, first_match + 60)
+            if last_match > first_match + 60:
+                source_window += "\n... [middle of file omitted] ...\n" + self.read_repository_file(
+                    item["path"], max(first_match + 61, last_match - 24), last_match + 60
+                )
+            sections.append(
+                f"[{item['score']}] {item['path']}\n"
+                + source_window
+            )
         sections.append("Git context:\n" + self._git_context(paths))
-        return "\n\n".join(sections)
+        return self._fit_prompt("\n\n".join(sections))
 
     async def diagnose(self) -> str:
         report = self.error_report()
@@ -304,9 +343,13 @@ class MaintenanceAssistant:
             proposal["status"] = "invalid"
             return f"Validation failed:\n{self._redact(check.stderr or check.stdout)[-1200:]}"
         syntax = self._run(self.SAFE_COMMANDS["syntax"], cwd=self.repo_path)
-        result = "git apply --check: passed; Python syntax: " + ("passed" if syntax.returncode == 0 else "failed")
+        if syntax.returncode:
+            result = "git apply --check: passed; Python syntax: failed"
+        else:
+            tests = self._run(self.SAFE_COMMANDS["tests"], cwd=self.repo_path)
+            result = "git apply --check: passed; Python syntax: passed; Tests: " + ("passed" if tests.returncode == 0 else "failed")
         proposal["validation"] = result
-        proposal["status"] = "validated" if syntax.returncode == 0 else "invalid"
+        proposal["status"] = "validated" if syntax.returncode == 0 and "Tests: passed" in result else "invalid"
         self._save(proposal)
         logger.info("maintenance proposal %s validation=%s", proposal_id, proposal["status"])
         return result
@@ -402,9 +445,14 @@ class MaintenanceAssistant:
         limit = max_chars or max(4000, (self.max_input_tokens - 250) * 4)
         if len(prompt) <= limit:
             return prompt
-        head = int(limit * 0.65)
-        tail = limit - head
-        return prompt[:head] + "\n\n[context trimmed to token budget]\n\n" + prompt[-tail:]
+        section = max(1, (limit - 80) // 3)
+        return (
+            prompt[:section]
+            + "\n\n[context middle preserved; unrelated content trimmed]\n\n"
+            + prompt[len(prompt) // 2 - section // 2:len(prompt) // 2 + section // 2]
+            + "\n\n[context tail preserved]\n\n"
+            + prompt[-section:]
+        )
 
     @staticmethod
     def _redact(value: str) -> str:
