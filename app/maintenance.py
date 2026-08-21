@@ -13,6 +13,19 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+
+_SUPPORTED_TEMPERATURE_MODELS = (
+    "gpt-oss",
+    "llama",
+    "mistral",
+    "mixtral",
+    "gemma",
+    "qwen",
+    "deepseek",
+    "command-r",
+    "openai/",
+)
+
 from .logging_setup import recent_errors
 
 logger = logging.getLogger(__name__)
@@ -67,11 +80,32 @@ class MaintenanceAssistant:
         report = self.error_report()
         if not self.configured:
             return f"AI maintenance is not configured. Missing or invalid: {', '.join(self.missing_settings)}.\n\nRecent errors:\n{report}"
-        return await self._ask(
-            "Diagnose this Python Telegram bot error report. Return a concise diagnosis, probable root cause, "
-            "affected files, recommended fix, and confidence. Do not claim changes were made.\n\n"
+        response = await self._ask(
+            "Diagnose this Python Telegram bot error report. Return JSON with exactly these keys: "
+            "summary, probable_root_cause, affected_files, recommended_fix, confidence, model_used. "
+            "The summary must be a short readable statement. affected_files must be an array of app-relative paths. "
+            "recommended_fix must be a concise actionable fix. confidence must be a number from 0 to 1. "
+            "model_used must be the model name used. Do not claim changes were made.\n\n"
             + report + "\n\nApplication source context:\n" + self._source_snapshot()
         )
+        parsed = self._parse_json(response)
+        if isinstance(parsed, dict):
+            summary = str(parsed.get("summary") or parsed.get("diagnosis") or "AI diagnosis unavailable.")
+            probable = str(parsed.get("probable_root_cause") or parsed.get("root_cause") or "Unknown.")
+            affected = parsed.get("affected_files") or []
+            recommended = str(parsed.get("recommended_fix") or parsed.get("fix") or "Review the recent error and inspect the relevant app files.")
+            confidence = parsed.get("confidence", 0.0)
+            model_used = str(parsed.get("model_used") or self.last_model or self.model)
+            files_text = ", ".join(str(item) for item in affected if item) or "No specific file identified"
+            return (
+                f"Summary: {summary}\n\n"
+                f"Probable root cause: {probable}\n\n"
+                f"Affected files: {files_text}\n\n"
+                f"Recommended fix: {recommended}\n\n"
+                f"Confidence: {confidence}\n\n"
+                f"Model used: {model_used}"
+            )
+        return response
 
     async def propose_fix(self, issue: str = "") -> tuple[str, str]:
         if not self.configured:
@@ -206,13 +240,17 @@ class MaintenanceAssistant:
 
     @staticmethod
     def _redact(value: str) -> str:
+        text = str(value)
         patterns = [
             (r"(?i)(authorization\s*[:=]\s*bearer\s+)[^\s]+", r"\1[REDACTED]"),
-            (r"(?i)((?:api[_-]?key|secret|token|password|credential|header)\s*[:=]\s*)[^\s,;]+", r"\1[REDACTED]"),
+            (
+                r"(?i)((?:[A-Za-z0-9_]*?(?:api[_-]?key|secret[_-]?key|secret|token|password|credential|header|auth|exchange[_-][A-Za-z0-9_]*[_-](?:key|secret|password)))\s*[:=]\s*)[^\s,;]+",
+                r"\1[REDACTED]",
+            ),
             (r"(?i)(https?://[^\s/@]+:)[^\s/@]+@", r"\1[REDACTED]@"),
         ]
-        for pattern, replacement in patterns: value = re.sub(pattern, replacement, value)
-        return value
+        for pattern, replacement in patterns: text = re.sub(pattern, replacement, text)
+        return text
 
     @staticmethod
     def _clean_patch(patch: str) -> str:
@@ -258,33 +296,211 @@ class MaintenanceAssistant:
                 f"🧪 Validation\n{validation}\n\nModel: {payload['model']}\nApprove only after review with /approvefix {payload['id']}")
 
     async def _ask(self, prompt: str) -> str:
-        last_error = None
+        attempts: list[tuple[str, str]] = []
         for model in dict.fromkeys(value for value in (self.model, self.fallback_model) if value):
             try:
-                result = await self._request(model, prompt)
+                request_result = self._request(model, prompt)
+                result = await request_result if asyncio.iscoroutine(request_result) or asyncio.isfuture(request_result) else request_result
                 self.last_model = model
+                if len(attempts) == 1:
+                    logger.info("AI maintenance fallback succeeded using model=%s", model)
                 return result
             except MaintenanceError as exc:
-                last_error = exc
-                if not self._should_fallback(str(exc)): break
-        raise MaintenanceError(str(last_error) if last_error else "AI provider request failed.")
+                attempts.append((model, str(exc)))
+                if not self._should_fallback(str(exc)):
+                    break
+                if model != self.fallback_model and self.fallback_model:
+                    logger.warning("AI maintenance primary model failed: %s; trying fallback: %s", model, self.fallback_model)
+                continue
+        primary_message = attempts[0][1] if attempts else "AI provider request failed."
+        if len(attempts) > 1:
+            details = "\n".join(f"{model}: {message}" for model, message in attempts)
+            raise MaintenanceError(f"AI provider failed for all configured models.\n{details}")
+        raise MaintenanceError(primary_message)
+
+    def _supports_temperature(self, model: str) -> bool:
+        normalized = model.lower()
+        return any(token in normalized for token in _SUPPORTED_TEMPERATURE_MODELS)
 
     async def _request(self, model: str, prompt: str) -> str:
-        body = json.dumps({"model": model, "temperature": 0.1, "messages": [
-            {"role": "system", "content": "You are a read-only software maintenance assistant."}, {"role": "user", "content": prompt}
-        ]}).encode("utf-8")
-        endpoint = self.api_url if self.api_url.endswith("/chat/completions") else f"{self.api_url}/chat/completions"
-        request = urllib.request.Request(endpoint, data=body, headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.api_key}"}, method="POST")
+        messages = [
+            {"role": "system", "content": "You are a read-only software maintenance assistant."},
+            {"role": "user", "content": prompt},
+        ]
+        payload: dict[str, Any] = {"model": model, "messages": messages}
+        if self._supports_temperature(model):
+            payload["temperature"] = 0.1
+        body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        endpoint = self.api_url.rstrip("/")
+        if not endpoint.endswith("/chat/completions"):
+            endpoint = f"{endpoint}/chat/completions"
+        request = urllib.request.Request(
+            endpoint,
+            data=body,
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "Authorization": f"Bearer {self.api_key}",
+            },
+            method="POST",
+        )
+
         def call() -> str:
             try:
-                with urllib.request.urlopen(request, timeout=45) as response: payload = json.loads(response.read().decode("utf-8"))
-            except urllib.error.HTTPError as exc: raise MaintenanceError(f"AI provider rejected the request (HTTP {exc.code}).") from exc
-            except (urllib.error.URLError, TimeoutError, OSError) as exc: raise MaintenanceError("AI provider network request failed.") from exc
-            except json.JSONDecodeError as exc: raise MaintenanceError("AI provider returned malformed JSON.") from exc
-            try: return str(payload["choices"][0]["message"]["content"])
-            except (KeyError, IndexError, TypeError) as exc: raise MaintenanceError("AI provider returned an invalid response.") from exc
+                with urllib.request.urlopen(request, timeout=45) as response:
+                    response_body = response.read().decode("utf-8")
+                try:
+                    payload = json.loads(response_body)
+                except json.JSONDecodeError as exc:
+                    raise MaintenanceError("AI provider returned malformed JSON.") from exc
+            except urllib.error.HTTPError as exc:
+                raise self._http_error_to_maintenance_error(exc) from exc
+            except (urllib.error.URLError, TimeoutError, OSError) as exc:
+                raise MaintenanceError(self._classify_network_error(exc)) from exc
+
+            try:
+                choices = payload.get("choices") or []
+                first_choice = choices[0]
+                content = first_choice.get("message", {}).get("content")
+                if content is None:
+                    raise KeyError("missing message content")
+                return str(content)
+            except (KeyError, IndexError, TypeError, AttributeError) as exc:
+                raise MaintenanceError("AI provider returned an invalid response.") from exc
+
         return await asyncio.to_thread(call)
+
+    def _http_error_to_maintenance_error(self, exc: urllib.error.HTTPError) -> MaintenanceError:
+        status_code = getattr(exc, "code", 0)
+        provider_message, provider_code = self._extract_provider_error(exc)
+        sanitized_message = self._redact(provider_message)
+        sanitized_code = self._redact(provider_code)
+        status_text = f"HTTP: {status_code}"
+        if status_code == 401:
+            detail = "AI provider rejected the request."
+            if sanitized_message:
+                detail = f"AI provider rejected the request.\n\n{status_text}\nProvider error: {sanitized_message}\nCode: {sanitized_code or 'unknown'}"
+            return MaintenanceError(detail)
+        if status_code == 403:
+            detail = "AI provider rejected the request."
+            if sanitized_message:
+                detail = f"AI provider rejected the request.\n\n{status_text}\nProvider error: {sanitized_message}\nCode: {sanitized_code or 'unknown'}"
+            return MaintenanceError(detail)
+        if status_code == 404:
+            detail = "AI provider could not find the selected model or endpoint."
+            if sanitized_message:
+                detail = f"AI provider could not find the selected model or endpoint.\n\n{status_text}\nProvider error: {sanitized_message}\nCode: {sanitized_code or 'unknown'}"
+            return MaintenanceError(detail)
+        if status_code == 429:
+            detail = "AI provider rate limit exceeded."
+            if sanitized_message:
+                detail = f"AI provider rate limit exceeded.\n\n{status_text}\nProvider error: {sanitized_message}\nCode: {sanitized_code or 'unknown'}"
+            return MaintenanceError(detail)
+        if status_code in {408, 409, 500, 502, 503}:
+            detail = "AI provider returned a temporary failure."
+            if sanitized_message:
+                detail = f"AI provider returned a temporary failure.\n\n{status_text}\nProvider error: {sanitized_message}\nCode: {sanitized_code or 'unknown'}"
+            return MaintenanceError(detail)
+        if sanitized_message:
+            return MaintenanceError(f"AI provider rejected the request.\n\n{status_text}\nProvider error: {sanitized_message}\nCode: {sanitized_code or 'unknown'}")
+        return MaintenanceError(f"AI provider rejected the request (HTTP {status_code}).")
+
+    @staticmethod
+    def _extract_provider_error(exc: urllib.error.HTTPError) -> tuple[str, str]:
+        body = ""
+        try:
+            raw = exc.read()
+            if isinstance(raw, (bytes, bytearray)):
+                body = raw.decode("utf-8", errors="replace")
+            elif raw is not None:
+                body = str(raw)
+        except Exception:
+            body = ""
+        if not body:
+            return "provider request rejected", str(getattr(exc, "code", "unknown"))
+        try:
+            payload = json.loads(body)
+        except json.JSONDecodeError:
+            return body.strip()[:500], str(getattr(exc, "code", "unknown"))
+        if isinstance(payload, dict):
+            error_block = payload.get("error") or payload
+            if isinstance(error_block, dict):
+                message = str(error_block.get("message") or error_block.get("detail") or "provider request rejected")
+                code = str(error_block.get("code") or error_block.get("type") or "unknown")
+                return message, code
+            message = str(payload.get("message") or payload.get("detail") or "provider request rejected")
+            return message, str(payload.get("code") or "unknown")
+        return str(payload)[:500], str(getattr(exc, "code", "unknown"))
+
+    @staticmethod
+    def _classify_network_error(exc: Exception) -> str:
+        message = str(exc)
+        if "timed out" in message.lower() or "timeout" in message.lower():
+            return "AI provider request timed out."
+        if "name or service not known" in message.lower() or "temporary failure" in message.lower() or "dns" in message.lower():
+            return "AI provider URL could not be resolved. Check AI_API_URL and network connectivity."
+        if "connection" in message.lower() or "refused" in message.lower() or "unreachable" in message.lower():
+            return "AI provider connection failed. Check network access and AI_API_URL."
+        return "AI provider network request failed."
 
     @staticmethod
     def _should_fallback(message: str) -> bool:
-        return any(token in message for token in ("HTTP 401", "HTTP 403", "HTTP 404", "HTTP 408", "HTTP 409", "HTTP 429", "HTTP 500", "HTTP 502", "HTTP 503", "network"))
+        normalized = message.lower()
+        return any(token in normalized for token in (
+            "http 401",
+            "http 403",
+            "http 404",
+            "http 408",
+            "http 409",
+            "http 429",
+            "http 500",
+            "http 502",
+            "http 503",
+            "model not found",
+            "public key",
+            "rate limit",
+            "temporary failure",
+            "network",
+            "timed out",
+            "connection",
+            "access denied",
+            "forbidden",
+            "invalid api key",
+            "model access",
+            "permission",
+        ))
+
+    async def provider_diagnostics(self) -> dict[str, str]:
+        results: dict[str, str] = {"url": self.api_url, "model": self.model, "fallback_model": self.fallback_model or "not configured"}
+        if not self.api_url:
+            results["status"] = "URL problem: AI_API_URL is missing."
+            return results
+        if not self.api_key:
+            results["status"] = "credential problem: AI_API_KEY is missing."
+            return results
+        try:
+            await self._request(self.model, "Verify provider connectivity and authentication.")
+        except MaintenanceError as exc:
+            message = str(exc)
+            if "HTTP: 401" in message or "invalid api key" in message.lower():
+                results["status"] = "credential problem: the configured API key was rejected."
+            elif "HTTP: 403" in message or "forbidden" in message.lower() or "access denied" in message.lower() or "permission" in message.lower():
+                results["status"] = "permission problem: the provider rejected access to the configured model."
+            elif "HTTP: 404" in message or "model not found" in message.lower():
+                results["status"] = "model problem: the configured model is unavailable or not permitted."
+            elif "rate limit" in message.lower():
+                results["status"] = "rate-limit problem: the provider throttled the request."
+            elif "timed out" in message.lower() or "network" in message.lower() or "URL could not be resolved" in message.lower() or "connection" in message.lower():
+                results["status"] = "network problem: the AI provider could not be reached."
+            else:
+                results["status"] = "provider problem: " + self._redact(message)[:300]
+            return results
+        results["status"] = "ok: provider connectivity and model access are working for the primary model."
+        if self.fallback_model:
+            try:
+                await self._request(self.fallback_model, "Verify fallback model connectivity.")
+            except MaintenanceError as exc:
+                results["fallback_status"] = "fallback model unavailable: " + self._redact(str(exc))[:300]
+            else:
+                results["fallback_status"] = "fallback model is reachable."
+        return results

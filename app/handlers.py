@@ -618,10 +618,13 @@ async def diagnose(update, context):
 
 async def aistatus(update, context):
     service = maintenance_service(context)
+    diagnostics = await service.provider_diagnostics() if service.api_url and service.api_key else {"status": "not configured"}
     if service.configured:
+        status_line = diagnostics.get("status", "ok: provider connectivity and model access are working for the primary model.")
         await update.effective_message.reply_text(
             f"✅ AI maintenance is configured.\nEndpoint: {service.api_url}\nModel: {service.model}"
             + (f"\nFallback: {service.fallback_model}" if service.fallback_model else "")
+            + f"\nStatus: {status_line}"
         )
         return
     missing = ", ".join(service.missing_settings) or "unknown configuration error"
