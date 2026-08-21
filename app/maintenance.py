@@ -371,42 +371,21 @@ class MaintenanceAssistant:
         return await asyncio.to_thread(call)
 
     def _http_error_to_maintenance_error(self, exc: urllib.error.HTTPError) -> MaintenanceError:
-        status_code = getattr(exc, "code", 0)
-        provider_message, provider_code = self._extract_provider_error(exc)
+        status_code = int(getattr(exc, "code", 0) or 0)
+        provider_message, provider_type, provider_code = self._extract_provider_error(exc)
         sanitized_message = self._redact(provider_message)
+        sanitized_type = self._redact(provider_type)
         sanitized_code = self._redact(provider_code)
-        status_text = f"HTTP: {status_code}"
-        if status_code == 401:
-            detail = "AI provider rejected the request."
-            if sanitized_message:
-                detail = f"AI provider rejected the request.\n\n{status_text}\nProvider error: {sanitized_message}\nCode: {sanitized_code or 'unknown'}"
-            return MaintenanceError(detail)
-        if status_code == 403:
-            detail = "AI provider rejected the request."
-            if sanitized_message:
-                detail = f"AI provider rejected the request.\n\n{status_text}\nProvider error: {sanitized_message}\nCode: {sanitized_code or 'unknown'}"
-            return MaintenanceError(detail)
-        if status_code == 404:
-            detail = "AI provider could not find the selected model or endpoint."
-            if sanitized_message:
-                detail = f"AI provider could not find the selected model or endpoint.\n\n{status_text}\nProvider error: {sanitized_message}\nCode: {sanitized_code or 'unknown'}"
-            return MaintenanceError(detail)
-        if status_code == 429:
-            detail = "AI provider rate limit exceeded."
-            if sanitized_message:
-                detail = f"AI provider rate limit exceeded.\n\n{status_text}\nProvider error: {sanitized_message}\nCode: {sanitized_code or 'unknown'}"
-            return MaintenanceError(detail)
-        if status_code in {408, 409, 500, 502, 503}:
-            detail = "AI provider returned a temporary failure."
-            if sanitized_message:
-                detail = f"AI provider returned a temporary failure.\n\n{status_text}\nProvider error: {sanitized_message}\nCode: {sanitized_code or 'unknown'}"
-            return MaintenanceError(detail)
-        if sanitized_message:
-            return MaintenanceError(f"AI provider rejected the request.\n\n{status_text}\nProvider error: {sanitized_message}\nCode: {sanitized_code or 'unknown'}")
-        return MaintenanceError(f"AI provider rejected the request (HTTP {status_code}).")
+
+        detail = ["AI provider request failed.", f"HTTP: {status_code}", f"Provider message: {sanitized_message or 'provider request rejected'}"]
+        if sanitized_type:
+            detail.append(f"Provider type: {sanitized_type}")
+        if sanitized_code:
+            detail.append(f"Provider code: {sanitized_code}")
+        return MaintenanceError("\n".join(detail))
 
     @staticmethod
-    def _extract_provider_error(exc: urllib.error.HTTPError) -> tuple[str, str]:
+    def _extract_provider_error(exc: urllib.error.HTTPError) -> tuple[str, str, str]:
         body = ""
         try:
             raw = exc.read()
@@ -416,21 +395,27 @@ class MaintenanceAssistant:
                 body = str(raw)
         except Exception:
             body = ""
+
         if not body:
-            return "provider request rejected", str(getattr(exc, "code", "unknown"))
+            return "provider request rejected", "", str(getattr(exc, "code", "unknown"))
+
         try:
             payload = json.loads(body)
         except json.JSONDecodeError:
-            return body.strip()[:500], str(getattr(exc, "code", "unknown"))
+            message = body.strip()[:1000]
+            return message or "provider request rejected", "", str(getattr(exc, "code", "unknown"))
+
         if isinstance(payload, dict):
             error_block = payload.get("error") or payload
             if isinstance(error_block, dict):
                 message = str(error_block.get("message") or error_block.get("detail") or "provider request rejected")
-                code = str(error_block.get("code") or error_block.get("type") or "unknown")
-                return message, code
+                error_type = str(error_block.get("type") or "")
+                error_code = str(error_block.get("code") or "")
+                return message, error_type, error_code
             message = str(payload.get("message") or payload.get("detail") or "provider request rejected")
-            return message, str(payload.get("code") or "unknown")
-        return str(payload)[:500], str(getattr(exc, "code", "unknown"))
+            return message, str(payload.get("type") or ""), str(payload.get("code") or "")
+
+        return str(payload)[:1000], "", str(getattr(exc, "code", "unknown"))
 
     @staticmethod
     def _classify_network_error(exc: Exception) -> str:

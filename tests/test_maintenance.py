@@ -78,7 +78,7 @@ def test_provider_http_403_with_json_error(monkeypatch):
         )
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
-    with pytest.raises(MaintenanceError, match="model access denied"):
+    with pytest.raises(MaintenanceError, match=r"Provider message: model access denied"):
         asyncio.run(assistant._request("openai/gpt-oss-120b", "hello"))
 
 
@@ -89,7 +89,7 @@ def test_provider_http_401_is_reported(monkeypatch):
         raise urllib.error.HTTPError(request.full_url, 401, "Unauthorized", {}, io.BytesIO(json.dumps({"error": {"message": "invalid API key"}}).encode()))
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
-    with pytest.raises(MaintenanceError, match="invalid API key"):
+    with pytest.raises(MaintenanceError, match=r"Provider message: invalid API key"):
         asyncio.run(assistant._request("openai/gpt-oss-120b", "hello"))
 
 
@@ -100,7 +100,7 @@ def test_provider_http_404_model_not_found(monkeypatch):
         raise urllib.error.HTTPError(request.full_url, 404, "Not Found", {}, io.BytesIO(json.dumps({"error": {"message": "model not found", "code": "model_not_found"}}).encode()))
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
-    with pytest.raises(MaintenanceError, match="model not found"):
+    with pytest.raises(MaintenanceError, match=r"Provider message: model not found"):
         asyncio.run(assistant._request("openai/gpt-oss-120b", "hello"))
 
 
@@ -111,7 +111,7 @@ def test_provider_http_429_is_ratelimit(monkeypatch):
         raise urllib.error.HTTPError(request.full_url, 429, "Too Many Requests", {}, io.BytesIO(json.dumps({"error": {"message": "rate limit exceeded", "code": "rate_limit_exceeded"}}).encode()))
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
-    with pytest.raises(MaintenanceError, match="rate limit"):
+    with pytest.raises(MaintenanceError, match=r"Provider message: rate limit exceeded"):
         asyncio.run(assistant._request("openai/gpt-oss-120b", "hello"))
 
 
