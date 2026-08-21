@@ -16,8 +16,8 @@ dependencies = [
 [project.scripts]
 arbitrage-bot = "app.main:run"
 
-[tool.setuptools]
-packages = ["app"]
+[tool.setuptools.packages.find]
+include = ["app*"]
 
 [tool.ruff]
 line-length = 100
