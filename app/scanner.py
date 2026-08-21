@@ -27,11 +27,28 @@ class Scanner:
         async with self.semaphore:
             return await exchange.fetch_tickers(symbols)
 
-    async def run_cycle(self, *, require_matching_user: bool = True) -> list[Opportunity]:
-        fetched = await asyncio.gather(*(self._fetch(exchange) for exchange in self.exchanges.values()), return_exceptions=True)
+    async def run_cycle(
+        self,
+        *,
+        require_matching_user: bool = True,
+        exchange_names: set[str] | None = None,
+    ) -> list[Opportunity]:
+        if exchange_names is None and require_matching_user:
+            exchange_names = set()
+            for user in await self.db.list_users("vip"):
+                exchange_names.update(json.loads(user["selected_exchanges"] or "[]"))
+        active_exchanges = {
+            name: exchange
+            for name, exchange in self.exchanges.items()
+            if exchange_names is None or name in exchange_names
+        }
+        if len(active_exchanges) < 2:
+            logger.warning("scan skipped: select at least two active exchanges")
+            return []
+        fetched = await asyncio.gather(*(self._fetch(exchange) for exchange in active_exchanges.values()), return_exceptions=True)
         by_symbol: dict[str, list[Ticker]] = {}
         successful_exchanges = 0
-        for exchange, result in zip(self.exchanges.values(), fetched):
+        for exchange, result in zip(active_exchanges.values(), fetched):
             if isinstance(result, Exception):
                 logger.warning("%s exchange scan failed: %s", exchange.name, result)
                 continue
@@ -62,7 +79,7 @@ class Scanner:
         logger.info(
             "scan complete: %s/%s exchanges returned data, %s symbols, %s opportunities",
             successful_exchanges,
-            len(self.exchanges),
+            len(active_exchanges),
             len(by_symbol),
             len(opportunities),
         )

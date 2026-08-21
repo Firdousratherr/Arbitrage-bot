@@ -1,5 +1,6 @@
 from functools import lru_cache
 import os
+from pathlib import Path
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -22,7 +23,12 @@ class Settings(BaseSettings):
     default_alert_cooldown: int = 300
     enabled_exchanges: str = "xt,kucoin,gateio,mexc,okx,htx,kraken,bitget,bitrue,lbank,coinbase,bitfinex,phemex,cryptocom,poloniex"
 
-    model_config = SettingsConfigDict(env_file=".env", env_prefix="", case_sensitive=False, extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=Path(__file__).resolve().parent.parent / ".env",
+        env_prefix="",
+        case_sensitive=False,
+        extra="ignore",
+    )
 
     @property
     def admin_id_set(self) -> set[int]:

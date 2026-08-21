@@ -11,7 +11,6 @@ from telegram.ext import (CallbackQueryHandler, CommandHandler, ContextTypes, Co
                           MessageHandler, filters as telegram_filters)
 
 from .db import DEFAULT_FILTERS, Database
-from .exchanges.registry import CCXT_NAMES
 from .filters import matches, parse_float, user_filters
 from .maintenance import MaintenanceAssistant
 from .scanner import opportunity_id
@@ -52,6 +51,7 @@ def build_handlers(db: Database, admin_ids: set[int], exchange_names: list[str],
         CommandHandler("papertrade", papertrade), CommandHandler("paperstats", paperstats),
         CommandHandler("leaderboard", leaderboard), CommandHandler("setfeeadjusted", fee_adjusted),
     ]
+    commands.append(CommandHandler("aistatus", admin_only(db, admin_ids, aistatus)))
     admin_commands = [
         CommandHandler("genkey", admin_only(db, admin_ids, genkey)), CommandHandler("revokekey", admin_only(db, admin_ids, revoke_key)),
         CommandHandler("listkeys", admin_only(db, admin_ids, listkeys)), CommandHandler("extendvip", admin_only(db, admin_ids, extend_vip)),
@@ -104,7 +104,7 @@ async def capture_email(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 def exchange_keyboard(context) -> InlineKeyboardMarkup:
     selected = set(context.user_data.get("selected_exchanges", []))
     configured = context.application.bot_data.get("exchange_names", [])
-    names = list(dict.fromkeys([*configured, *CCXT_NAMES]))
+    names = list(dict.fromkeys(configured))
     rows = []
     for index in range(0, len(names), 2):
         row = []
@@ -611,6 +611,20 @@ async def diagnose(update, context):
     await update.effective_message.reply_text(result[:3900])
 
 
+async def aistatus(update, context):
+    service = maintenance_service(context)
+    if service.configured:
+        await update.effective_message.reply_text(
+            f"✅ AI maintenance is configured.\nEndpoint: {service.api_url}\nModel: {service.model}"
+        )
+        return
+    missing = ", ".join(service.missing_settings) or "unknown configuration error"
+    await update.effective_message.reply_text(
+        f"❌ AI maintenance is not configured.\nMissing or invalid: {missing}\n\n"
+        "Set these values in the project .env file, then restart the bot."
+    )
+
+
 async def fixerror(update, context):
     service = maintenance_service(context)
     issue = " ".join(context.args).strip()
@@ -641,10 +655,19 @@ async def scan_command(update, context):
         await update.effective_message.reply_text("Scanner is still starting. Try again shortly.")
         return
     await update.effective_message.reply_text("🔎 Scanning active exchanges...")
-    opportunities = await scanner.run_cycle(require_matching_user=False)
     user = await get_db(context).get_user(update.effective_user.id)
     preferences = user_filters(user)
     selected = set(json.loads(user["selected_exchanges"] or "[]"))
+    active_selected = selected & set(scanner.exchanges)
+    if len(active_selected) < 2:
+        await update.effective_message.reply_text(
+            "❌ Scan needs at least two active selected exchanges.\n"
+            f"Your selection: {', '.join(sorted(selected)) or 'none'}\n"
+            f"Active selection: {', '.join(sorted(active_selected)) or 'none'}\n\n"
+            "Use /exchanges to choose two exchanges currently available to the bot."
+        )
+        return
+    opportunities = await scanner.run_cycle(require_matching_user=False, exchange_names=active_selected)
     selected_candidates = [
         opportunity for opportunity in opportunities
         if opportunity.buy_exchange in selected and opportunity.sell_exchange in selected
@@ -742,7 +765,6 @@ async def health(update, context):
         except Exception as exc:
             results.append(f"{name}: unavailable ({type(exc).__name__})")
     await update.message.reply_text("Exchange health\n" + "\n".join(results))
-
 
 async def revoke_key(update, context):
     if len(context.args) != 1: await update.message.reply_text("Usage: /revokekey KEY"); return

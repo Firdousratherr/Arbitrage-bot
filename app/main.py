@@ -28,6 +28,11 @@ def run_app() -> None:
     exchanges = {}
     scanner = None
     maintenance = MaintenanceAssistant(settings.ai_api_url, settings.ai_api_key, settings.ai_model)
+    logger.info(
+        "AI maintenance configured: %s%s",
+        maintenance.configured,
+        " (missing: " + ", ".join(maintenance.missing_settings) + ")" if not maintenance.configured else "",
+    )
     last_alerts: dict[tuple[int, str, str, str], datetime] = {}
 
     async def alert_opportunities(opportunities) -> None:
