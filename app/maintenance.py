@@ -4,6 +4,8 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
+import os
 import re
 import subprocess
 from collections import OrderedDict
@@ -38,21 +40,27 @@ class MaintenanceError(RuntimeError):
 class MaintenanceAssistant:
     """Approval-gated maintenance operations with a deliberately small command surface."""
 
-    MAX_SOURCE_BYTES = 16_000
-    ALLOWED_FILES = ("app/",)
+    MAX_FILE_BYTES = 200_000
+    PROTECTED_NAMES = {
+        ".env", ".git", "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519",
+    }
+    PROTECTED_MARKERS = ("credential", "secret", "private_key", "private-key")
+    PROTECTED_SUFFIXES = (".pem", ".key", ".p12", ".pfx", ".db", ".sqlite", ".sqlite3")
+    PROTECTED_PATCH_DIRS = {".git", "data", "logs"}
     SAFE_COMMANDS = {
-        "syntax": ["python", "-m", "compileall", "-q", "app"],
+        "syntax": ["python", "-m", "compileall", "-q", "."],
         "tests": ["python", "-m", "pytest", "-q"],
     }
 
-    def __init__(self, api_url: str, api_key: str, model: str, fallback_model: str = "", max_input_tokens: int = 5500):
+    def __init__(self, api_url: str, api_key: str, model: str, fallback_model: str = "", max_input_tokens: int = 5500, repo_path: str = ""):
         self.api_url = api_url.rstrip("/")
         self.api_key = api_key
         self.model = model
         self.fallback_model = fallback_model
         self.max_input_tokens = max_input_tokens
+        self.repo_path = Path(repo_path or os.getenv("MAINTENANCE_REPO_PATH", ".")).expanduser().resolve()
         self.proposals: OrderedDict[str, dict[str, Any]] = OrderedDict()
-        self.proposal_dir = Path("logs/ai-proposals")
+        self.proposal_dir = self.repo_path / "logs/ai-proposals"
         self.last_model = ""
         self._groq_client: AsyncGroq | None = None
 
@@ -91,17 +99,146 @@ class MaintenanceAssistant:
             self._redact(error)[:800] for error in errors[-12:]
         )
 
+    def _ensure_repo(self) -> Path:
+        if not self.repo_path.is_dir():
+            raise MaintenanceError(f"Maintenance repository is unavailable: {self.repo_path}")
+        return self.repo_path
+
+    @classmethod
+    def _is_protected_path(cls, path: Path) -> bool:
+        names = {part.lower() for part in path.parts}
+        filename = path.name.lower()
+        if names & cls.PROTECTED_NAMES or filename.startswith(".env"):
+            return True
+        if filename.endswith(cls.PROTECTED_SUFFIXES):
+            return True
+        return any(marker in filename for marker in cls.PROTECTED_MARKERS)
+
+    @classmethod
+    def _is_protected_patch_path(cls, path: Path) -> bool:
+        return cls._is_protected_path(path) or any(part.lower() in cls.PROTECTED_PATCH_DIRS for part in path.parts)
+
+    def _repository_files(self) -> list[Path]:
+        root = self._ensure_repo()
+        excluded_dirs = {".git", ".venv", "venv", "__pycache__", ".mypy_cache", ".pytest_cache", "node_modules"}
+        files = []
+        for path in root.rglob("*"):
+            if not path.is_file():
+                continue
+            relative = path.relative_to(root)
+            if not path.resolve().is_relative_to(root):
+                continue
+            if any(part.lower() in excluded_dirs for part in relative.parts) or self._is_protected_path(relative):
+                continue
+            files.append(path)
+        return sorted(files, key=lambda path: str(path.relative_to(root)))
+
+    def list_repository_files(self) -> list[str]:
+        root = self._ensure_repo()
+        return [str(path.relative_to(root)) for path in self._repository_files()]
+
+    def search_repository(self, query: str, max_results: int = 40) -> list[dict[str, Any]]:
+        root = self._ensure_repo()
+        terms = [term.lower() for term in re.findall(r"[A-Za-z0-9_./:-]+", query) if len(term) > 1]
+        if not terms:
+            return []
+        status = self._run(["git", "status", "--short"], cwd=root)
+        changed_paths = {
+            line[3:].strip().split(" -> ")[-1]
+            for line in status.stdout.splitlines()
+            if len(line) > 3
+        }
+        matches = []
+        for path in self._repository_files():
+            relative = str(path.relative_to(root))
+            try:
+                raw = path.read_bytes()
+            except OSError:
+                continue
+            if b"\x00" in raw[:4096]:
+                continue
+            text = raw[:self.MAX_FILE_BYTES].decode("utf-8", errors="replace")
+            lowered_path = relative.lower()
+            lowered_text = text.lower()
+            score = sum(lowered_text.count(term) for term in terms)
+            score += sum(8 for term in terms if term in lowered_path)
+            if relative in changed_paths:
+                score += 12
+            if score == 0:
+                continue
+            snippets = []
+            lines = text.splitlines()
+            matched_lines = [index for index, line in enumerate(lines) if any(term in line.lower() for term in terms)]
+            included_lines = set()
+            for index in matched_lines:
+                for nearby in range(max(0, index - 2), min(len(lines), index + 3)):
+                    if nearby in included_lines:
+                        continue
+                    included_lines.add(nearby)
+                    line_number = nearby + 1
+                    line = lines[nearby]
+                    snippets.append(f"{line_number}: {self._redact(line)[:500]}")
+                    if len(snippets) == 12:
+                        break
+                if len(snippets) == 12:
+                    break
+            matches.append({"path": relative, "score": score, "snippets": snippets})
+        matches.sort(key=lambda item: (-item["score"], item["path"]))
+        return matches[:max_results]
+
+    def _git_context(self, paths: list[str]) -> str:
+        root = self._ensure_repo()
+        sections = []
+        for command in (["git", "status", "--short"], ["git", "diff", "--stat"], ["git", "log", "-5", "--oneline"]):
+            result = self._run(command, cwd=root)
+            if result.returncode == 0 and result.stdout.strip():
+                sections.append("$ " + " ".join(command) + "\n" + self._redact(result.stdout[:3000]))
+        if paths:
+            result = self._run(["git", "diff", "--no-ext-diff", "--unified=2", "--", *paths[:12]], cwd=root)
+            if result.returncode == 0 and result.stdout.strip():
+                sections.append("$ git diff -- relevant files\n" + self._redact(result.stdout[:6000]))
+        return "\n\n".join(sections) or "No Git metadata was available."
+
+    def git_status(self) -> str:
+        result = self._run(["git", "status", "--short"], cwd=self._ensure_repo())
+        return self._redact(result.stdout or result.stderr)[:3000]
+
+    def git_diff(self, paths: list[str] | None = None) -> str:
+        command = ["git", "diff", "--no-ext-diff", "--unified=2"]
+        if paths:
+            command.extend(["--", *paths[:20]])
+        result = self._run(command, cwd=self._ensure_repo())
+        return self._redact(result.stdout or result.stderr)[:12000]
+
+    def git_log(self, limit: int = 10) -> str:
+        safe_limit = max(1, min(limit, 50))
+        result = self._run(["git", "log", f"-{safe_limit}", "--oneline"], cwd=self._ensure_repo())
+        return self._redact(result.stdout or result.stderr)[:3000]
+
+    def repository_context(self, query: str) -> str:
+        matches = self.search_repository(query)
+        paths = [item["path"] for item in matches]
+        sections = ["Repository: " + str(self.repo_path), "Files discovered: " + str(len(self.list_repository_files()))]
+        sections.append("Relevant search results:")
+        for item in matches:
+            sections.append(f"[{item['score']}] {item['path']}\n" + "\n".join(item["snippets"]))
+        sections.append("Git context:\n" + self._git_context(paths))
+        return "\n\n".join(sections)
+
     async def diagnose(self) -> str:
         report = self.error_report()
         if not self.configured:
             return f"AI maintenance is not configured. Missing or invalid: {', '.join(self.missing_settings)}.\n\nRecent errors:\n{report}"
+        evidence = self.repository_context(report)
         response = await self._ask(
-            "Diagnose this Python Telegram bot error report. Return JSON with exactly these keys: "
+            "Diagnose this Python Telegram bot error report after investigating the repository evidence below. "
+            "Do not claim insufficient evidence unless the supplied search results and inspected files genuinely "
+            "lack the relevant execution path. Return JSON with exactly these keys: "
             "summary, probable_root_cause, affected_files, recommended_fix, confidence, model_used. "
-            "The summary must be a short readable statement. affected_files must be an array of app-relative paths. "
+            "The summary must be a short readable statement. affected_files must be an array of repository-relative paths. "
             "recommended_fix must be a concise actionable fix. confidence must be a number from 0 to 1. "
             "model_used must be the model name used. Do not claim changes were made.\n\n"
-            + report + "\n\nApplication source context:\n" + self._source_snapshot(report)
+            + report + "\n\nRepository investigation evidence:\n" + evidence
         )
         parsed = self._parse_json(response)
         if isinstance(parsed, dict):
@@ -126,14 +263,19 @@ class MaintenanceAssistant:
         if not self.configured:
             raise MaintenanceError("Set AI_API_URL, AI_API_KEY, and AI_MODEL before requesting a fix.")
         issue_context = f"\n\nUser-reported issue:\n{self._redact(issue.strip())}" if issue.strip() else ""
+        evidence_query = self.error_report() + "\n" + issue_context
+        evidence = self.repository_context(evidence_query)
         response = await self._ask(
-            "You are a cautious Python maintenance assistant. Return ONLY JSON with exactly these fields: "
+            "You are a cautious Python maintenance assistant. Investigate the repository evidence before proposing a fix. "
+            "Return ONLY JSON with exactly these fields: "
             "diagnosis (string), root_cause (string), confidence (number 0..1), affected_files (array of "
-            "app-relative paths), changes (array of strings), patch (unified diff string), tests (array of "
-            "safe commands from compileall/pytest), risk (low|medium|high). The patch must only modify app/*.py; "
-            "never modify .env, credentials, Docker files, logs, or the database. Use an empty patch when evidence "
-            "is insufficient. Never include secrets or claim the patch was applied.\n\n"
-            + self.error_report() + issue_context + "\n\nApplication source context:\n" + self._source_snapshot(issue_context)
+            "repository-relative paths), changes (array of strings), patch (unified diff string), tests (array of "
+            "safe commands from compileall/pytest), risk (low|medium|high). "
+            "patches may modify any repository source, configuration, test, Docker, deployment, or documentation "
+            "file when necessary, but never protected secret files, .git, credentials, or database contents. "
+            "Use an empty patch only after the repository search and dependency path investigation above found no safe fix. "
+            "Never include secrets or claim the patch was applied.\n\n"
+            + self.error_report() + issue_context + "\n\nRepository investigation evidence:\n" + evidence
         )
         payload = self._validate_proposal(self._parse_json(response))
         patch = self._clean_patch(payload["patch"])
@@ -155,11 +297,13 @@ class MaintenanceAssistant:
         output = self.proposal_dir / f"{proposal_id}.patch"
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(patch + "\n", encoding="utf-8")
-        check = self._run(["git", "apply", "--check", str(output)])
+        proposal["working_tree_status"] = self.git_status()
+        proposal["working_tree_diff"] = self.git_diff(proposal.get("affected_files", []))[:6000]
+        check = self._run(["git", "apply", "--check", str(output)], cwd=self.repo_path)
         if check.returncode:
             proposal["status"] = "invalid"
             return f"Validation failed:\n{self._redact(check.stderr or check.stdout)[-1200:]}"
-        syntax = self._run(self.SAFE_COMMANDS["syntax"])
+        syntax = self._run(self.SAFE_COMMANDS["syntax"], cwd=self.repo_path)
         result = "git apply --check: passed; Python syntax: " + ("passed" if syntax.returncode == 0 else "failed")
         proposal["validation"] = result
         proposal["status"] = "validated" if syntax.returncode == 0 else "invalid"
@@ -185,17 +329,24 @@ class MaintenanceAssistant:
         if proposal.get("status") != "validated":
             return "Proposal must pass validation immediately before approval. Use /validatefix first."
         patch_file = self.proposal_dir / f"{proposal_id}.patch"
-        before = self._run(["git", "diff", "--binary"])
-        applied = self._run(["git", "apply", str(patch_file)])
+        before = self._run(["git", "diff", "--binary"], cwd=self.repo_path)
+        applied = self._run(["git", "apply", str(patch_file)], cwd=self.repo_path)
         if applied.returncode:
             return f"Patch application failed; no change was applied:\n{self._redact(applied.stderr)[-1200:]}"
-        check = self._run(self.SAFE_COMMANDS["syntax"])
+        check = self._run(self.SAFE_COMMANDS["syntax"], cwd=self.repo_path)
         if check.returncode:
             self._rollback(patch_file)
             proposal["status"] = "rolled_back"
             self._save(proposal)
             logger.error("maintenance proposal %s rolled back after syntax failure", proposal_id)
             return "Patch caused a validation failure and was rolled back automatically."
+        tests = self._run(self.SAFE_COMMANDS["tests"], cwd=self.repo_path)
+        if tests.returncode:
+            self._rollback(patch_file)
+            proposal["status"] = "rolled_back"
+            self._save(proposal)
+            logger.error("maintenance proposal %s rolled back after test failure", proposal_id)
+            return "Patch was rolled back because the test suite failed."
         health = self.health_check()
         if not health["healthy"]:
             self._rollback(patch_file)
@@ -211,16 +362,16 @@ class MaintenanceAssistant:
 
     def health_check(self) -> dict[str, object]:
         checks = {
-            "python_imports": self._run(["python", "-c", "import app.main"]).returncode == 0,
-            "database_module": self._run(["python", "-c", "import app.db"]).returncode == 0,
-            "scanner_module": self._run(["python", "-c", "import app.scanner"]).returncode == 0,
-            "maintenance_module": self._run(["python", "-c", "import app.maintenance"]).returncode == 0,
+            "python_imports": self._run(["python", "-c", "import app.main"], cwd=self.repo_path).returncode == 0,
+            "database_module": self._run(["python", "-c", "import app.db"], cwd=self.repo_path).returncode == 0,
+            "scanner_module": self._run(["python", "-c", "import app.scanner"], cwd=self.repo_path).returncode == 0,
+            "maintenance_module": self._run(["python", "-c", "import app.maintenance"], cwd=self.repo_path).returncode == 0,
         }
         failed = [name for name, passed in checks.items() if not passed]
         return {"healthy": not failed, "details": "all local startup imports passed" if not failed else ", ".join(failed) + " failed"}
 
     def _rollback(self, patch_file: Path) -> None:
-        reversed_patch = self._run(["git", "apply", "--reverse", str(patch_file)])
+        reversed_patch = self._run(["git", "apply", "--reverse", str(patch_file)], cwd=self.repo_path)
         if reversed_patch.returncode:
             logger.critical("maintenance rollback failed: %s", self._redact(reversed_patch.stderr))
 
@@ -243,21 +394,12 @@ class MaintenanceAssistant:
         self.proposals[proposal["id"]] = proposal
         (self.proposal_dir / f"{proposal['id']}.json").write_text(json.dumps(proposal), encoding="utf-8")
 
-    @classmethod
-    def _source_snapshot(cls, context: str = "") -> str:
-        chunks, total = [], 0
-        paths = sorted(Path("app").rglob("*.py"))
-        context_lower = context.lower()
-        paths.sort(key=lambda path: (str(path).lower() not in context_lower, str(path)))
-        for path in paths:
-            content = cls._redact(path.read_text(encoding="utf-8")[:2500])
-            chunk = f"\n--- {path} ---\n{content}"
-            if total + len(chunk) > cls.MAX_SOURCE_BYTES: break
-            chunks.append(chunk); total += len(chunk)
-        return "".join(chunks) or "No application source files were available."
+    @staticmethod
+    def _estimate_tokens(text: str) -> int:
+        return math.ceil(len(text) / 4)
 
     def _fit_prompt(self, prompt: str, max_chars: int | None = None) -> str:
-        limit = max_chars or max(4000, self.max_input_tokens * 4)
+        limit = max_chars or max(4000, (self.max_input_tokens - 250) * 4)
         if len(prompt) <= limit:
             return prompt
         head = int(limit * 0.65)
@@ -278,15 +420,19 @@ class MaintenanceAssistant:
         for pattern, replacement in patterns: text = re.sub(pattern, replacement, text)
         return text
 
-    @staticmethod
-    def _clean_patch(patch: str) -> str:
+    @classmethod
+    def _clean_patch(cls, patch: str) -> str:
         cleaned = patch.strip()
         if cleaned.startswith("```"): cleaned = re.sub(r"^```(?:diff|patch)?\s*|\s*```$", "", cleaned, flags=re.IGNORECASE)
         for line in cleaned.splitlines():
-            if line.startswith(("+++ ", "--- ")) and not line.startswith(("+++ b/app/", "--- a/app/")):
-                raise MaintenanceError("Unsafe proposal: patches may only modify app/ source files.")
-        if ".env" in cleaned or "Dockerfile" in cleaned or "logs/" in cleaned or "data/" in cleaned:
-            raise MaintenanceError("Unsafe proposal: protected files are not allowed.")
+            if line.startswith(("+++ ", "--- ")):
+                patch_path = line[4:].split("\t", 1)[0]
+                if patch_path in {"/dev/null", "dev/null"}:
+                    continue
+                relative = patch_path[2:] if patch_path[:2] in {"a/", "b/"} else patch_path
+                path = Path(relative)
+                if path.is_absolute() or ".." in path.parts or cls._is_protected_patch_path(path):
+                    raise MaintenanceError("Unsafe proposal: patches may only modify safe repository-relative files.")
         return cleaned
 
     @classmethod
@@ -297,8 +443,10 @@ class MaintenanceAssistant:
             raise MaintenanceError("AI returned an invalid confidence value.")
         if payload["risk"] not in {"low", "medium", "high"} or not all(isinstance(payload[key], list) for key in ("affected_files", "changes", "tests")):
             raise MaintenanceError("AI returned invalid proposal fields.")
-        if any(not str(path).startswith("app/") or not str(path).endswith(".py") for path in payload["affected_files"]):
-            raise MaintenanceError("Unsafe proposal: affected files must be app/*.py.")
+        for path_value in payload["affected_files"]:
+            path = Path(str(path_value))
+            if path.is_absolute() or ".." in path.parts or cls._is_protected_patch_path(path):
+                raise MaintenanceError("Unsafe proposal: affected files must be safe repository-relative paths.")
         return payload
 
     @staticmethod
@@ -311,8 +459,8 @@ class MaintenanceAssistant:
         return value
 
     @staticmethod
-    def _run(command: list[str]) -> subprocess.CompletedProcess[str]:
-        try: return subprocess.run(command, capture_output=True, text=True, check=False, timeout=120)
+    def _run(command: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+        try: return subprocess.run(command, cwd=cwd, capture_output=True, text=True, check=False, timeout=120)
         except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
             return subprocess.CompletedProcess(command, 1, "", str(exc))
 

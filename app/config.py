@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     ai_fallback_model: str = ""
     ai_max_log_entries: int = Field(default=40, ge=1, le=500)
     ai_max_input_tokens: int = Field(default=5500, ge=1000, le=12000)
+    maintenance_repo_path: str = "."
     database_path: str = "data/arbitrage.sqlite3"
     log_level: str = "INFO"
     scan_interval_seconds: int = 30

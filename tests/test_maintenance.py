@@ -3,6 +3,7 @@ import io
 import json
 import subprocess
 import urllib.error
+from pathlib import Path
 
 import pytest
 
@@ -245,6 +246,56 @@ def test_redacts_sensitive_values_with_env_names():
     assert "wow" not in redacted
 
 
+def test_repository_discovery_covers_application_tests_and_configuration():
+    assistant = MaintenanceAssistant("", "", "", repo_path=str(Path.cwd()))
+    files = set(assistant.list_repository_files())
+    assert {"app/exchanges/registry.py", "app/handlers.py", "app/maintenance.py", "app/scanner.py", "app/ui.py", "app/config.py", "tests/test_maintenance.py"} <= files
+    assert any(item["path"] == "app/handlers.py" for item in assistant.search_repository("opportunity_details"))
+    assert any(item["path"] == "app/scanner.py" for item in assistant.search_repository("run_cycle"))
+    assert isinstance(assistant.git_status(), str)
+
+
+def test_repository_discovery_excludes_sensitive_files(tmp_path):
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "feature.py").write_text("def investigate_error():\n    return True\n")
+    (tmp_path / ".env").write_text("TELEGRAM_BOT_TOKEN=secret\n")
+    (tmp_path / "credentials.json").write_text('{"api_key": "secret"}\n')
+    (tmp_path / "state.sqlite3").write_bytes(b"\x00secret")
+    assistant = MaintenanceAssistant("", "", "", repo_path=str(tmp_path))
+    files = assistant.list_repository_files()
+    assert "app/feature.py" in files
+    assert ".env" not in files
+    assert "credentials.json" not in files
+    assert "state.sqlite3" not in files
+    assert assistant.search_repository("investigate_error")[0]["path"] == "app/feature.py"
+
+
+def test_prompt_budget_is_below_configured_limit(monkeypatch):
+    assistant = MaintenanceAssistant("https://api.groq.com/openai/v1", "key", "model", max_input_tokens=5500)
+    captured = []
+
+    class FakeMessage:
+        content = "ok"
+
+    class FakeChoice:
+        message = FakeMessage()
+
+    class FakeResponse:
+        choices = [FakeChoice()]
+
+    class FakeClient:
+        class chat:
+            class completions:
+                @staticmethod
+                async def create(**kwargs):
+                    captured.append(kwargs["messages"])
+                    return FakeResponse()
+
+    monkeypatch.setattr(assistant, "_client", lambda: FakeClient())
+    assert asyncio.run(assistant._request("model", "evidence " * 20000)) == "ok"
+    assert sum(assistant._estimate_tokens(message["content"]) for message in captured[0]) <= 5500
+
+
 def test_rejected_proposal_is_not_applied(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     assistant = MaintenanceAssistant("", "", "")
@@ -268,7 +319,7 @@ def test_apply_rolls_back_when_health_fails(tmp_path, monkeypatch):
     assistant._save(item)
     calls = []
 
-    def run(command):
+    def run(command, cwd=None):
         calls.append(command)
         if command[:3] == ["git", "apply", "--check"]:
             return __import__("subprocess").CompletedProcess(command, 0, "", "")
@@ -279,4 +330,4 @@ def test_apply_rolls_back_when_health_fails(tmp_path, monkeypatch):
     monkeypatch.setattr(assistant, "_run", run)
     monkeypatch.setattr(assistant, "health_check", lambda: {"healthy": False, "details": "startup failed"})
     assert "rolled back" in assistant.apply("rollback-me")
-    assert ["git", "apply", "--reverse", "logs/ai-proposals/rollback-me.patch"] in calls
+    assert ["git", "apply", "--reverse", str(tmp_path / "logs/ai-proposals/rollback-me.patch")] in calls

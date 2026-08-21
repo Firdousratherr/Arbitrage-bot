@@ -34,6 +34,7 @@ def run_app() -> None:
         settings.ai_model,
         settings.ai_fallback_model,
         settings.ai_max_input_tokens,
+        settings.maintenance_repo_path,
     )
     logger.info(
         "AI maintenance configured: %s%s",
