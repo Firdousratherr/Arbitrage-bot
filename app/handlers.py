@@ -460,7 +460,7 @@ async def portfolio(update, context):
     await update.message.reply_text(message, parse_mode="HTML")
 
 
-
+async def loosemode(update, context):
     if not await require_vip(update, context): return
     if not context.args or context.args[0].lower() not in {"on", "off"}: await update.message.reply_text("Usage: /loosemode on|off"); return
     db = get_db(context); user = await db.get_user(update.effective_user.id); preferences = user_filters(user); preferences["loose_mode"] = context.args[0].lower() == "on"
