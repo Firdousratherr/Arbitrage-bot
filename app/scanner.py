@@ -67,10 +67,30 @@ class Scanner:
                 continue
             buy, sell = max(pairs, key=lambda pair: (pair[1].bid - pair[0].ask) / pair[0].ask)
             raw_spread = ((sell.bid - buy.ask) / buy.ask) * 100
-            net_profit = raw_spread
-            opportunity = Opportunity(symbol, buy.exchange, sell.exchange, buy.ask, sell.bid, raw_spread, net_profit, buy.quote_volume, sell.quote_volume)
             if raw_spread <= 0:
                 continue
+            
+            # Calculate fee-adjusted net profit
+            buy_fee_pct = 0.0
+            sell_fee_pct = 0.0
+            try:
+                buy_exchange = self.exchanges.get(buy.exchange)
+                sell_exchange = self.exchanges.get(sell.exchange)
+                if buy_exchange and sell_exchange:
+                    fees = await asyncio.gather(
+                        buy_exchange.get_taker_fee(symbol),
+                        sell_exchange.get_taker_fee(symbol),
+                        return_exceptions=True
+                    )
+                    buy_fee_pct = float(fees[0]) * 100 if not isinstance(fees[0], Exception) else 0.1
+                    sell_fee_pct = float(fees[1]) * 100 if not isinstance(fees[1], Exception) else 0.1
+            except Exception:
+                logger.debug("fee calculation failed for %s, using defaults", symbol)
+                buy_fee_pct = 0.1
+                sell_fee_pct = 0.1
+            
+            net_profit = raw_spread - buy_fee_pct - sell_fee_pct
+            opportunity = Opportunity(symbol, buy.exchange, sell.exchange, buy.ask, sell.bid, raw_spread, net_profit, buy.quote_volume, sell.quote_volume)
             if require_matching_user and not await self._has_matching_users(opportunity):
                 continue
             opportunities.append(opportunity)

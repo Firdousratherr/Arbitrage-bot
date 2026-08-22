@@ -17,7 +17,7 @@ from .handlers import build_handlers
 from .logging_setup import configure_logging
 from .maintenance import MaintenanceAssistant
 from .scanner import Scanner, opportunity_id
-from .ui import format_background_alert, opportunity_buttons
+from .ui import format_background_alert, format_error, opportunity_buttons
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +148,21 @@ def run_app() -> None:
     application = Application.builder().token(settings.telegram_bot_token).post_init(post_init_with_context).post_shutdown(post_shutdown).build()
     for handler in build_handlers(db, settings.admin_id_set, settings.exchange_names, settings.admin_secret_key):
         application.add_handler(handler)
+    
+    # Add global error handler
+    async def error_handler(update, context):
+        logger.exception("exception in handler", exc_info=context.error)
+        try:
+            message = format_error(
+                "Something went wrong running that command",
+                "Try again in a moment"
+            )
+            if update and update.effective_message:
+                await update.effective_message.reply_text(message)
+        except Exception:
+            logger.exception("failed to send error message")
+    
+    application.add_error_handler(error_handler)
     application.run_polling(close_loop=False)
 
 
@@ -198,6 +213,7 @@ async def _send_alert(db: Database, user_id: int, opportunity, identifier: str, 
             user_id,
             message,
             reply_markup=opportunity_buttons(identifier),
+            parse_mode="HTML",
         )
         await db.increment_stat("alerts_sent")
     except Exception:

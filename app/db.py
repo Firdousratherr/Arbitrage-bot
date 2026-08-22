@@ -15,20 +15,15 @@ DEFAULT_FILTERS = {
     "min_spread": 0.0,
     "max_spread": 100.0,
     "min_volume": 10000.0,
-    "min_trade_size": 10.0,
-    "max_trade_size": 1000.0,
-    "max_slippage": 2.0,
+    "trade_size": 1000.0,
     "fee_adjusted": True,
-    "network_fee": 0.0,
     "quote_currency": "USDT",
     "watchlist": [],
     "blacklist": [],
     "alert_cooldown": 300,
-    "daily_cap": 50,
     "max_results": 10,
     "paused": False,
     "loose_mode": False,
-    "max_exchanges": 16,
 }
 
 
@@ -139,7 +134,7 @@ class Database:
         await self._db().commit()
 
     async def set_user(self, user_id: int, **fields: Any) -> None:
-        allowed = {"selected_exchanges", "vip_status", "vip_expiry", "vip_key_used", "filters", "banned", "ban_reason", "leaderboard_hidden"}
+        allowed = {"selected_exchanges", "email", "vip_status", "vip_expiry", "vip_key_used", "filters", "banned", "ban_reason", "leaderboard_hidden"}
         fields = {key: (json.dumps(value) if key in {"selected_exchanges", "filters"} else value) for key, value in fields.items() if key in allowed}
         if fields:
             assignments = ", ".join(f"{key} = ?" for key in fields)

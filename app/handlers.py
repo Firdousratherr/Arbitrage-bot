@@ -20,7 +20,11 @@ from .ui import (
     format_opportunity_card,
     format_opportunity_details,
     format_paper_trade,
-    format_scan_summary,
+    format_scan_count,
+    format_status_message,
+    format_filters_message,
+    format_leaderboard,
+    format_portfolio,
     opportunity_buttons,
 )
 
@@ -51,13 +55,11 @@ def build_handlers(db: Database, admin_ids: set[int], exchange_names: list[str],
         CommandHandler("pause", pause), CommandHandler("resume", resume),
         CommandHandler("setminprofit", numeric_filter("min_profit")), CommandHandler("setmaxprofit", numeric_filter("max_profit")),
         CommandHandler("setminspread", numeric_filter("min_spread")), CommandHandler("setmaxspread", numeric_filter("max_spread")),
-        CommandHandler("setminvolume", numeric_filter("min_volume")), CommandHandler("setmintradesize", numeric_filter("min_trade_size")),
-        CommandHandler("setmaxtradesize", numeric_filter("max_trade_size")), CommandHandler("setmaxslippage", numeric_filter("max_slippage")),
-        CommandHandler("setnetworkfee", numeric_filter("network_fee")), CommandHandler("setalertfreq", integer_filter("alert_cooldown")),
-        CommandHandler("setdailycap", integer_filter("daily_cap")), CommandHandler("setmaxresults", positive_integer_filter("max_results")),
-        CommandHandler("setquotecurrency", quote_currency),
+        CommandHandler("setminvolume", numeric_filter("min_volume")), CommandHandler("settradesize", numeric_filter("trade_size")),
+        CommandHandler("setalertfreq", integer_filter("alert_cooldown")), CommandHandler("setmaxresults", positive_integer_filter("max_results")),
+        CommandHandler("setquotecurrency", quote_currency), CommandHandler("setemail", setemail),
         CommandHandler("watchlist", list_filter("watchlist")), CommandHandler("blacklist", list_filter("blacklist")),
-        CommandHandler("papertrade", papertrade), CommandHandler("paperstats", paperstats),
+        CommandHandler("papertrade", papertrade), CommandHandler("paperstats", paperstats), CommandHandler("portfolio", portfolio),
         CommandHandler("leaderboard", leaderboard), CommandHandler("setfeeadjusted", fee_adjusted),
     ]
     commands.append(CommandHandler("aistatus", admin_only(db, admin_ids, aistatus)))
@@ -215,74 +217,67 @@ async def require_vip(update: Update, context) -> bool:
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     db = get_db(context)
+    is_admin = update.effective_user.id in context.application.bot_data["admin_ids"]
     lines = [
-        "📚 COMMAND GUIDE",
+        "🤖 CRYPTO ARBITRAGE SCANNER",
+        "━━━━━━━━━━━━━━",
+        "📌 Getting Started",
+        "/start      — register",
+        "/exchanges  — pick exchanges",
+        "/status     — your account",
         "",
-        "🆕 Getting started",
-        "/start - register and choose at least two exchanges",
-        "/vipkey YOUR_KEY - activate VIP after registration",
-        "/status - view account, VIP, and exchange status",
-        "/help - show this guide",
+        "🔍 Scanning",
+        "/scan       — run a scan now",
+        "/myfilters  — view active filters",
+        "/setminprofit PERCENT    — minimum profit filter",
+        "/setmaxprofit PERCENT    — maximum profit filter",
+        "/setminspread PERCENT    — minimum spread filter",
+        "/setmaxspread PERCENT    — maximum spread filter",
+        "/setminvolume AMOUNT     — minimum 24h volume",
+        "/setalertfreq SECONDS    — alert cooldown",
+        "/setmaxresults N         — show at most N results",
+        "/settradesize AMOUNT     — trade size for paper trading",
+        "/setquotecurrency USDT|USDC|BTC — quote currency",
+        "/watchlist add|remove SYMBOL — limit symbols",
+        "/blacklist add|remove SYMBOL — ignore symbols",
+        "/loosemode on|off        — skip transfer verification",
+        "/setfeeadjusted on|off   — use fee-adjusted filtering",
+        "/pause and /resume       — pause or resume alerts",
+        "",
+        "🏆 Fun",
+        "/papertrade ID SIZE      — record a simulated trade",
+        "/paperstats              — view simulated trading results",
+        "/portfolio               — view your simulated portfolio",
+        "/leaderboard [alltime]   — view paper-trade rankings",
     ]
-    if await db.active_vip(update.effective_user.id):
+    if is_admin:
         lines.extend([
             "",
-            "💎 VIP tools",
-            "/scan - scan selected exchanges now",
-            "/exchanges - change exchange selection",
-            "/filters - see filter instructions",
-            "/myfilters or /settings - view current saved values",
-            "/setmaxresults N - show at most N results",
-            "/setminprofit PERCENT - minimum profit filter",
-            "/setmaxprofit PERCENT - maximum profit filter",
-            "/setminspread PERCENT - minimum spread filter",
-            "/setmaxspread PERCENT - maximum spread filter",
-            "/setminvolume AMOUNT - minimum 24h volume",
-            "/setmintradesize AMOUNT - minimum paper-trade size",
-            "/setmaxtradesize AMOUNT - maximum paper-trade size",
-            "/setmaxslippage PERCENT - maximum allowed slippage",
-            "/setnetworkfee AMOUNT - network-fee estimate",
-            "/setalertfreq SECONDS - alert cooldown",
-            "/setdailycap COUNT - daily alert limit",
-            "/setquotecurrency USDT|USDC|BTC - quote currency",
-            "/watchlist add|remove SYMBOL - limit symbols",
-            "/blacklist add|remove SYMBOL - ignore symbols",
-            "/loosemode on|off - skip transfer verification",
-            "/setfeeadjusted on|off - use fee-adjusted filtering",
-            "/pause and /resume - pause or resume alerts",
-            "/papertrade OPPORTUNITY_ID SIZE - record a simulation",
-            "/paperstats - view simulated trading results",
-            "/leaderboard [alltime] - view paper-trade rankings",
-            "Use the Paper Trade button on a result for the safest workflow.",
+            "🛡️ Admin Tools",
+            "/admin 8767 — unlock admin tools for this session",
+            "/genkey KEY DAYS|lifetime — create a VIP key",
+            "/listkeys [status]   — list VIP keys",
+            "/revokekey KEY       — revoke a key",
+            "/extendvip USER_ID DAYS — extend VIP access",
+            "/grantvip USER_ID [DAYS] — grant VIP access",
+            "/revokevip USER_ID   — remove VIP access",
+            "/userinfo USER_ID_OR_USERNAME — inspect a user",
+            "/listusers [all|vip|pending|banned] — list users",
+            "/ban USER_ID REASON  — ban a user",
+            "/unban USER_ID       — remove a ban",
+            "/broadcast MESSAGE   — message VIP users",
+            "/stats — view bot statistics",
+            "/health — check exchange connectivity",
+            "/exportusers — download CSV export",
+            "/memstatus — view process memory",
+            "/diagnose — summarize recent errors with AI",
+            "/fixerror ISSUE — propose a patch",
+            "/patchstatus — list pending patches",
+            "/validatefix PATCH_ID — validate patch",
+            "/approvefix PATCH_ID — apply validated patch",
+            "/rejectfix PATCH_ID — reject patch",
         ])
-    if update.effective_user.id in context.application.bot_data["admin_ids"]:
-        lines.extend([
-            "",
-            "🛡️ Admin tools",
-            "/admin 8767 - unlock admin tools for this session",
-            "/genkey YOUR_KEY DAYS|lifetime - create your chosen VIP key",
-            "/listkeys [unused|active|expired|revoked] - list keys",
-            "/revokekey KEY - revoke a key",
-            "/extendvip USER_ID DAYS - extend VIP access",
-            "/grantvip USER_ID [DAYS] - grant VIP access",
-            "/revokevip USER_ID - remove VIP access",
-            "/userinfo USER_ID_OR_USERNAME - inspect a user",
-            "/listusers [all|vip|pending|banned] - list users",
-            "/ban USER_ID REASON - ban a user",
-            "/unban USER_ID - remove a ban",
-            "/broadcast MESSAGE - message active VIP users",
-            "/stats - view bot statistics",
-            "/health - check exchange connectivity",
-            "/exportusers - download a CSV export",
-            "/memstatus - view process memory",
-            "/diagnose - summarize recent bot errors with AI",
-            "/fixerror ISSUE - propose a patch for a reported issue; never auto-applies",
-            "/patchstatus - list pending patch proposals",
-            "/validatefix PATCH_ID - validate a proposed patch",
-            "/approvefix PATCH_ID - apply a validated patch (admin approval required)",
-            "/rejectfix PATCH_ID - reject a proposed patch",
-        ])
-    await update.message.reply_text("\n".join(lines))
+    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -291,8 +286,16 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("You are not registered. Use /start.")
         return
     filters = user_filters(user)
-    expiry = user["vip_expiry"] or "lifetime"
-    await update.message.reply_text(f"👤 ACCOUNT STATUS\n\n💎 VIP: {user['vip_status']} ({expiry})\n🌐 Exchanges: {', '.join(json.loads(user['selected_exchanges']))}\n⚠️ Loose mode: {filters['loose_mode']}\n⏸ Paused: {filters['paused']}\n📈 Profit range: {filters['min_profit']}% to {filters['max_profit']}%\n🎯 Max results: {filters['max_results']}\n🕒 Read from database: {datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%S UTC')}")
+    exchanges = json.loads(user["selected_exchanges"] or "[]")
+    message = format_status_message(
+        vip_status=user["vip_status"],
+        vip_expiry=user["vip_expiry"],
+        exchanges=exchanges,
+        loose_mode=filters.get("loose_mode", False),
+        paused=filters.get("paused", False),
+        filters=filters,
+    )
+    await update.message.reply_text(message, parse_mode="HTML")
 
 
 async def exchanges(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -309,7 +312,9 @@ async def filters_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def myfilters(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await require_vip(update, context): return
     user = await get_db(context).get_user(update.effective_user.id)
-    await update.message.reply_text("🎛️ CURRENT SAVED SETTINGS\n\n" + json.dumps(user_filters(user), indent=2) + f"\n\n🕒 Read from database: {datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%S UTC')}")
+    filters = user_filters(user)
+    message = format_filters_message(filters)
+    await update.message.reply_text(message, parse_mode="HTML")
 
 
 async def resetfilters(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -401,11 +406,61 @@ def list_filter(name):
         if len(context.args) != 2 or context.args[0].lower() not in {"add", "remove"}: await update.message.reply_text(f"Usage: /{name} add|remove SYMBOL"); return
         db = get_db(context); user = await db.get_user(update.effective_user.id); preferences = user_filters(user); values = set(preferences[name]); symbol = context.args[1].upper()
         values.add(symbol) if context.args[0].lower() == "add" else values.discard(symbol); preferences[name] = sorted(values)
-        await db.set_user(update.effective_user.id, filters=preferences); await db.log_action(update.effective_user.id, name, f"{context.args[0]} {symbol}"); await update.message.reply_text(f"{name} updated.")
+        await db.set_user(update.effective_user.id, filters=preferences); await db.log_action(update.effective_user.id, name, f"{context.args[0]} {symbol}"); await update.message.reply_text(f"✅ {name.title()} updated.")
     return handler
 
 
-async def loosemode(update, context):
+async def setemail(update, context):
+    if not await require_vip(update, context): return
+    if len(context.args) != 1:
+        await update.message.reply_text("Usage: /setemail your@email.com")
+        return
+    email = context.args[0].strip()
+    if not EMAIL.match(email):
+        await update.message.reply_text("❌ Please enter a valid email address.")
+        return
+    db = get_db(context)
+    await db.set_user(update.effective_user.id, email=email)
+    await db.log_action(update.effective_user.id, "email_updated", email)
+    await update.message.reply_text(f"✅ Email updated to {email}")
+
+
+async def portfolio(update, context):
+    if not await require_vip(update, context): return
+    db = get_db(context)
+    user_id = update.effective_user.id
+    
+    # Fetch all trades for user with opportunity details
+    cursor = await db._db().execute(
+        """SELECT p.id, p.opportunity_id, p.size, p.profit, p.created_at, 
+                  o.symbol FROM paper_trades p 
+           LEFT JOIN opportunities o ON o.id = p.opportunity_id 
+           WHERE p.user_id = ? ORDER BY p.created_at DESC""",
+        (user_id,)
+    )
+    trades = await cursor.fetchall()
+    
+    # Calculate totals
+    total_pnl = sum(t["profit"] for t in trades)
+    starting_balance = 10000.0  # Default starting balance for paper trading
+    current_balance = starting_balance + total_pnl
+    vip_limit = 100000.0  # Max position size for VIP
+    
+    # Format trades for display
+    trade_dicts = []
+    for t in trades:
+        trade_dicts.append({
+            "symbol": t["symbol"] or "unknown",
+            "size": t["size"],
+            "profit": t["profit"],
+            "created_at": t["created_at"],
+        })
+    
+    message = format_portfolio(trade_dicts, current_balance, vip_limit)
+    await update.message.reply_text(message, parse_mode="HTML")
+
+
+
     if not await require_vip(update, context): return
     if not context.args or context.args[0].lower() not in {"on", "off"}: await update.message.reply_text("Usage: /loosemode on|off"); return
     db = get_db(context); user = await db.get_user(update.effective_user.id); preferences = user_filters(user); preferences["loose_mode"] = context.args[0].lower() == "on"
@@ -450,7 +505,7 @@ async def opportunity_details(update, context):
             sell_exchange.fetch_order_book(row["symbol"], 10),
         )
         user = await db.get_user(query.from_user.id)
-        size = user_filters(user)["max_trade_size"]
+        size = user_filters(user)["trade_size"]
         buy_fill, buy_slippage = _book_fill(books[0].get("asks", []), size, ascending=True)
         sell_fill, sell_slippage = _book_fill(books[1].get("bids", []), size, ascending=False)
         fee_rates = await asyncio.gather(
@@ -484,6 +539,7 @@ async def opportunity_details(update, context):
             [InlineKeyboardButton("🔄 Refresh", callback_data=f"details:{row['id']}"), InlineKeyboardButton("📄 Paper Trade", callback_data=f"paper:{row['id']}")],
             [InlineKeyboardButton("⬅️ Back", callback_data=f"back:{row['id']}")],
         ]),
+        parse_mode="HTML"
     )
 
 
@@ -511,10 +567,13 @@ async def opportunity_back(update, context):
     if not row:
         await query.edit_message_text("⚠️ Opportunity expired\nRun /scan for fresh data.")
         return
+    user = await get_db(context).get_user(query.from_user.id)
     identifier = row["id"]
+    trade_size = user_filters(user).get("trade_size", 1000) if user else 1000
     await query.edit_message_text(
-        format_opportunity_card(_opportunity_from_row(row), identifier),
+        format_opportunity_card(_opportunity_from_row(row), identifier, trade_size=trade_size),
         reply_markup=opportunity_buttons(identifier),
+        parse_mode="HTML"
     )
 
 
@@ -551,7 +610,7 @@ async def paper_trade_callback(update, context):
         await query.edit_message_text("⚠️ Opportunity expired\nRun /scan for fresh data.")
         return
     user = await db.get_user(query.from_user.id)
-    size = user_filters(user)["max_trade_size"]
+    size = user_filters(user)["trade_size"]
     expected_gross = size * (row["raw_spread"] / 100)
     profit = size * (row["net_profit"] / 100)
     period = datetime.now(UTC).strftime("%G-%V")
@@ -572,6 +631,7 @@ async def paper_trade_callback(update, context):
     await query.edit_message_text(
         message,
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data=f"back:{row['id']}")]]),
+        parse_mode="HTML"
     )
 
 
@@ -648,8 +708,19 @@ async def leaderboard(update, context):
     period = "alltime" if context.args and context.args[0].lower() == "alltime" else datetime.now(UTC).strftime("%G-%V")
     where = "1=1" if period == "alltime" else "period=?"; args = () if period == "alltime" else (period,)
     cursor = await get_db(context)._db().execute(f"SELECT u.username, u.telegram_id, SUM(p.profit) total FROM paper_trades p JOIN users u ON u.telegram_id=p.user_id WHERE u.leaderboard_hidden=0 AND {where} GROUP BY p.user_id ORDER BY total DESC LIMIT 10", args); rows = await cursor.fetchall()
-    text = "LEADERBOARD\n" + "\n".join(f"{index}. @{row['username'] or row['telegram_id']} {row['total']:.4f}" for index, row in enumerate(rows, 1))
-    await update.message.reply_text(text or "📭 No paper trades yet.")
+    
+    # Check if user is in top 10
+    user_rank = None
+    user_profit = None
+    cursor = await get_db(context)._db().execute(f"SELECT ROW_NUMBER() OVER (ORDER BY total DESC) rank, COALESCE(SUM(p.profit), 0) total FROM paper_trades p WHERE p.user_id = ? AND {where}", (update.effective_user.id, *args))
+    user_row = await cursor.fetchone()
+    if user_row and user_row["total"]:
+        user_rank = user_row["rank"]
+        user_profit = user_row["total"]
+    
+    period_name = "All-Time" if period == "alltime" else "Weekly"
+    message = format_leaderboard(list(rows), period_name, user_rank, user_profit)
+    await update.message.reply_text(message, parse_mode="HTML")
 
 
 async def leaderboard_callback(update, context):
@@ -766,19 +837,25 @@ async def scan_command(update, context):
     if not scanner:
         await update.effective_message.reply_text("Scanner is still starting. Try again shortly.")
         return
-    await update.effective_message.reply_text(f"🔍 Scanning {len(scanner.exchanges)} exchanges…")
+    
+    # Send progress message
+    progress_msg = await update.effective_message.reply_text("🔍 Scanning exchanges…")
+    
     user = await get_db(context).get_user(update.effective_user.id)
     preferences = user_filters(user)
     selected = set(json.loads(user["selected_exchanges"] or "[]"))
     active_selected = selected & set(scanner.exchanges)
+    
     if len(active_selected) < 2:
         await update.effective_message.reply_text(
-            "❌ Scan needs at least two active selected exchanges.\n"
-            f"Your selection: {', '.join(sorted(selected)) or 'none'}\n"
-            f"Active selection: {', '.join(sorted(active_selected)) or 'none'}\n\n"
-            "Use /exchanges to choose two exchanges currently available to the bot."
+            format_error(
+                "Scan needs at least two active selected exchanges.",
+                f"Your selection: {', '.join(sorted(selected)) or 'none'}. Use /exchanges."
+            )
         )
         return
+    
+    # Run scan
     opportunities = await scanner.run_cycle(require_matching_user=False, exchange_names=active_selected)
     selected_candidates = [
         opportunity for opportunity in opportunities
@@ -786,21 +863,27 @@ async def scan_command(update, context):
     ]
     visible = [opportunity for opportunity in selected_candidates if matches(opportunity, preferences)]
     visible = sorted(visible, key=lambda opportunity: opportunity.net_profit, reverse=True)[:preferences["max_results"]]
-    summary = format_scan_summary(
-        visible,
-        exchange_count=len(scanner.exchanges),
-        opportunities_found=len(opportunities),
-        matching_selected=len(selected_candidates),
-        results_shown=len(visible),
-    )
-    await update.effective_message.reply_text(summary)
+    
+    # Delete progress message and send count
+    try:
+        await context.bot.delete_message(update.effective_user.id, progress_msg.message_id)
+    except Exception:
+        pass
+    
+    # Send count message
+    count_msg = format_scan_count(len(visible))
+    await update.effective_message.reply_text(count_msg)
+    
+    # Send opportunity cards
     db = get_db(context)
-    for item in visible:
+    for index, item in enumerate(visible, 1):
         identifier = opportunity_id(item)
         await db.save_opportunity(identifier, item)
+        message = format_opportunity_card(item, identifier, card_number=index, trade_size=preferences.get("trade_size", 1000))
         await update.effective_message.reply_text(
-            format_opportunity_card(item, identifier),
+            message,
             reply_markup=opportunity_buttons(identifier),
+            parse_mode="HTML"
         )
 
 

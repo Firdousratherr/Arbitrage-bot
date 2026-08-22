@@ -9,6 +9,7 @@ app/logging_setup.py
 app/main.py
 app/maintenance.py
 app/scanner.py
+app/ui.py
 app/exchanges/__init__.py
 app/exchanges/base.py
 app/exchanges/ccxt_adapter.py
@@ -19,4 +20,7 @@ telegram_arbitrage_bot.egg-info/dependency_links.txt
 telegram_arbitrage_bot.egg-info/entry_points.txt
 telegram_arbitrage_bot.egg-info/requires.txt
 telegram_arbitrage_bot.egg-info/top_level.txt
+tests/test_callbacks.py
 tests/test_maintenance.py
+tests/test_opportunities.py
+tests/test_ui.py
