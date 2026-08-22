@@ -151,7 +151,7 @@ async def exchange_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     await query.answer()
     db = get_db(context)
     existing = await db.get_user(query.from_user.id)
-    if existing and existing["email"] and "email" not in context.user_data:
+    if existing and existing["email"]:
         await db.set_user(query.from_user.id, selected_exchanges=selected)
         await db.log_action(query.from_user.id, "changed_exchanges", ",".join(selected))
         await query.edit_message_text(f"✅ Exchanges saved\n\n🌐 {', '.join(selected)}")
@@ -185,6 +185,9 @@ async def redeem_key(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
                 logger.info("could not notify admin %s", admin_id)
     await db.log_action(user.id, "registered", f"exchanges={','.join(selected)}")
     await update.message.reply_text(f"🎉 {message}\n\n🌐 Exchanges: {', '.join(selected)}\n📋 Use /status to review your account.")
+    # Clear stale session data after successful registration
+    context.user_data.pop("email", None)
+    context.user_data.pop("selected_exchanges", None)
     return ConversationHandler.END
 
 
@@ -203,6 +206,9 @@ async def redeem_vip_key_command(update: Update, context) -> None:
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text("🛑 Registration cancelled. Use /start when ready.")
+    # Clear stale session data on cancel
+    context.user_data.pop("email", None)
+    context.user_data.pop("selected_exchanges", None)
     return ConversationHandler.END
 
 
@@ -851,7 +857,8 @@ async def scan_command(update, context):
             format_error(
                 "Scan needs at least two active selected exchanges.",
                 f"Your selection: {', '.join(sorted(selected)) or 'none'}. Use /exchanges."
-            )
+            ),
+            parse_mode="HTML"
         )
         return
     
@@ -872,7 +879,7 @@ async def scan_command(update, context):
     
     # Send count message
     count_msg = format_scan_count(len(visible))
-    await update.effective_message.reply_text(count_msg)
+    await update.effective_message.reply_text(count_msg, parse_mode="HTML")
     
     # Send opportunity cards
     db = get_db(context)

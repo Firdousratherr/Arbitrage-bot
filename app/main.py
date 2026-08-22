@@ -158,7 +158,7 @@ def run_app() -> None:
                 "Try again in a moment"
             )
             if update and update.effective_message:
-                await update.effective_message.reply_text(message)
+                await update.effective_message.reply_text(message, parse_mode="HTML")
         except Exception:
             logger.exception("failed to send error message")
     
