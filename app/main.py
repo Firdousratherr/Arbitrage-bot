@@ -230,6 +230,14 @@ def _transfer_summary(metadata: dict | None, action: str) -> str:
 def run() -> None:
     run_app()
 
+# Patch addition for pruning old alert cache
+LAST_ALERTS_MAX_AGE_SECONDS = 24 * 3600
+
+def _prune_last_alerts(last_alerts_dict) -> None:
+    cutoff = datetime.now(UTC).timestamp() - LAST_ALERTS_MAX_AGE_SECONDS
+    stale_keys = [key for key, sent_at in last_alerts_dict.items() if sent_at.timestamp() < cutoff]
+    for key in stale_keys:
+        del last_alerts_dict[key]
 
 if __name__ == "__main__":
     run()
