@@ -1066,3 +1066,23 @@ async def memstatus(update, context):
         rss = psutil.Process().memory_info().rss / 1024 / 1024
         await update.message.reply_text(f"RSS: {rss:.1f} MB")
     except ImportError: await update.message.reply_text("psutil is not installed.")
+      async def exchangestats(update, context):
+    exchanges = context.application.bot_data.get("exchanges", {})
+    if not exchanges:
+        await update.message.reply_text("No exchanges configured.")
+        return
+    lines = ["Exchange stats (most recent scan cycle)"]
+    for name, exchange in exchanges.items():
+        stats = getattr(exchange, "last_fetch_stats", None)
+        error = getattr(exchange, "last_fetch_error", None)
+        if error:
+            lines.append(f"{name}: ❌ fetch failed — {error}")
+        elif stats is None:
+            lines.append(f"{name}: no data yet (scan hasn't run)")
+        elif stats["raw"] == 0:
+            lines.append(f"{name}: ⚠️ 0 tickers received")
+        elif stats["usable"] == 0:
+            lines.append(f"{name}: ⚠️ {stats['raw']} tickers received, all {stats['dropped_bid_ask']} dropped for missing/zero bid-ask")
+        else:
+            lines.append(f"{name}: ✅ {stats['usable']}/{stats['raw']} usable (dropped {stats['dropped_bid_ask']} for missing bid-ask)")
+    await update.message.reply_text("\n".join(lines))
