@@ -67,3 +67,7 @@ class CcxtExchangeAdapter:
 
     async def close(self) -> None:
         await self.client.close()
+
+def update_fetch_stats(self, raw_count: int, dropped_count: int, usable_count: int, error_msg: str | None = None):
+        self.last_fetch_stats = {"raw": raw_count, "dropped_bid_ask": dropped_count, "usable": usable_count}
+        self.last_fetch_error = error_msg
