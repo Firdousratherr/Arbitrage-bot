@@ -258,3 +258,9 @@ class Database:
         cursor = await self._db().execute("SELECT value FROM stats WHERE key = ?", (key,))
         row = await cursor.fetchone()
         return int(row["value"]) if row else 0
+        
+    async def purge_expired_opportunities(self) -> int:
+        cutoff = (datetime.now(UTC) - timedelta(seconds=self.opportunity_ttl_seconds)).isoformat()
+        cursor = await self._db().execute("DELETE FROM opportunities WHERE created_at < ?", (cutoff,))
+        await self._db().commit()
+        return cursor.rowcount if cursor.rowcount is not None else 0
