@@ -17,7 +17,9 @@ logger = logging.getLogger(__name__)
 
 class Scanner:
     TARGETED_RECOVERY_EXCHANGES = {"xt", "lbank"}
-    TARGETED_RECOVERY_MAX_SYMBOLS = 100
+    # Recovery is deliberately bounded. The goal is to restore useful common
+    # markets without turning a scan into hundreds of extra API requests.
+    TARGETED_RECOVERY_MAX_SYMBOLS = 40
 
     def __init__(self, db: Database, exchanges: dict, interval: int, concurrency: int):
         self.db = db
@@ -47,7 +49,6 @@ class Scanner:
         successful_exchanges = 0
         exchange_status: dict[str, dict] = {}
         observed_symbols: set[str] = set()
-        initial_present: dict[str, set[str]] = {name: set() for name in active_exchanges}
 
         for name, exchange, result in zip(active_exchanges.keys(), active_exchanges.values(), fetched):
             stats = getattr(exchange, "last_fetch_stats", {}) or {}
@@ -62,8 +63,6 @@ class Scanner:
             for ticker in result:
                 by_symbol.setdefault(ticker.symbol, []).append(ticker)
                 observed_symbols.add(ticker.symbol)
-                if ticker.ask > 0 and ticker.bid > 0:
-                    initial_present[name].add(ticker.symbol)
             if last_error:
                 exchange_status[name] = {"status": "fetch failed", "error": last_error}
             elif stats.get("raw", 0) == 0:
@@ -81,12 +80,17 @@ class Scanner:
                 exchange_id = getattr(exchange, "_exchange_id", name).lower()
                 if exchange_id not in self.TARGETED_RECOVERY_EXCHANGES:
                     continue
-                present = {ticker.symbol for ticker_list in by_symbol.values() for ticker in ticker_list if ticker.exchange == name and ticker.ask > 0 and ticker.bid > 0}
-                missing_candidates = sorted(all_symbols - present)
+                present = {
+                    ticker.symbol
+                    for ticker_list in by_symbol.values()
+                    for ticker in ticker_list
+                    if ticker.exchange == name and ticker.ask > 0 and ticker.bid > 0
+                }
+                missing_candidates = sorted(all_symbols - present)[: self.TARGETED_RECOVERY_MAX_SYMBOLS]
                 if not missing_candidates:
                     continue
                 missing_map = getattr(exchange, "last_fetch_symbols", {}) or {}
-                for symbol in missing_candidates[: self.TARGETED_RECOVERY_MAX_SYMBOLS]:
+                for symbol in missing_candidates:
                     missing_map.setdefault(symbol, "not returned; targeted recovery failed")
                 exchange.last_fetch_symbols = missing_map
                 recovery_tasks.append(exchange.recover_symbols(missing_candidates, self.TARGETED_RECOVERY_MAX_SYMBOLS))
@@ -104,7 +108,10 @@ class Scanner:
                         for ticker in recovered:
                             by_symbol.setdefault(ticker.symbol, []).append(ticker)
                             observed_symbols.add(ticker.symbol)
-                        exchange_status[name] = {"status": "partial", "missing": getattr(active_exchanges[name], "last_fetch_symbols", {}) or {}}
+                        exchange_status[name] = {
+                            "status": "partial",
+                            "missing": getattr(active_exchanges[name], "last_fetch_symbols", {}) or {},
+                        }
 
         # Only symbols with usable quotes on at least two selected exchanges are
         # arbitrage candidates. A symbol existing on only one exchange is a
@@ -139,6 +146,8 @@ class Scanner:
 
         opportunities: list[Opportunity] = []
         positive_spread_symbols = 0
+        detected_opportunities = 0
+        filtered_opportunities = 0
         for symbol, tickers in by_symbol.items():
             valid_tickers = [ticker for ticker in tickers if ticker.ask > 0 and ticker.bid > 0]
             if len(valid_tickers) < 2:
@@ -168,16 +177,22 @@ class Scanner:
 
             net_profit = raw_spread - buy_fee_pct - sell_fee_pct
             opportunity = Opportunity(symbol, buy.exchange, sell.exchange, buy.ask, sell.bid, raw_spread, net_profit, buy.quote_volume, sell.quote_volume)
+            detected_opportunities += 1
             if require_matching_user and not await self._has_matching_users(opportunity):
+                filtered_opportunities += 1
                 continue
             opportunities.append(opportunity)
 
         summary = {
             "selected_exchanges": list(active_exchanges),
+            "exchange_status": exchange_status,
             "returned_by_exchange": {name: len(symbols) for name, symbols in valid_by_exchange.items()},
             "common_markets": len(common_symbols),
             "positive_spreads": positive_spread_symbols,
-            "opportunities_before_filters": len(opportunities),
+            "opportunities_detected": detected_opportunities,
+            "opportunities_filtered": filtered_opportunities,
+            "opportunities_returned": len(opportunities),
+            "opportunities_before_filters": detected_opportunities,
             "coverage_gap_symbols": len(coverage_gaps),
         }
         set_last_scan_diagnostics({"summary": summary, "gaps": coverage_gaps})
@@ -190,7 +205,7 @@ class Scanner:
             logger.exception("failed to purge expired opportunities")
         gc.collect()
         await self.db.increment_stat("scans_run")
-        logger.info("scan complete: %s/%s exchanges returned data, %s common markets, %s positive spreads, %s opportunities, %s coverage gaps", successful_exchanges, len(active_exchanges), len(common_symbols), positive_spread_symbols, len(opportunities), len(coverage_gaps))
+        logger.info("scan complete: %s/%s exchanges returned data, %s common markets, %s positive spreads, %s detected, %s filtered, %s returned, %s coverage gaps", successful_exchanges, len(active_exchanges), len(common_symbols), positive_spread_symbols, detected_opportunities, filtered_opportunities, len(opportunities), len(coverage_gaps))
         return opportunities
 
     async def _has_matching_users(self, opportunity: Opportunity) -> bool:
