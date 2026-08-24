@@ -3,6 +3,7 @@ name: Isolated maintenance context fix
 on:
   push:
     branches: [fix/maintenance-context-v2]
+  workflow_dispatch:
 
 permissions:
   contents: write
