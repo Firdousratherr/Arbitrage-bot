@@ -72,6 +72,7 @@ def build_handlers(db: Database, admin_ids: set[int], exchange_names: list[str],
         CommandHandler("broadcast", admin_only(db, admin_ids, broadcast)), CommandHandler("stats", admin_only(db, admin_ids, stats)),
         CommandHandler("exportusers", admin_only(db, admin_ids, exportusers)), CommandHandler("memstatus", admin_only(db, admin_ids, memstatus)),
         CommandHandler("health", admin_only(db, admin_ids, health)),
+        CommandHandler("exchangestats", admin_only(db, admin_ids, exchangestats)),
         CommandHandler("diagnose", admin_only(db, admin_ids, diagnose)),
         CommandHandler("fixerror", admin_only(db, admin_ids, fixerror)),
         CommandHandler("patchstatus", admin_only(db, admin_ids, patchstatus)),
@@ -274,6 +275,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             "/broadcast MESSAGE   — message VIP users",
             "/stats — view bot statistics",
             "/health — check exchange connectivity",
+            "/exchangestats — per-exchange ticker counts from the last scan",
             "/exportusers — download CSV export",
             "/memstatus — view process memory",
             "/diagnose — summarize recent errors with AI",
@@ -964,6 +966,31 @@ async def health(update, context):
             results.append(f"{name}: unavailable ({type(exc).__name__})")
     await update.message.reply_text("Exchange health\n" + "\n".join(results))
 
+async def exchangestats(update, context):
+    """Show per-exchange results from the most recent scan cycle so a "silent empty" exchange
+    (request failing vs. every ticker missing bid/ask vs. genuinely no data) is a one-command
+    check instead of a guessing game."""
+    exchanges = context.application.bot_data.get("exchanges", {})
+    if not exchanges:
+        await update.message.reply_text("No exchanges configured.")
+        return
+    lines = ["Exchange stats (most recent scan cycle)"]
+    for name, exchange in exchanges.items():
+        stats = getattr(exchange, "last_fetch_stats", None)
+        error = getattr(exchange, "last_fetch_error", None)
+        if error:
+            lines.append(f"{name}: ❌ fetch failed — {error}")
+        elif stats is None:
+            lines.append(f"{name}: no data yet (scan hasn't run)")
+        elif stats["raw"] == 0:
+            lines.append(f"{name}: ⚠️ 0 tickers received")
+        elif stats["usable"] == 0:
+            lines.append(f"{name}: ⚠️ {stats['raw']} tickers received, all {stats['dropped_bid_ask']} dropped for missing/zero bid-ask")
+        else:
+            lines.append(f"{name}: ✅ {stats['usable']}/{stats['raw']} usable (dropped {stats['dropped_bid_ask']} for missing bid-ask)")
+    await update.message.reply_text("\n".join(lines))
+
+
 async def revoke_key(update, context):
     if len(context.args) != 1: await update.message.reply_text("Usage: /revokekey KEY"); return
     await get_db(context)._db().execute("UPDATE vip_keys SET status='revoked' WHERE key=?", (context.args[0].upper(),)); await get_db(context)._db().commit(); await update.message.reply_text("Key revoked.")
@@ -1066,23 +1093,3 @@ async def memstatus(update, context):
         rss = psutil.Process().memory_info().rss / 1024 / 1024
         await update.message.reply_text(f"RSS: {rss:.1f} MB")
     except ImportError: await update.message.reply_text("psutil is not installed.")
-      async def exchangestats(update, context):
-    exchanges = context.application.bot_data.get("exchanges", {})
-    if not exchanges:
-        await update.message.reply_text("No exchanges configured.")
-        return
-    lines = ["Exchange stats (most recent scan cycle)"]
-    for name, exchange in exchanges.items():
-        stats = getattr(exchange, "last_fetch_stats", None)
-        error = getattr(exchange, "last_fetch_error", None)
-        if error:
-            lines.append(f"{name}: ❌ fetch failed — {error}")
-        elif stats is None:
-            lines.append(f"{name}: no data yet (scan hasn't run)")
-        elif stats["raw"] == 0:
-            lines.append(f"{name}: ⚠️ 0 tickers received")
-        elif stats["usable"] == 0:
-            lines.append(f"{name}: ⚠️ {stats['raw']} tickers received, all {stats['dropped_bid_ask']} dropped for missing/zero bid-ask")
-        else:
-            lines.append(f"{name}: ✅ {stats['usable']}/{stats['raw']} usable (dropped {stats['dropped_bid_ask']} for missing bid-ask)")
-    await update.message.reply_text("\n".join(lines))
