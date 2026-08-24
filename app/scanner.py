@@ -94,6 +94,12 @@ class Scanner:
             if require_matching_user and not await self._has_matching_users(opportunity):
                 continue
             opportunities.append(opportunity)
+        try:
+            purged = await self.db.purge_expired_opportunities()
+            if purged:
+                logger.debug("purged %s expired opportunity rows", purged)
+        except Exception:
+            logger.exception("failed to purge expired opportunities")
         gc.collect()
         await self.db.increment_stat("scans_run")
         logger.info(
@@ -138,12 +144,3 @@ class Scanner:
 def opportunity_id(opportunity: Opportunity) -> str:
     value = f"{opportunity.symbol}:{opportunity.buy_exchange}:{opportunity.sell_exchange}:{opportunity.buy_price}:{opportunity.sell_price}:{datetime.now(UTC).timestamp()}"
     return hashlib.sha1(value.encode(), usedforsecurity=False).hexdigest()[:16]
-
-# Patch addition for clearing expired opportunities
-async def run_opportunity_purge(self):
-    try:
-        purged = await self.db.purge_expired_opportunities()
-        if purged:
-            logger.debug("purged %s expired opportunity rows", purged)
-    except Exception:
-      logger.exception("failed to purge expired opportunities")
