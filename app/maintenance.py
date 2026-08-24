@@ -287,7 +287,11 @@ class MaintenanceAssistant:
             affected = parsed.get("affected_files") or []
             recommended = str(parsed.get("recommended_fix") or parsed.get("fix") or "Review the recent error and inspect the relevant app files.")
             confidence = parsed.get("confidence", 0.0)
-            model_used = str(parsed.get("model_used") or self.last_model or self.model)
+            # Trust our own tracking (last_model is set in _ask() to whichever configured model
+            # actually succeeded) over the model's self-reported name in its JSON output. LLMs are
+            # unreliable at identifying themselves and will happily invent a plausible-sounding but
+            # wrong name (e.g. "gpt-4o") they saw often in training, rather than their true identity.
+            model_used = str(self.last_model or self.model or parsed.get("model_used") or "unknown")
             files_text = ", ".join(str(item) for item in affected if item) or "No specific file identified"
             return (
                 f"Summary: {summary}\n\n"
