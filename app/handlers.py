@@ -5,6 +5,7 @@ import json
 import logging
 import re
 from datetime import UTC, datetime, timedelta
+from html import escape
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Update
 from telegram.ext import (CallbackQueryHandler, CommandHandler, ContextTypes, ConversationHandler,
@@ -187,7 +188,6 @@ async def redeem_key(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
                 logger.info("could not notify admin %s", admin_id)
     await db.log_action(user.id, "registered", f"exchanges={','.join(selected)}")
     await update.message.reply_text(f"🎉 {message}\n\n🌐 Exchanges: {', '.join(selected)}\n📋 Use /status to review your account.")
-    # Clear stale session data after successful registration
     context.user_data.pop("email", None)
     context.user_data.pop("selected_exchanges", None)
     return ConversationHandler.END
@@ -208,7 +208,6 @@ async def redeem_vip_key_command(update: Update, context) -> None:
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text("🛑 Registration cancelled. Use /start when ready.")
-    # Clear stale session data on cancel
     context.user_data.pop("email", None)
     context.user_data.pop("selected_exchanges", None)
     return ConversationHandler.END
@@ -439,24 +438,18 @@ async def portfolio(update, context):
     if not await require_vip(update, context): return
     db = get_db(context)
     user_id = update.effective_user.id
-    
-    # Fetch all trades for user with opportunity details
     cursor = await db._db().execute(
-        """SELECT p.id, p.opportunity_id, p.size, p.profit, p.created_at, 
-                  o.symbol FROM paper_trades p 
-           LEFT JOIN opportunities o ON o.id = p.opportunity_id 
+        """SELECT p.id, p.opportunity_id, p.size, p.profit, p.created_at,
+                  o.symbol FROM paper_trades p
+           LEFT JOIN opportunities o ON o.id = p.opportunity_id
            WHERE p.user_id = ? ORDER BY p.created_at DESC""",
-        (user_id,)
+        (user_id,),
     )
     trades = await cursor.fetchall()
-    
-    # Calculate totals
     total_pnl = sum(t["profit"] for t in trades)
-    starting_balance = 10000.0  # Default starting balance for paper trading
+    starting_balance = 10000.0
     current_balance = starting_balance + total_pnl
-    vip_limit = 100000.0  # Max position size for VIP
-    
-    # Format trades for display
+    vip_limit = 100000.0
     trade_dicts = []
     for t in trades:
         trade_dicts.append({
@@ -465,7 +458,6 @@ async def portfolio(update, context):
             "profit": t["profit"],
             "created_at": t["created_at"],
         })
-    
     message = format_portfolio(trade_dicts, current_balance, vip_limit)
     await update.message.reply_text(message, parse_mode="HTML")
 
@@ -635,7 +627,7 @@ async def paper_trade_callback(update, context):
         sell_price=row["sell_price"],
         size=size,
         expected_gross=expected_gross,
-        estimated_net=row["net_profit"],
+        estimated_net=profit,
         profit=profit,
     )
     await query.edit_message_text(
@@ -698,7 +690,7 @@ async def papertrade(update, context):
         sell_price=row["sell_price"],
         size=size,
         expected_gross=expected_gross,
-        estimated_net=row["net_profit"],
+        estimated_net=profit,
         profit=profit,
     )
     await update.message.reply_text(message)
@@ -718,8 +710,6 @@ async def leaderboard(update, context):
     period = "alltime" if context.args and context.args[0].lower() == "alltime" else datetime.now(UTC).strftime("%G-%V")
     where = "1=1" if period == "alltime" else "period=?"; args = () if period == "alltime" else (period,)
     cursor = await get_db(context)._db().execute(f"SELECT u.username, u.telegram_id, SUM(p.profit) total FROM paper_trades p JOIN users u ON u.telegram_id=p.user_id WHERE u.leaderboard_hidden=0 AND {where} GROUP BY p.user_id ORDER BY total DESC LIMIT 10", args); rows = await cursor.fetchall()
-    
-    # Check if user is in top 10
     user_rank = None
     user_profit = None
     cursor = await get_db(context)._db().execute(f"SELECT ROW_NUMBER() OVER (ORDER BY total DESC) rank, COALESCE(SUM(p.profit), 0) total FROM paper_trades p WHERE p.user_id = ? AND {where}", (update.effective_user.id, *args))
@@ -727,7 +717,6 @@ async def leaderboard(update, context):
     if user_row and user_row["total"]:
         user_rank = user_row["rank"]
         user_profit = user_row["total"]
-    
     period_name = "All-Time" if period == "alltime" else "Weekly"
     message = format_leaderboard(list(rows), period_name, user_rank, user_profit)
     await update.message.reply_text(message, parse_mode="HTML")
@@ -748,7 +737,7 @@ async def admin_access(update, context):
         await update.effective_message.reply_text("❌ Invalid admin secret key.")
         return
     context.user_data["admin_unlocked"] = True
-    await update.effective_message.reply_text("Admin settings unlocked for this session.")
+    await update.effective_message.reply_text("🛡️ <b>Admin session unlocked</b>\n🔐 Protected tools are now available.", parse_mode="HTML")
 
 
 def maintenance_service(context) -> MaintenanceAssistant:
@@ -853,6 +842,25 @@ async def maintenance_callback(update, context):
     await query.edit_message_text(actions[action](proposal_id))
 
 
+async def _animate_scan_progress(message) -> None:
+    frames = [
+        "🔎 <b>Scanning exchanges</b> · <i>connecting…</i>",
+        "📡 <b>Scanning exchanges</b> · <i>fetching market data…</i>",
+        "⚡ <b>Scanning exchanges</b> · <i>comparing prices…</i>",
+        "🧮 <b>Scanning exchanges</b> · <i>calculating spreads…</i>",
+    ]
+    index = 0
+    try:
+        while True:
+            await message.edit_text(frames[index % len(frames)], parse_mode="HTML")
+            index += 1
+            await asyncio.sleep(0.8)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.debug("scan progress animation stopped", exc_info=True)
+
+
 async def scan_command(update, context):
     if not await require_vip(update, context):
         return
@@ -860,45 +868,43 @@ async def scan_command(update, context):
     if not scanner:
         await update.effective_message.reply_text("Scanner is still starting. Try again shortly.")
         return
-    
-    # Send progress message
-    progress_msg = await update.effective_message.reply_text("🔍 Scanning exchanges…")
-    
-    user = await get_db(context).get_user(update.effective_user.id)
-    preferences = user_filters(user)
-    selected = set(json.loads(user["selected_exchanges"] or "[]"))
-    active_selected = selected & set(scanner.exchanges)
-    
-    if len(active_selected) < 2:
-        await update.effective_message.reply_text(
-            format_error(
-                "Scan needs at least two active selected exchanges.",
-                f"Your selection: {', '.join(sorted(selected)) or 'none'}. Use /exchanges."
-            ),
-            parse_mode="HTML"
-        )
-        return
-    
-    # Run scan
-    opportunities = await scanner.run_cycle(require_matching_user=False, exchange_names=active_selected)
-    selected_candidates = [
-        opportunity for opportunity in opportunities
-        if opportunity.buy_exchange in selected and opportunity.sell_exchange in selected
-    ]
-    visible = [opportunity for opportunity in selected_candidates if matches(opportunity, preferences)]
-    visible = sorted(visible, key=lambda opportunity: opportunity.net_profit, reverse=True)[:preferences["max_results"]]
-    
-    # Delete progress message and send count
+
+    progress_msg = await update.effective_message.reply_text("🔎 <b>Scanning exchanges</b>…", parse_mode="HTML")
+    animation_task = asyncio.create_task(_animate_scan_progress(progress_msg))
     try:
-        await context.bot.delete_message(update.effective_user.id, progress_msg.message_id)
-    except Exception:
-        pass
-    
-    # Send count message
+        user = await get_db(context).get_user(update.effective_user.id)
+        preferences = user_filters(user)
+        selected = set(json.loads(user["selected_exchanges"] or "[]"))
+        active_selected = selected & set(scanner.exchanges)
+
+        if len(active_selected) < 2:
+            await update.effective_message.reply_text(
+                format_error(
+                    "Scan needs at least two active selected exchanges.",
+                    f"Your selection: {', '.join(sorted(selected)) or 'none'}. Use /exchanges."
+                ),
+                parse_mode="HTML"
+            )
+            return
+
+        opportunities = await scanner.run_cycle(require_matching_user=False, exchange_names=active_selected)
+        selected_candidates = [
+            opportunity for opportunity in opportunities
+            if opportunity.buy_exchange in selected and opportunity.sell_exchange in selected
+        ]
+        visible = [opportunity for opportunity in selected_candidates if matches(opportunity, preferences)]
+        visible = sorted(visible, key=lambda opportunity: opportunity.net_profit, reverse=True)[:preferences["max_results"]]
+    finally:
+        animation_task.cancel()
+        await asyncio.gather(animation_task, return_exceptions=True)
+        try:
+            await context.bot.delete_message(update.effective_user.id, progress_msg.message_id)
+        except Exception:
+            pass
+
     count_msg = format_scan_count(len(visible))
     await update.effective_message.reply_text(count_msg, parse_mode="HTML")
-    
-    # Send opportunity cards
+
     db = get_db(context)
     for index, item in enumerate(visible, 1):
         identifier = opportunity_id(item)
@@ -976,25 +982,30 @@ async def health(update, context):
     for name, exchange in context.application.bot_data.get("exchanges", {}).items():
         try:
             await exchange.fetch_tickers(["BTC/USDT"])
-            results.append(f"{name}: ok")
+            error = getattr(exchange, "last_fetch_error", None)
+            stats = getattr(exchange, "last_fetch_stats", None) or {}
+            if error:
+                results.append(f"{name}: ❌ unavailable — {error}")
+            elif stats.get("usable", 0) > 0:
+                results.append(f"{name}: ✅ ok ({stats['usable']} ticker usable)")
+            else:
+                results.append(f"{name}: ⚠️ request returned no usable BTC/USDT data")
         except Exception as exc:
-            results.append(f"{name}: unavailable ({type(exc).__name__})")
-    await update.message.reply_text("Exchange health\n" + "\n".join(results))
+            results.append(f"{name}: ❌ unavailable ({type(exc).__name__}: {exc})")
+    await update.message.reply_text("🩺 <b>Exchange health</b>\n━━━━━━━━━━━━━━\n" + "\n".join(results), parse_mode="HTML")
+
 
 async def exchangestats(update, context):
-    """Show per-exchange results from the most recent scan cycle so a "silent empty" exchange
-    (request failing vs. every ticker missing bid/ask vs. genuinely no data) is a one-command
-    check instead of a guessing game."""
     exchanges = context.application.bot_data.get("exchanges", {})
     if not exchanges:
         await update.message.reply_text("No exchanges configured.")
         return
-    lines = ["Exchange stats (most recent scan cycle)"]
+    lines = ["📊 <b>Exchange stats</b> · most recent scan", "━━━━━━━━━━━━━━"]
     for name, exchange in exchanges.items():
         stats = getattr(exchange, "last_fetch_stats", None)
         error = getattr(exchange, "last_fetch_error", None)
         if error:
-            lines.append(f"{name}: ❌ fetch failed — {error}")
+            lines.append(f"{name}: ❌ fetch failed — {escape(error)}")
         elif stats is None:
             lines.append(f"{name}: no data yet (scan hasn't run)")
         elif stats["raw"] == 0:
@@ -1002,13 +1013,10 @@ async def exchangestats(update, context):
         elif stats["usable"] == 0:
             lines.append(f"{name}: ⚠️ {stats['raw']} tickers received, all {stats['dropped_bid_ask']} dropped for missing/zero bid-ask")
         elif stats.get("fallback_used"):
-            lines.append(
-                f"{name}: ✅ {stats['usable']} usable via order-book fallback "
-                f"(bulk endpoint dropped all {stats['raw']} tickers for missing bid-ask)"
-            )
+            lines.append(f"{name}: ✅ {stats['usable']} usable via order-book fallback (bulk dropped {stats['raw']} for missing bid-ask)")
         else:
             lines.append(f"{name}: ✅ {stats['usable']}/{stats['raw']} usable (dropped {stats['dropped_bid_ask']} for missing bid-ask)")
-    await update.message.reply_text("\n".join(lines))
+    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 
 
 async def revoke_key(update, context):
@@ -1048,7 +1056,7 @@ async def userinfo(update, context):
         return
     row = await get_db(context).find_user(context.args[0]);
     if not row: await update.message.reply_text("User not found."); return
-    actions = await get_db(context).user_actions(row["telegram_id"]); await update.message.reply_text(json.dumps(dict(row), indent=2) + "\nActions:\n" + "\n".join(f"{a['timestamp']} {a['action']} {a['details']}" for a in actions))
+    actions = await get_db(context).user_actions(row["telegram_id"]); await update.effective_message.reply_text(json.dumps(dict(row), indent=2) + "\nActions:\n" + "\n".join(f"{a['timestamp']} {a['action']} {a['details']}" for a in actions))
 
 
 async def listusers(update, context):
@@ -1092,11 +1100,37 @@ async def broadcast(update, context):
     if not context.args:
         await update.message.reply_text("Usage: /broadcast YOUR_MESSAGE")
         return
-    message = " ".join(context.args); sent = 0
+
+    raw_message = " ".join(context.args).strip()
+    admin = update.effective_user
+    admin_name = escape(admin.full_name or "Administrator")
+    admin_username = f"@{escape(admin.username)}" if admin.username else "Telegram Administrator"
+    broadcast_message = (
+        "📢 <b>OFFICIAL ADMIN ANNOUNCEMENT</b>\n"
+        "━━━━━━━━━━━━━━\n"
+        f"🛡️ <b>From:</b> {admin_name}\n"
+        f"👤 {admin_username}\n\n"
+        f"{escape(raw_message)}\n\n"
+        "━━━━━━━━━━━━━━\n"
+        "🤖 <i>Arbitrage Bot • Admin Broadcast</i>"
+    )
+
+    sent = 0
+    failed = 0
     for row in await get_db(context).list_users("vip"):
-        try: await context.bot.send_message(row["telegram_id"], message); sent += 1
-        except Exception: logger.info("broadcast skipped for %s", row["telegram_id"])
-    await update.message.reply_text(f"Broadcast sent to {sent} users.")
+        try:
+            await context.bot.send_message(row["telegram_id"], broadcast_message, parse_mode="HTML")
+            sent += 1
+        except Exception:
+            failed += 1
+            logger.info("broadcast skipped for %s", row["telegram_id"], exc_info=True)
+
+    await update.effective_message.reply_text(
+        "📢 <b>Broadcast complete</b>\n━━━━━━━━━━━━━━\n"
+        f"✅ Delivered: <b>{sent}</b>\n"
+        f"⚠️ Failed: <b>{failed}</b>",
+        parse_mode="HTML",
+    )
 
 
 async def stats(update, context):
