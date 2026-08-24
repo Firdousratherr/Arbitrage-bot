@@ -18,15 +18,7 @@ from groq import APIConnectionError, APIStatusError, APITimeoutError, AsyncGroq
 
 
 _SUPPORTED_TEMPERATURE_MODELS = (
-    "gpt-oss",
-    "llama",
-    "mistral",
-    "mixtral",
-    "gemma",
-    "qwen",
-    "deepseek",
-    "command-r",
-    "openai/",
+    "gpt-oss", "llama", "mistral", "mixtral", "gemma", "qwen", "deepseek", "command-r", "openai/",
 )
 
 from .logging_setup import recent_errors
@@ -94,12 +86,14 @@ class MaintenanceAssistant:
         return "No recent application errors have been captured." if not errors else "\n".join(self._redact(error)[:800] for error in errors[-12:])
 
     def _ensure_repo(self) -> Path:
-        if not self.repo_path.is_dir(): raise MaintenanceError(f"Maintenance repository is unavailable: {self.repo_path}")
+        if not self.repo_path.is_dir():
+            raise MaintenanceError(f"Maintenance repository is unavailable: {self.repo_path}")
         return self.repo_path
 
     @classmethod
     def _is_protected_path(cls, path: Path) -> bool:
-        names = {part.lower() for part in path.parts}; filename = path.name.lower()
+        names = {part.lower() for part in path.parts}
+        filename = path.name.lower()
         if names & cls.PROTECTED_NAMES or filename.startswith(".env"): return True
         if filename.endswith(cls.PROTECTED_SUFFIXES): return True
         return any(marker in filename for marker in cls.PROTECTED_MARKERS)
@@ -109,7 +103,8 @@ class MaintenanceAssistant:
         return cls._is_protected_path(path) or any(part.lower() in cls.PROTECTED_PATCH_DIRS for part in path.parts)
 
     def _repository_files(self) -> list[Path]:
-        root = self._ensure_repo(); excluded_dirs = {".git", ".venv", "venv", "__pycache__", ".mypy_cache", ".pytest_cache", "node_modules"}
+        root = self._ensure_repo()
+        excluded_dirs = {".git", ".venv", "venv", "__pycache__", ".mypy_cache", ".pytest_cache", "node_modules"}
         files = []
         for path in root.rglob("*"):
             if not path.is_file(): continue
@@ -120,11 +115,13 @@ class MaintenanceAssistant:
         return sorted(files, key=lambda path: str(path.relative_to(root)))
 
     def list_repository_files(self) -> list[str]:
-        root = self._ensure_repo(); return [str(path.relative_to(root)) for path in self._repository_files()]
+        root = self._ensure_repo()
+        return [str(path.relative_to(root)) for path in self._repository_files()]
 
     def _safe_repository_path(self, relative_path: str) -> Path:
         root = self._ensure_repo(); candidate = (root / relative_path).resolve()
-        if not candidate.is_relative_to(root) or self._is_protected_path(candidate.relative_to(root)): raise MaintenanceError("Repository path is outside the permitted readable files.")
+        if not candidate.is_relative_to(root) or self._is_protected_path(candidate.relative_to(root)):
+            raise MaintenanceError("Repository path is outside the permitted readable files.")
         if not candidate.is_file(): raise MaintenanceError(f"Repository file not found: {relative_path}")
         return candidate
 
@@ -148,26 +145,31 @@ class MaintenanceAssistant:
             except OSError: continue
             if b"\x00" in raw[:4096]: continue
             text = raw[:self.MAX_FILE_BYTES].decode("utf-8", errors="replace")
-            lowered_path = relative.lower(); lowered_text = text.lower()
-            score = sum(lowered_text.count(term) for term in terms) + sum(8 for term in terms if term in lowered_path)
+            lowered_path = relative.lower(); lowered_text = text.lower(); normalized_path = lowered_path.replace("\\", "/")
+            score = sum(lowered_text.count(term) for term in terms) + sum(8 for term in terms if term in normalized_path)
             if relative in changed_paths: score += 12
-            normalized_path = lowered_path.replace("\\", "/")
             if normalized_path.startswith("app/"): score += 12
-            if callable_terms and any(re.search(rf"^\s*(?:async\s+)?def\s+{re.escape(term)}\b", text, re.MULTILINE | re.IGNORECASE) for term in callable_terms): score += 80
+            definition_lines = []
+            for term in callable_terms:
+                definition_lines.extend(index for index, line in enumerate(text.splitlines()) if re.search(rf"^\s*(?:async\s+)?def\s+{re.escape(term)}\b", line, re.IGNORECASE))
+            if definition_lines: score += 80
             if normalized_path.startswith("tests/") or "/tests/" in normalized_path: score -= 16
             if normalized_path.endswith((".diff", ".patch")): score -= 40
             if score <= 0: continue
-            snippets = []; lines = text.splitlines(); matched_lines = [index for index, line in enumerate(lines) if any(term in line.lower() for term in terms)]
+            lines = text.splitlines()
+            matched_lines = sorted(set(definition_lines or [index for index, line in enumerate(lines) if any(term in line.lower() for term in terms)]))
+            if not matched_lines: continue
             if len(matched_lines) > 8: matched_lines = matched_lines[:4] + matched_lines[-4:]
-            included_lines = set()
+            snippets = []; included_lines = set()
             for index in matched_lines:
                 for nearby in range(max(0, index - 2), min(len(lines), index + 3)):
                     if nearby in included_lines: continue
                     included_lines.add(nearby); snippets.append(f"{nearby + 1}: {self._redact(lines[nearby])[:500]}")
                     if len(snippets) == 12: break
                 if len(snippets) == 12: break
-            matches.append({"path": relative, "score": score, "snippets": snippets})
-        matches.sort(key=lambda item: (-item["score"], item["path"])); return matches[:max_results]
+            matches.append({"path": relative, "score": score, "snippets": snippets, "definition_lines": definition_lines})
+        matches.sort(key=lambda item: (-item["score"], item["path"]))
+        return matches[:max_results]
 
     def _git_context(self, paths: list[str]) -> str:
         root = self._ensure_repo(); sections = []
@@ -193,8 +195,9 @@ class MaintenanceAssistant:
         matches = self.search_repository(query); paths = [item["path"] for item in matches]
         sections = ["Repository: " + str(self.repo_path), "Files discovered: " + str(len(self.list_repository_files())), "Relevant search results:"]
         for item in matches:
+            definition_lines = item.get("definition_lines") or []
             line_numbers = [int(snippet.split(":", 1)[0]) for snippet in item["snippets"] if snippet.split(":", 1)[0].isdigit()]
-            first_match = min(line_numbers or [1]); last_match = max(line_numbers or [120]); first_line = max(1, first_match - 12)
+            first_match = min(definition_lines or line_numbers or [1]); last_match = max(definition_lines or line_numbers or [120]); first_line = max(1, first_match - 12)
             source_window = self.read_repository_file(item["path"], first_line, first_match + 60)
             if last_match > first_match + 60:
                 source_window += "\n... [middle of file omitted] ...\n" + self.read_repository_file(item["path"], max(first_match + 61, last_match - 24), last_match + 60)
