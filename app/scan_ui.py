@@ -12,7 +12,53 @@ def _exchange_line(exchanges: list[str]) -> str:
     return " ↔ ".join(escape(name.upper()) for name in exchanges) or "SELECTED EXCHANGES"
 
 
-def _format_scan_result(count: int) -> str:
+def _filter_reasons(opportunity, filters: dict) -> list[str]:
+    reasons: list[str] = []
+    profit = float(opportunity.net_profit)
+    spread = float(opportunity.raw_spread)
+    min_profit = float(filters.get("min_profit", 0))
+    max_profit = float(filters.get("max_profit", float("inf")))
+    min_spread = float(filters.get("min_spread", 0))
+    max_spread = float(filters.get("max_spread", float("inf")))
+    min_volume = float(filters.get("min_volume", 0))
+    volume = min(float(opportunity.volume_buy), float(opportunity.volume_sell))
+
+    if profit < min_profit:
+        reasons.append(f"Profit {profit:.2f}% < minimum {min_profit:.2f}%")
+    elif profit > max_profit:
+        reasons.append(f"Profit {profit:.2f}% > maximum {max_profit:.2f}%")
+    if spread < min_spread:
+        reasons.append(f"Spread {spread:.2f}% < minimum {min_spread:.2f}%")
+    elif spread > max_spread:
+        reasons.append(f"Spread {spread:.2f}% > maximum {max_spread:.2f}%")
+    if volume < min_volume:
+        reasons.append(f"Volume ${volume:,.2f} < minimum ${min_volume:,.2f}")
+
+    symbol = str(opportunity.symbol).upper()
+    watchlist = {str(item).upper() for item in filters.get("watchlist", [])}
+    blacklist = {str(item).upper() for item in filters.get("blacklist", [])}
+    if watchlist and symbol not in watchlist:
+        reasons.append("Symbol is not in watchlist")
+    if symbol in blacklist:
+        reasons.append("Symbol is blacklisted")
+    return reasons
+
+
+def _format_filtered_candidates(candidates: list, filters: dict) -> list[str]:
+    lines: list[str] = []
+    for opportunity in candidates[:8]:
+        reasons = _filter_reasons(opportunity, filters)
+        if not reasons:
+            continue
+        symbol = escape(str(opportunity.symbol))
+        detail = "; ".join(escape(reason) for reason in reasons)
+        lines.append(f"• <b>{symbol}</b> — {detail}")
+    if len(candidates) > 8:
+        lines.append(f"• … and {len(candidates) - 8} more candidates")
+    return lines
+
+
+def _format_scan_result(count: int, candidates: list | None = None, filters: dict | None = None) -> str:
     data = get_last_scan_snapshot() or {}
     summary = data.get("summary", {}) if isinstance(data, dict) else {}
     gaps = data.get("gaps", []) if isinstance(data, dict) else []
@@ -28,6 +74,10 @@ def _format_scan_result(count: int) -> str:
             "🔍 <b>No opportunities matched your filters</b>",
             f"📊 {before_filters} profitable candidate{'s' if before_filters != 1 else ''} existed before filters.",
         ]
+        if candidates and filters:
+            filtered_lines = _format_filtered_candidates(candidates, filters)
+            if filtered_lines:
+                lines.extend(["", "❌ <b>FILTERED OUT</b>", *filtered_lines])
     else:
         lines = ["🔍 <b>No arbitrage opportunities found</b>"]
 
@@ -75,7 +125,6 @@ async def _animate_scan_progress(message, exchanges: list[str]) -> None:
 
 def install() -> None:
     handlers._animate_scan_progress = _animate_scan_progress
-    handlers.format_scan_count = _format_scan_result
 
     async def scan_command(update, context):
         if not await handlers.require_vip(update, context):
@@ -120,7 +169,10 @@ def install() -> None:
                 await context.bot.delete_message(update.effective_user.id, progress_msg.message_id)
             except Exception:
                 pass
-        await update.effective_message.reply_text(handlers.format_scan_count(len(visible)), parse_mode="HTML")
+        await update.effective_message.reply_text(
+            _format_scan_result(len(visible), selected_candidates, preferences),
+            parse_mode="HTML",
+        )
         db = handlers.get_db(context)
         for index, item in enumerate(visible, 1):
             identifier = handlers.opportunity_id(item)
