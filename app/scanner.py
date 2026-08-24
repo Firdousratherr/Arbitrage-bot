@@ -16,6 +16,12 @@ logger = logging.getLogger(__name__)
 
 
 class Scanner:
+    # XT and LBank can omit markets from their bulk ticker response. When another
+    # selected exchange proves that a symbol exists, recover that symbol directly
+    # instead of reporting it as "not returned" and losing a possible opportunity.
+    TARGETED_RECOVERY_EXCHANGES = {"xt", "lbank"}
+    TARGETED_RECOVERY_MAX_SYMBOLS = 100
+
     def __init__(self, db: Database, exchanges: dict, interval: int, concurrency: int):
         self.db = db
         self.exchanges = exchanges
@@ -88,8 +94,46 @@ class Scanner:
             else:
                 exchange_status[name] = {"status": "ok"}
 
+        # Second pass: if XT/LBank omitted a symbol completely from bulk tickers but
+        # another exchange returned it, make a bounded targeted request for that
+        # symbol. This closes the exact gap that produced "xt: not returned" in scans.
+        all_symbols = set(by_symbol)
+        if all_symbols:
+            recovery_tasks = []
+            recovery_names = []
+            for name, exchange in active_exchanges.items():
+                exchange_id = getattr(exchange, "_exchange_id", name).lower()
+                if exchange_id not in self.TARGETED_RECOVERY_EXCHANGES:
+                    continue
+                present = {ticker.symbol for ticker in by_symbol.values() for ticker in ticker if ticker.exchange == name}
+                missing_candidates = sorted(all_symbols - present)
+                if not missing_candidates:
+                    continue
+                missing_map = getattr(exchange, "last_fetch_symbols", {}) or {}
+                for symbol in missing_candidates[: self.TARGETED_RECOVERY_MAX_SYMBOLS]:
+                    missing_map.setdefault(symbol, "not returned; targeted recovery failed")
+                exchange.last_fetch_symbols = missing_map
+                recovery_tasks.append(exchange.recover_symbols(missing_candidates, self.TARGETED_RECOVERY_MAX_SYMBOLS))
+                recovery_names.append(name)
+
+            if recovery_tasks:
+                recovered_batches = await asyncio.gather(*recovery_tasks, return_exceptions=True)
+                for name, recovered in zip(recovery_names, recovered_batches):
+                    if isinstance(recovered, Exception):
+                        logger.warning("%s targeted symbol recovery failed: %s", name, recovered)
+                        continue
+                    if recovered:
+                        successful_exchanges += 1 if exchange_status.get(name, {}).get("status") != "ok" else 0
+                        for ticker in recovered:
+                            by_symbol.setdefault(ticker.symbol, []).append(ticker)
+                            observed_symbols.add(ticker.symbol)
+                        exchange_status[name] = {
+                            "status": "partial",
+                            "missing": getattr(active_exchanges[name], "last_fetch_symbols", {}) or {},
+                        }
+
         diagnostics: list[dict] = []
-        for symbol in sorted(observed_symbols):
+        for symbol in sorted(observed_symbols | set(by_symbol)):
             statuses: dict[str, str] = {}
             present_exchanges = {ticker.exchange for ticker in by_symbol.get(symbol, []) if ticker.ask > 0 and ticker.bid > 0}
             for name in active_exchanges:
