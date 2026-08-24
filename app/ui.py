@@ -4,6 +4,8 @@ from typing import Iterable, Sequence
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
+from .scan_diagnostics import get_last_scan_diagnostics
+
 
 SECTION_SEPARATOR = "━━━━━━━━━━━━━━"
 
@@ -36,10 +38,24 @@ def format_success(message: str) -> str:
 
 
 def format_scan_count(count: int) -> str:
-    """Simple count message for scan results."""
-    if count == 0:
-        return "🔍 No opportunities found matching your filters"
-    return f"🔍 Found {count} opportunities"
+    """Show result count plus compact symbol-level exchange data gaps."""
+    lines = [
+        "🔍 No opportunities found matching your filters" if count == 0 else f"🔍 Found {count} opportunities",
+    ]
+    diagnostics = get_last_scan_diagnostics()
+    if diagnostics:
+        lines.extend(["", "⚠️ DATA GAPS"])
+        for item in diagnostics[:8]:
+            symbol = _escape_html(str(item.get("symbol", "unknown")))
+            gaps = item.get("gaps", {}) or {}
+            gap_text = "; ".join(
+                f"{_escape_html(str(exchange))}: {_escape_html(str(reason))[:120]}"
+                for exchange, reason in gaps.items()
+            )
+            lines.append(f"• <b>{symbol}</b> — {gap_text}")
+        if len(diagnostics) > 8:
+            lines.append(f"• … and {len(diagnostics) - 8} more symbols with data gaps")
+    return "\n".join(lines)
 
 
 def format_opportunity_card(
@@ -49,17 +65,7 @@ def format_opportunity_card(
     tag: str | None = None,
     trade_size: float | None = None,
 ) -> str:
-    """
-    Unified opportunity card template for scans/alerts/loose/verified.
-    
-    Args:
-        opportunity: Opportunity object with symbol, exchanges, prices, spread, net_profit, volumes, metadata
-        identifier: Unique ID for this opportunity
-        card_number: Optional card number (1-10 for emoji, then #4+)
-        tag: Card tag - auto-determined if None
-        trade_size: Optional trade size for profit calcs
-    """
-    # Determine tag if not provided
+    """Unified opportunity card template for scans/alerts/loose/verified."""
     if tag is None:
         if card_number is not None:
             if card_number <= 10:
@@ -69,18 +75,16 @@ def format_opportunity_card(
                 tag = f"#{card_number} 🔍 SCAN RESULT"
         elif getattr(opportunity, "loose_mode", False):
             tag = "⚠️ LOOSE MODE ARBITRAGE"
-        elif getattr(opportunity, "net_profit", 0) >= 3.0:  # High margin threshold
+        elif getattr(opportunity, "net_profit", 0) >= 3.0:
             tag = "🚨 HIGH-MARGIN ARBITRAGE"
         else:
             tag = "🔴 LIVE ARBITRAGE"
-    
-    # Extract metadata
+
     metadata = getattr(opportunity, "metadata", {}) or {}
     buy_transfer = metadata.get("buy_transfer", {})
     sell_transfer = metadata.get("sell_transfer", {})
     transfer_verify = metadata.get("transfer_verification")
-    
-    # Build transfer line
+
     if transfer_verify == "loose_mode":
         transfer_line = "⚠️ Transfer checks skipped — verify manually"
     elif transfer_verify == "not_verified":
@@ -93,11 +97,7 @@ def format_opportunity_card(
             transfer_line = f"✅ Verified ({matching_net})"
         else:
             transfer_line = "⚠️ Verification pending"
-    
-    # Calculate profit breakdown if trade_size provided
-    gross_profit_val = ""
-    fees_val = ""
-    network_fee_val = ""
+
     if trade_size and trade_size > 0:
         gross = trade_size * (opportunity.raw_spread / 100)
         fees = trade_size * ((opportunity.raw_spread - opportunity.net_profit) / 100)
@@ -109,37 +109,35 @@ def format_opportunity_card(
         gross_profit_val = "%"
         fees_val = "%"
         net_val = "%"
-    
+
     lines = [
         tag,
         "",
         f"Pair: <b>{_escape_html(opportunity.symbol)}</b>",
         SECTION_SEPARATOR,
-        f"🟢 BUY",
+        "🟢 BUY",
         f"   Exchange : {_escape_html(opportunity.buy_exchange)}",
         f"   Price    : ${_compact_number(opportunity.buy_price, 8)}",
         "",
-        f"🔴 SELL",
+        "🔴 SELL",
         f"   Exchange : {_escape_html(opportunity.sell_exchange)}",
         f"   Price    : ${_compact_number(opportunity.sell_price, 8)}",
         SECTION_SEPARATOR,
-        f"📊 Profit Breakdown",
+        "📊 Profit Breakdown",
         f"• Gross Profit : {gross_profit_val if trade_size else f'{opportunity.raw_spread:.2f}%'}",
         f"• Trading Fees : - {fees_val if trade_size else f'{opportunity.raw_spread - opportunity.net_profit:.2f}%'}",
         f"• Net Profit   : {net_val if trade_size else f'{opportunity.net_profit:.2f}%'}",
         f"• Net Spread   : {opportunity.net_profit:.2f}%",
         "",
-        f"📋 Extra Details",
+        "📋 Extra Details",
         f"• Trade Size   : {_compact_number(trade_size or 1000, 4)}",
         f"• Coin Amount  : {_compact_number(trade_size or 1000 / opportunity.buy_price if opportunity.buy_price > 0 else 0, 6)} {opportunity.symbol.split('/')[0]}",
         f"• {transfer_line}",
     ]
-    
     return "\n".join(lines)
 
 
 def opportunity_buttons(identifier: str) -> InlineKeyboardMarkup:
-    """Buttons for opportunity cards."""
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📖 View Order Book", callback_data=f"details:{identifier}")],
         [InlineKeyboardButton("🎮 Paper Trade This!", callback_data=f"paper:{identifier}")],
@@ -147,22 +145,17 @@ def opportunity_buttons(identifier: str) -> InlineKeyboardMarkup:
 
 
 def format_background_alert(opportunity, identifier: str) -> str:
-    """Format a live background alert (no numbering)."""
     return format_opportunity_card(opportunity, identifier, card_number=None)
 
 
 def format_scan_summary(opportunities: Sequence[object], *, exchange_count: int, opportunities_found: int, matching_selected: int, results_shown: int) -> str:
-    """
-    DEPRECATED - use format_scan_count instead.
-    Kept for backwards compatibility but will be removed.
-    """
+    """Deprecated compatibility wrapper."""
     if not opportunities:
         return "🔍 No opportunities found matching your filters"
     return f"🔍 Found {len(opportunities)} opportunities"
 
 
 def format_order_book(levels: Iterable[Sequence[float]], *, title: str) -> str:
-    """Format order book display."""
     rows = []
     for level in list(levels)[:5]:
         if len(level) >= 2:
@@ -172,7 +165,6 @@ def format_order_book(levels: Iterable[Sequence[float]], *, title: str) -> str:
 
 
 def format_opportunity_details(row: dict, buy_fill: float, sell_fill: float, buy_fee: float, sell_fee: float, gross_profit: float, net_profit: float, buy_slippage: float, sell_slippage: float, transfer_text: str, buy_book: Sequence[Sequence[float]], sell_book: Sequence[Sequence[float]]) -> str:
-    """Format detailed opportunity view with order book."""
     lines = [
         f"📖 ORDER BOOK • <b>{_escape_html(row['symbol'])}</b>",
         SECTION_SEPARATOR,
@@ -182,7 +174,7 @@ def format_opportunity_details(row: dict, buy_fill: float, sell_fill: float, buy
         f"<b>🔴 {_escape_html(row['sell_exchange'])} bids:</b>",
         format_order_book(sell_book, title=""),
         SECTION_SEPARATOR,
-        f"📊 Analysis",
+        "📊 Analysis",
         f"• Gross Profit  : ${_compact_number(gross_profit, 4)}",
         f"• Buy Fee       : {buy_fee * 100:.4f}%",
         f"• Sell Fee      : {sell_fee * 100:.4f}%",
@@ -192,14 +184,13 @@ def format_opportunity_details(row: dict, buy_fill: float, sell_fill: float, buy
         f"• Volume (buy)  : {_compact_number(row['volume_buy'])}",
         f"• Volume (sell) : {_compact_number(row['volume_sell'])}",
         SECTION_SEPARATOR,
-        f"🛡️ Transfer Status",
+        "🛡️ Transfer Status",
         transfer_text.replace("\n", " • "),
     ]
     return "\n".join(lines)
 
 
 def format_paper_trade(opportunity, *, buy_price: float, sell_price: float, size: float, expected_gross: float, estimated_net: float, profit: float) -> str:
-    """Format paper trade confirmation."""
     lines = [
         "🎮 PAPER TRADE OPENED",
         SECTION_SEPARATOR,
@@ -216,11 +207,9 @@ def format_paper_trade(opportunity, *, buy_price: float, sell_price: float, size
 
 
 def format_status_message(vip_status: str, vip_expiry: str | None, exchanges: list[str], loose_mode: bool, paused: bool, filters: dict) -> str:
-    """Format account status display."""
     expiry_text = ""
     if vip_expiry:
         expiry_text = f" (until {vip_expiry[:10]})" if len(vip_expiry) > 10 else f" ({vip_expiry})"
-    
     lines = [
         "👤 ACCOUNT",
         SECTION_SEPARATOR,
@@ -239,10 +228,8 @@ def format_status_message(vip_status: str, vip_expiry: str | None, exchanges: li
 
 
 def format_filters_message(filters: dict) -> str:
-    """Format filters display."""
     watchlist_text = ", ".join(filters.get("watchlist", [])) if filters.get("watchlist") else "none — scanning all pairs"
     blacklist_text = ", ".join(filters.get("blacklist", [])) if filters.get("blacklist") else "none"
-    
     lines = [
         "🎛 YOUR FILTERS",
         SECTION_SEPARATOR,
@@ -263,37 +250,25 @@ def format_filters_message(filters: dict) -> str:
 
 
 def format_leaderboard(rows: list, period: str, user_rank: int | None, user_profit: float | None) -> str:
-    """Format leaderboard display."""
     emoji_ranks = ["🥇", "🥈", "🥉"]
-    
     if not rows:
         return "🏆 LEADERBOARD\n" + SECTION_SEPARATOR + "\n📭 No trades yet"
-    
-    lines = [
-        f"🏆 LEADERBOARD — {period.upper()}",
-        SECTION_SEPARATOR,
-    ]
-    
+    lines = [f"🏆 LEADERBOARD — {period.upper()}", SECTION_SEPARATOR]
     for index, row in enumerate(rows[:10], 1):
         emoji = emoji_ranks[index - 1] if index <= 3 else f"{index}."
         username = row.get("username") or f"User{row.get('telegram_id')}"
         profit = row.get("total", 0)
         lines.append(f"{emoji} {username}   ${_compact_number(profit, 4)}")
-    
     if user_rank is not None and user_profit is not None:
         lines.append("")
         lines.append(f"Your rank: #{user_rank}  •  ${_compact_number(user_profit, 4)}")
-    
     lines.append(SECTION_SEPARATOR)
     lines.append("/leaderboard hide — remove yourself from public view")
-    
     return "\n".join(lines)
 
 
 def format_portfolio(user_trades: list, total_balance: float, vip_limit: float) -> str:
-    """Format portfolio display."""
     total_pnl = sum(t.get("profit", 0) for t in user_trades)
-    
     lines = [
         "📊 YOUR PORTFOLIO",
         SECTION_SEPARATOR,
@@ -303,7 +278,6 @@ def format_portfolio(user_trades: list, total_balance: float, vip_limit: float) 
         f"🎯 VIP Limit: ${_compact_number(vip_limit, 4)}",
         SECTION_SEPARATOR,
     ]
-    
     if user_trades:
         lines.append("Recent Trades:")
         for trade in user_trades[:5]:
@@ -316,5 +290,4 @@ def format_portfolio(user_trades: list, total_balance: float, vip_limit: float) 
             lines.append(f"... and {len(user_trades) - 5} more trades")
     else:
         lines.append("No trades yet. Use Paper Trade button on opportunities to start!")
-    
     return "\n".join(lines)
