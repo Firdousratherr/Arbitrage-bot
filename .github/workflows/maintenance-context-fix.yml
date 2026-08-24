@@ -1,0 +1,54 @@
+name: Isolated maintenance context fix
+
+on:
+  push:
+    branches: [fix/maintenance-context-v3]
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install pytest pytest-asyncio
+
+      - name: Apply source-window preservation fix
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path("app/maintenance.py")
+          text = path.read_text(encoding="utf-8")
+          start = text.index("    def repository_context(self, query: str) -> str:\n")
+          end = text.index("\n    async def diagnose(self) -> str:\n", start)
+
+          new_method = '''    def repository_context(self, query: str) -> str:\n        matches = self.search_repository(query)\n        paths = [item["path"] for item in matches]\n        callable_terms = [\n            term.lower()\n            for term in re.findall(r"[A-Za-z0-9_./:-]+", query)\n            if re.fullmatch(r"[a-z_][a-z0-9_]*", term.lower())\n        ]\n        source_sections = []\n        priority_sources = []\n\n        for item in matches:\n            first_match = None\n            last_match = None\n            source_path = self._safe_repository_path(item["path"])\n            source_lines = source_path.read_text(encoding="utf-8", errors="replace").splitlines()\n\n            for term in callable_terms:\n                definition_lines = [\n                    index + 1\n                    for index, line in enumerate(source_lines)\n                    if re.search(\n                        rf"^\\s*(?:async\\s+)?def\\s+{re.escape(term)}\\b",\n                        line,\n                        re.IGNORECASE,\n                    )\n                ]\n                if definition_lines:\n                    first_match = min(first_match or definition_lines[0], min(definition_lines))\n                    last_match = max(last_match or definition_lines[-1], max(definition_lines))\n\n            if first_match is None:\n                line_numbers = [\n                    int(snippet.split(":", 1)[0])\n                    for snippet in item["snippets"]\n                    if snippet.split(":", 1)[0].isdigit()\n                ]\n                first_match = min(line_numbers or [1])\n                last_match = max(line_numbers or [120])\n\n            first_line = max(1, first_match - 12)\n            window_end = max(first_match + 140, last_match + 60) if callable_terms else first_match + 60\n            source_window = self.read_repository_file(item["path"], first_line, window_end)\n\n            section = f"[{item['score']}] {item['path']}\\n" + source_window\n            source_sections.append(section)\n            if callable_terms and any(\n                re.search(rf"^\\s*(?:async\\s+)?def\\s+{re.escape(term)}\\b", line, re.IGNORECASE)\n                for term in callable_terms\n                for line in source_lines\n            ):\n                priority_sources.append(section)\n\n        git_context = "Git context:\\n" + self._git_context(paths)\n        limit = max(4000, (self.max_input_tokens - 250) * 4)\n\n        if priority_sources:\n            priority = "\\n\\n".join(priority_sources)\n            metadata = (\n                "Repository: " + str(self.repo_path) + "\\n\\n"\n                + "Files discovered: " + str(len(self.list_repository_files())) + "\\n\\n"\n                + git_context\n            )\n            if len(priority) >= limit:\n                return priority[:limit]\n            return priority + "\\n\\n" + metadata[: max(0, limit - len(priority) - 2)]\n\n        sections = [\n            "Repository: " + str(self.repo_path),\n            "Files discovered: " + str(len(self.list_repository_files())),\n            "Relevant source windows:",\n            *source_sections,\n            git_context,\n        ]\n        return self._fit_prompt("\\n\\n".join(sections))\n'''
+
+          path.write_text(text[:start] + new_method + text[end:], encoding="utf-8")
+          PY
+
+      - name: Run full tests
+        run: pytest -q
+
+      - name: Commit verified fix and remove temporary workflow
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/maintenance.py
+          git rm .github/workflows/maintenance-context-fix.yml
+          git commit -m "fix: preserve callable source context during truncation"
+          git push origin HEAD:fix/maintenance-context-v3
