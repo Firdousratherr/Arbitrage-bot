@@ -5,7 +5,7 @@ import json
 from html import escape
 
 from . import handlers
-from .scan_diagnostics import get_last_scan_diagnostics
+from .scan_diagnostics import get_last_scan_snapshot
 
 
 def _exchange_line(exchanges: list[str]) -> str:
@@ -13,7 +13,7 @@ def _exchange_line(exchanges: list[str]) -> str:
 
 
 def _format_scan_result(count: int) -> str:
-    data = get_last_scan_diagnostics() or {}
+    data = get_last_scan_snapshot() or {}
     summary = data.get("summary", {}) if isinstance(data, dict) else {}
     gaps = data.get("gaps", []) if isinstance(data, dict) else []
     common = int(summary.get("common_markets", 0) or 0)
