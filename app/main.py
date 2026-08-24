@@ -18,6 +18,8 @@ from .logging_setup import configure_logging
 from .maintenance import MaintenanceAssistant
 from .scanner import Scanner, opportunity_id
 from .ui import format_background_alert, format_error, opportunity_buttons
+from .ui_animations import animate_scan_progress
+from . import handlers as handlers_module
 
 logger = logging.getLogger(__name__)
 
@@ -42,9 +44,6 @@ def run_app() -> None:
         " (missing: " + ", ".join(maintenance.missing_settings) + ")" if not maintenance.configured else "",
     )
     last_alerts: dict[tuple[int, str, str, str], datetime] = {}
-    # Upper bound on how long a cooldown key can live, regardless of any individual user's
-    # alert_cooldown setting. Without this, last_alerts grows forever since nothing else
-    # ever removes entries from it.
     LAST_ALERTS_MAX_AGE_SECONDS = 24 * 3600
 
     def _prune_last_alerts() -> None:
@@ -150,7 +149,6 @@ def run_app() -> None:
         await db.close()
         logger.info("bot stopped")
 
-    # The callback needs the Application instance for Telegram sends.
     context = type("ScannerContext", (), {})()
     context.application = None
 
@@ -159,22 +157,23 @@ def run_app() -> None:
         await post_init(application)
 
     application = Application.builder().token(settings.telegram_bot_token).post_init(post_init_with_context).post_shutdown(post_shutdown).build()
+
+    # Use the shared animated scanner state for the /scan flow. This only changes
+    # message edits; scanner logic, filtering and exchange calls remain untouched.
+    handlers_module._animate_scan_progress = animate_scan_progress
+
     for handler in build_handlers(db, settings.admin_id_set, settings.exchange_names, settings.admin_secret_key):
         application.add_handler(handler)
-    
-    # Add global error handler
+
     async def error_handler(update, context):
         logger.exception("exception in handler", exc_info=context.error)
         try:
-            message = format_error(
-                "Something went wrong running that command",
-                "Try again in a moment"
-            )
+            message = format_error("Something went wrong running that command", "Try again in a moment")
             if update and update.effective_message:
                 await update.effective_message.reply_text(message, parse_mode="HTML")
         except Exception:
             logger.exception("failed to send error message")
-    
+
     application.add_error_handler(error_handler)
     application.run_polling(close_loop=False)
 
@@ -222,12 +221,7 @@ async def _send_alert(db: Database, user_id: int, opportunity, identifier: str, 
     message = format_background_alert(opportunity, identifier)
     try:
         await db.save_opportunity(identifier, opportunity)
-        await application.bot.send_message(
-            user_id,
-            message,
-            reply_markup=opportunity_buttons(identifier),
-            parse_mode="HTML",
-        )
+        await application.bot.send_message(user_id, message, reply_markup=opportunity_buttons(identifier), parse_mode="HTML")
         await db.increment_stat("alerts_sent")
     except Exception:
         logger.exception("failed to alert user %s", user_id)
