@@ -105,7 +105,12 @@ class Scanner:
                 exchange_id = getattr(exchange, "_exchange_id", name).lower()
                 if exchange_id not in self.TARGETED_RECOVERY_EXCHANGES:
                     continue
-                present = {ticker.symbol for ticker in by_symbol.values() for ticker in ticker if ticker.exchange == name}
+                present = {
+                    ticker.symbol
+                    for ticker_list in by_symbol.values()
+                    for ticker in ticker_list
+                    if ticker.exchange == name
+                }
                 missing_candidates = sorted(all_symbols - present)
                 if not missing_candidates:
                     continue
@@ -123,7 +128,8 @@ class Scanner:
                         logger.warning("%s targeted symbol recovery failed: %s", name, recovered)
                         continue
                     if recovered:
-                        successful_exchanges += 1 if exchange_status.get(name, {}).get("status") != "ok" else 0
+                        if exchange_status.get(name, {}).get("status") != "ok":
+                            successful_exchanges += 1
                         for ticker in recovered:
                             by_symbol.setdefault(ticker.symbol, []).append(ticker)
                             observed_symbols.add(ticker.symbol)
