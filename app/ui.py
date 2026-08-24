@@ -7,13 +7,17 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from .scan_diagnostics import get_last_scan_diagnostics
 
 
-SECTION_SEPARATOR = "━━━━━━━━━━━━━━"
+# Telegram-friendly visual language used consistently throughout the bot.
+TOP = "╭────────────────────────╮"
+BOTTOM = "╰────────────────────────╯"
+SECTION_SEPARATOR = "━━━━━━━━━━━━━━━━━━━━"
+THIN_SEPARATOR = "────────────────────"
 
 
 def _compact_number(value: float | int, digits: int = 8) -> str:
-    if abs(float(value)) >= 1000000:
+    if abs(float(value)) >= 1_000_000:
         return f"{float(value):,.0f}"
-    if abs(float(value)) >= 1000:
+    if abs(float(value)) >= 1_000:
         return f"{float(value):,.2f}"
     return format(float(value), f".{digits}f").rstrip("0").rstrip(".")
 
@@ -23,38 +27,49 @@ def _safe_text(value: object) -> str:
 
 
 def _escape_html(text: str) -> str:
-    """Escape special HTML characters for Telegram HTML parse mode."""
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+def _panel(title: str, subtitle: str | None = None) -> list[str]:
+    lines = [TOP, f"│  {title}"]
+    if subtitle:
+        lines.append(f"│  {subtitle}")
+    lines.extend([BOTTOM, ""])
+    return lines
+
+
 def format_error(message: str, action: str = "Try again in a moment") -> str:
-    """Error message template - 2 lines max."""
-    return f"❌ {_safe_text(message)[:200]}\n🔧 {_safe_text(action)[:200]}"
+    lines = _panel("⚠️ SOMETHING WENT WRONG", "The bot could not complete that action")
+    lines.extend([f"❌ {_safe_text(message)[:220]}", f"🔧 {_safe_text(action)[:220]}"])
+    return "\n".join(lines)
 
 
 def format_success(message: str) -> str:
-    """Success confirmation - single line."""
-    return f"✅ {_safe_text(message)[:200]}"
+    return f"╭─ ✅ SUCCESS\n│ {_safe_text(message)[:240]}\n╰────────────────────"
 
 
 def format_scan_count(count: int) -> str:
-    """Show result count plus compact symbol-level exchange data gaps."""
-    lines = [
-        "🔍 No opportunities found matching your filters" if count == 0 else f"🔍 Found {count} opportunities",
-    ]
     diagnostics = get_last_scan_diagnostics()
+    lines = _panel(
+        "🔍 SCAN COMPLETE",
+        "Live market comparison finished",
+    )
+    lines.append(f"{'✨ Opportunities found' if count else '📭 Opportunities found'} : <b>{count}</b>")
+    if count:
+        lines.append("💡 Open a result below for full analysis.")
+
     if diagnostics:
-        lines.extend(["", "⚠️ DATA GAPS"])
-        for item in diagnostics[:8]:
+        lines.extend(["", "⚠️ DATA QUALITY", THIN_SEPARATOR])
+        for item in diagnostics[:6]:
             symbol = _escape_html(str(item.get("symbol", "unknown")))
             gaps = item.get("gaps", {}) or {}
             gap_text = "; ".join(
-                f"{_escape_html(str(exchange))}: {_escape_html(str(reason))[:120]}"
+                f"{_escape_html(str(exchange))}: {_escape_html(str(reason))[:100]}"
                 for exchange, reason in gaps.items()
             )
             lines.append(f"• <b>{symbol}</b> — {gap_text}")
-        if len(diagnostics) > 8:
-            lines.append(f"• … and {len(diagnostics) - 8} more symbols with data gaps")
+        if len(diagnostics) > 6:
+            lines.append(f"• … +{len(diagnostics) - 6} more symbols with data gaps")
     return "\n".join(lines)
 
 
@@ -65,20 +80,16 @@ def format_opportunity_card(
     tag: str | None = None,
     trade_size: float | None = None,
 ) -> str:
-    """Unified opportunity card template for scans/alerts/loose/verified."""
     if tag is None:
         if card_number is not None:
-            if card_number <= 10:
-                emoji_map = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟']
-                tag = f"{emoji_map[card_number - 1]} 🔍 SCAN RESULT"
-            else:
-                tag = f"#{card_number} 🔍 SCAN RESULT"
+            rank = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
+            tag = f"{rank[card_number - 1] if card_number <= 10 else f'#{card_number}'}  🔍 ARBITRAGE"
         elif getattr(opportunity, "loose_mode", False):
-            tag = "⚠️ LOOSE MODE ARBITRAGE"
+            tag = "⚠️ LOOSE-MODE OPPORTUNITY"
         elif getattr(opportunity, "net_profit", 0) >= 3.0:
-            tag = "🚨 HIGH-MARGIN ARBITRAGE"
+            tag = "🚨 HIGH-MARGIN OPPORTUNITY"
         else:
-            tag = "🔴 LIVE ARBITRAGE"
+            tag = "⚡ LIVE OPPORTUNITY"
 
     metadata = getattr(opportunity, "metadata", {}) or {}
     buy_transfer = metadata.get("buy_transfer", {})
@@ -88,59 +99,58 @@ def format_opportunity_card(
     if transfer_verify == "loose_mode":
         transfer_line = "⚠️ Transfer checks skipped — verify manually"
     elif transfer_verify == "not_verified":
-        transfer_line = "🛡️ ⚠️ Unverified (manual check needed)"
+        transfer_line = "🛡️ Unverified — manual check recommended"
     else:
         matching_net = metadata.get("matching_network", "")
         buy_nets = [n.get("network") for n in buy_transfer.get("networks", []) if n.get("deposit")]
         sell_nets = [n.get("network") for n in sell_transfer.get("networks", []) if n.get("withdraw")]
-        if matching_net and buy_nets and sell_nets:
-            transfer_line = f"✅ Verified ({matching_net})"
-        else:
-            transfer_line = "⚠️ Verification pending"
+        transfer_line = f"✅ Verified route • {matching_net}" if matching_net and buy_nets and sell_nets else "⏳ Transfer verification pending"
 
     if trade_size and trade_size > 0:
-        gross = trade_size * (opportunity.raw_spread / 100)
-        fees = trade_size * ((opportunity.raw_spread - opportunity.net_profit) / 100)
-        net = trade_size * (opportunity.net_profit / 100)
-        gross_profit_val = f"${_compact_number(gross, 4)}"
-        fees_val = f"${_compact_number(fees, 4)}"
-        net_val = f"${_compact_number(net, 4)}"
+        gross = trade_size * opportunity.raw_spread / 100
+        fees = trade_size * (opportunity.raw_spread - opportunity.net_profit) / 100
+        net = trade_size * opportunity.net_profit / 100
+        gross_text = f"${_compact_number(gross, 4)}"
+        fees_text = f"${_compact_number(fees, 4)}"
+        net_text = f"${_compact_number(net, 4)}"
+        size_text = f"${_compact_number(trade_size, 4)}"
     else:
-        gross_profit_val = "%"
-        fees_val = "%"
-        net_val = "%"
+        gross_text = f"{opportunity.raw_spread:.2f}%"
+        fees_text = f"{opportunity.raw_spread - opportunity.net_profit:.2f}%"
+        net_text = f"{opportunity.net_profit:.2f}%"
+        size_text = "$1,000"
 
-    lines = [
-        tag,
+    coin = opportunity.symbol.split("/")[0]
+    coin_amount = trade_size / opportunity.buy_price if trade_size and opportunity.buy_price > 0 else 1000 / opportunity.buy_price if opportunity.buy_price > 0 else 0
+
+    lines = _panel(tag, f"<b>{_escape_html(opportunity.symbol)}</b> • live market data")
+    lines.extend([
+        "🟢 <b>BUY HERE</b>",
+        f"   🌐 {_escape_html(opportunity.buy_exchange)}  •  <b>${_compact_number(opportunity.buy_price, 8)}</b>",
         "",
-        f"Pair: <b>{_escape_html(opportunity.symbol)}</b>",
+        "🔴 <b>SELL HERE</b>",
+        f"   🌐 {_escape_html(opportunity.sell_exchange)}  •  <b>${_compact_number(opportunity.sell_price, 8)}</b>",
+        "",
         SECTION_SEPARATOR,
-        "🟢 BUY",
-        f"   Exchange : {_escape_html(opportunity.buy_exchange)}",
-        f"   Price    : ${_compact_number(opportunity.buy_price, 8)}",
+        "💰 <b>PROFIT SNAPSHOT</b>",
+        f"   📈 Gross       {gross_text}",
+        f"   💸 Fees        − {fees_text}",
+        f"   🚀 <b>NET        {net_text}</b>",
+        f"   🎯 Net Spread  <b>{opportunity.net_profit:.2f}%</b>",
         "",
-        "🔴 SELL",
-        f"   Exchange : {_escape_html(opportunity.sell_exchange)}",
-        f"   Price    : ${_compact_number(opportunity.sell_price, 8)}",
-        SECTION_SEPARATOR,
-        "📊 Profit Breakdown",
-        f"• Gross Profit : {gross_profit_val if trade_size else f'{opportunity.raw_spread:.2f}%'}",
-        f"• Trading Fees : - {fees_val if trade_size else f'{opportunity.raw_spread - opportunity.net_profit:.2f}%'}",
-        f"• Net Profit   : {net_val if trade_size else f'{opportunity.net_profit:.2f}%'}",
-        f"• Net Spread   : {opportunity.net_profit:.2f}%",
-        "",
-        "📋 Extra Details",
-        f"• Trade Size   : {_compact_number(trade_size or 1000, 4)}",
-        f"• Coin Amount  : {_compact_number(trade_size or 1000 / opportunity.buy_price if opportunity.buy_price > 0 else 0, 6)} {opportunity.symbol.split('/')[0]}",
-        f"• {transfer_line}",
-    ]
+        "📋 <b>TRADE DETAILS</b>",
+        f"   💵 Size        {size_text}",
+        f"   🪙 Amount      {_compact_number(coin_amount, 6)} {coin}",
+        f"   🛡️ {transfer_line}",
+        BOTTOM,
+    ])
     return "\n".join(lines)
 
 
 def opportunity_buttons(identifier: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📖 View Order Book", callback_data=f"details:{identifier}")],
-        [InlineKeyboardButton("🎮 Paper Trade This!", callback_data=f"paper:{identifier}")],
+        [InlineKeyboardButton("📖  Order Book & Analysis", callback_data=f"details:{identifier}")],
+        [InlineKeyboardButton("🎮  Paper Trade", callback_data=f"paper:{identifier}")],
     ])
 
 
@@ -149,145 +159,174 @@ def format_background_alert(opportunity, identifier: str) -> str:
 
 
 def format_scan_summary(opportunities: Sequence[object], *, exchange_count: int, opportunities_found: int, matching_selected: int, results_shown: int) -> str:
-    """Deprecated compatibility wrapper."""
     if not opportunities:
-        return "🔍 No opportunities found matching your filters"
-    return f"🔍 Found {len(opportunities)} opportunities"
+        return "🔍 <b>NO OPPORTUNITIES</b>\n\n📭 Nothing matched your current filters."
+    return f"🔍 <b>SCAN COMPLETE</b>\n\n✨ {len(opportunities)} opportunities ready to review."
 
 
 def format_order_book(levels: Iterable[Sequence[float]], *, title: str) -> str:
     rows = []
     for level in list(levels)[:5]:
         if len(level) >= 2:
-            rows.append(f"{float(level[0]):.8f} x {float(level[1]):.6f}")
-    body = " • ".join(rows) if rows else "unavailable"
+            rows.append(f"{float(level[0]):.8f} × {float(level[1]):.6f}")
+    body = "\n".join(rows) if rows else "Unavailable"
     return f"{title}{body}" if title else body
 
 
-def format_opportunity_details(row: dict, buy_fill: float, sell_fill: float, buy_fee: float, sell_fee: float, gross_profit: float, net_profit: float, buy_slippage: float, sell_slippage: float, transfer_text: str, buy_book: Sequence[Sequence[float]], sell_book: Sequence[Sequence[float]]) -> str:
-    lines = [
-        f"📖 ORDER BOOK • <b>{_escape_html(row['symbol'])}</b>",
-        SECTION_SEPARATOR,
-        f"<b>🟢 {_escape_html(row['buy_exchange'])} asks:</b>",
+def format_opportunity_details(
+    row: dict,
+    buy_fill: float,
+    sell_fill: float,
+    buy_fee: float,
+    sell_fee: float,
+    gross_profit: float,
+    net_profit: float,
+    buy_slippage: float,
+    sell_slippage: float,
+    transfer_text: str,
+    buy_book: Sequence[Sequence[float]],
+    sell_book: Sequence[Sequence[float]],
+) -> str:
+    lines = _panel("📖 ORDER BOOK", f"<b>{_escape_html(row['symbol'])}</b> • execution analysis")
+    lines.extend([
+        f"🟢 <b>{_escape_html(row['buy_exchange'])} — ASKS</b>",
         format_order_book(buy_book, title=""),
         "",
-        f"<b>🔴 {_escape_html(row['sell_exchange'])} bids:</b>",
+        f"🔴 <b>{_escape_html(row['sell_exchange'])} — BIDS</b>",
         format_order_book(sell_book, title=""),
+        "",
         SECTION_SEPARATOR,
-        "📊 Analysis",
-        f"• Gross Profit  : ${_compact_number(gross_profit, 4)}",
-        f"• Buy Fee       : {buy_fee * 100:.4f}%",
-        f"• Sell Fee      : {sell_fee * 100:.4f}%",
-        f"• Net Profit    : ${_compact_number(net_profit, 4)}",
-        f"• Buy Slippage  : {buy_slippage:.2f}%",
-        f"• Sell Slippage : {sell_slippage:.2f}%",
-        f"• Volume (buy)  : {_compact_number(row['volume_buy'])}",
-        f"• Volume (sell) : {_compact_number(row['volume_sell'])}",
+        "🧮 <b>EXECUTION ANALYSIS</b>",
+        f"   💵 Gross profit  ${_compact_number(gross_profit, 4)}",
+        f"   💸 Buy fee       {buy_fee * 100:.4f}%",
+        f"   💸 Sell fee      {sell_fee * 100:.4f}%",
+        f"   🚀 <b>Net profit    ${_compact_number(net_profit, 4)}</b>",
+        f"   📉 Buy slippage  {buy_slippage:.2f}%",
+        f"   📈 Sell slippage {sell_slippage:.2f}%",
+        f"   💧 Buy volume    {_compact_number(row['volume_buy'])}",
+        f"   💧 Sell volume   {_compact_number(row['volume_sell'])}",
+        "",
         SECTION_SEPARATOR,
-        "🛡️ Transfer Status",
+        "🛡️ <b>TRANSFER STATUS</b>",
         transfer_text.replace("\n", " • "),
-    ]
+        BOTTOM,
+    ])
     return "\n".join(lines)
 
 
-def format_paper_trade(opportunity, *, buy_price: float, sell_price: float, size: float, expected_gross: float, estimated_net: float, profit: float) -> str:
-    lines = [
-        "🎮 PAPER TRADE OPENED",
-        SECTION_SEPARATOR,
-        f"Pair: <b>{_escape_html(opportunity.symbol)}</b>",
-        f"🟢 {_escape_html(opportunity.buy_exchange)} ${_compact_number(buy_price, 8)} → 🔴 {_escape_html(opportunity.sell_exchange)} ${_compact_number(sell_price, 8)}",
+def format_paper_trade(
+    opportunity,
+    *,
+    buy_price: float,
+    sell_price: float,
+    size: float,
+    expected_gross: float,
+    estimated_net: float,
+    profit: float,
+) -> str:
+    pnl_icon = "🟢" if profit >= 0 else "🔴"
+    lines = _panel("🎮 PAPER TRADE OPENED", "Simulation only • no real funds used")
+    lines.extend([
+        f"🪙 <b>{_escape_html(opportunity.symbol)}</b>",
+        f"🟢 {_escape_html(opportunity.buy_exchange)}  ${_compact_number(buy_price, 8)}",
+        "        ↓  simulated route",
+        f"🔴 {_escape_html(opportunity.sell_exchange)}  ${_compact_number(sell_price, 8)}",
         "",
-        f"💵 Size        : ${_compact_number(size, 6)}",
-        f"📈 Gross       : ${_compact_number(expected_gross, 6)}",
-        f"💰 Net P/L     : ${_compact_number(estimated_net, 6)}",
         SECTION_SEPARATOR,
-        "⚠️ Simulation only — no real funds used",
-    ]
+        f"💵 Position size  ${_compact_number(size, 6)}",
+        f"📈 Gross result   ${_compact_number(expected_gross, 6)}",
+        f"{pnl_icon} <b>Net P/L         ${_compact_number(estimated_net, 6)}</b>",
+        BOTTOM,
+    ])
     return "\n".join(lines)
 
 
 def format_status_message(vip_status: str, vip_expiry: str | None, exchanges: list[str], loose_mode: bool, paused: bool, filters: dict) -> str:
-    expiry_text = ""
+    expiry = ""
     if vip_expiry:
-        expiry_text = f" (until {vip_expiry[:10]})" if len(vip_expiry) > 10 else f" ({vip_expiry})"
-    lines = [
-        "👤 ACCOUNT",
-        SECTION_SEPARATOR,
-        f"💎 VIP       : {vip_status}{expiry_text}",
-        f"🌐 Exchanges : {', '.join(exchanges) if exchanges else 'none selected'}",
-        f"⏸ Paused    : {'Yes' if paused else 'No'}",
-        f"⚠️ Loose Mode: {'On' if loose_mode else 'Off'}",
+        expiry = f" • until {vip_expiry[:10]}"
+    lines = _panel("👤 ACCOUNT CENTER", "Your arbitrage workspace")
+    lines.extend([
+        f"💎 <b>VIP</b>       {vip_status}{expiry}",
+        f"🌐 <b>Route</b>     {', '.join(exchanges) if exchanges else 'No exchanges selected'}",
+        f"⏯ <b>Alerts</b>    {'PAUSED' if paused else 'LIVE'}",
+        f"⚠️ <b>Loose mode</b> {'ON' if loose_mode else 'OFF'}",
         "",
-        "📈 Filters",
-        f"• Profit  : {filters.get('min_profit', 0)}% – {filters.get('max_profit', 100)}%",
-        f"• Spread  : {filters.get('min_spread', 0)}% – {filters.get('max_spread', 100)}%",
-        f"• Volume  : ≥ ${_compact_number(filters.get('min_volume', 10000))}",
-        f"• Cooldown: {filters.get('alert_cooldown', 300)} sec",
-    ]
+        SECTION_SEPARATOR,
+        "🎛️ <b>ACTIVE FILTERS</b>",
+        f"📈 Profit       {filters.get('min_profit', 0)}% → {filters.get('max_profit', 100)}%",
+        f"📊 Spread       {filters.get('min_spread', 0)}% → {filters.get('max_spread', 100)}%",
+        f"💧 Min volume   ${_compact_number(filters.get('min_volume', 10000))}",
+        f"⏱️ Cooldown     {filters.get('alert_cooldown', 300)}s",
+        BOTTOM,
+    ])
     return "\n".join(lines)
 
 
 def format_filters_message(filters: dict) -> str:
-    watchlist_text = ", ".join(filters.get("watchlist", [])) if filters.get("watchlist") else "none — scanning all pairs"
-    blacklist_text = ", ".join(filters.get("blacklist", [])) if filters.get("blacklist") else "none"
-    lines = [
-        "🎛 YOUR FILTERS",
-        SECTION_SEPARATOR,
-        f"📈 Profit range  : {filters.get('min_profit', 0)}% – {filters.get('max_profit', 100)}%",
-        f"📊 Spread range  : {filters.get('min_spread', 0)}% – {filters.get('max_spread', 100)}%",
-        f"💧 Min volume    : ${_compact_number(filters.get('min_volume', 10000))}",
-        f"👁 Watchlist     : {watchlist_text}",
-        f"🚫 Blacklist     : {blacklist_text}",
-        f"🕒 Alert cooldown: {filters.get('alert_cooldown', 300)} sec",
-        f"📋 Max results   : {filters.get('max_results', 10)}",
-        f"⏸ Paused        : {'Yes' if filters.get('paused') else 'No'}",
-        f"⚠️ Loose mode    : {'On' if filters.get('loose_mode') else 'Off'}",
+    watchlist = ", ".join(filters.get("watchlist", [])) if filters.get("watchlist") else "All pairs"
+    blacklist = ", ".join(filters.get("blacklist", [])) if filters.get("blacklist") else "None"
+    lines = _panel("🎛️ FILTER CONTROL", "Tune what counts as an opportunity")
+    lines.extend([
+        f"📈 <b>Profit</b>      {filters.get('min_profit', 0)}% → {filters.get('max_profit', 100)}%",
+        f"📊 <b>Spread</b>      {filters.get('min_spread', 0)}% → {filters.get('max_spread', 100)}%",
+        f"💧 <b>Volume</b>      ≥ ${_compact_number(filters.get('min_volume', 10000))}",
+        f"👁 <b>Watchlist</b>   {watchlist}",
+        f"🚫 <b>Blacklist</b>   {blacklist}",
+        f"🕒 <b>Cooldown</b>    {filters.get('alert_cooldown', 300)} sec",
+        f"📋 <b>Max results</b> {filters.get('max_results', 10)}",
+        f"⏸ <b>Paused</b>      {'Yes' if filters.get('paused') else 'No'}",
+        f"⚠️ <b>Loose mode</b> {'On' if filters.get('loose_mode') else 'Off'}",
         "",
+        THIN_SEPARATOR,
         "Use /setminprofit, /setmaxprofit, /setminspread, /setmaxspread,",
-        "/setminvolume, /watchlist, /blacklist, /setalertfreq to change these.",
-    ]
+        "/setminvolume, /watchlist, /blacklist and /setalertfreq.",
+        BOTTOM,
+    ])
     return "\n".join(lines)
 
 
 def format_leaderboard(rows: list, period: str, user_rank: int | None, user_profit: float | None) -> str:
-    emoji_ranks = ["🥇", "🥈", "🥉"]
     if not rows:
-        return "🏆 LEADERBOARD\n" + SECTION_SEPARATOR + "\n📭 No trades yet"
-    lines = [f"🏆 LEADERBOARD — {period.upper()}", SECTION_SEPARATOR]
+        return "🏆 <b>LEADERBOARD</b>\n" + SECTION_SEPARATOR + "\n📭 No paper trades yet."
+    ranks = ["🥇", "🥈", "🥉"]
+    lines = _panel("🏆 LEADERBOARD", f"{period.upper()} • paper trading")
     for index, row in enumerate(rows[:10], 1):
-        emoji = emoji_ranks[index - 1] if index <= 3 else f"{index}."
-        username = row.get("username") or f"User{row.get('telegram_id')}"
+        rank = ranks[index - 1] if index <= 3 else f"{index:02d}."
+        username = _escape_html(str(row.get("username") or f"User{row.get('telegram_id')}"))
         profit = row.get("total", 0)
-        lines.append(f"{emoji} {username}   ${_compact_number(profit, 4)}")
+        lines.append(f"{rank} <b>{username}</b>   ${_compact_number(profit, 4)}")
     if user_rank is not None and user_profit is not None:
-        lines.append("")
-        lines.append(f"Your rank: #{user_rank}  •  ${_compact_number(user_profit, 4)}")
-    lines.append(SECTION_SEPARATOR)
-    lines.append("/leaderboard hide — remove yourself from public view")
+        lines.extend(["", THIN_SEPARATOR, f"👤 Your position  <b>#{user_rank}</b> • ${_compact_number(user_profit, 4)}"])
+    lines.extend(["", "🔒 Use /leaderboard hide to hide your ranking.", BOTTOM])
     return "\n".join(lines)
 
 
 def format_portfolio(user_trades: list, total_balance: float, vip_limit: float) -> str:
     total_pnl = sum(t.get("profit", 0) for t in user_trades)
-    lines = [
-        "📊 YOUR PORTFOLIO",
+    pnl_icon = "🟢" if total_pnl >= 0 else "🔴"
+    lines = _panel("📊 PAPER PORTFOLIO", "Your simulated trading dashboard")
+    lines.extend([
+        f"💰 <b>Balance</b>     ${_compact_number(total_balance, 4)}",
+        f"{pnl_icon} <b>Total P/L</b>    ${_compact_number(total_pnl, 4)}",
+        f"📈 <b>Trades</b>       {len(user_trades)}",
+        f"🎯 <b>VIP limit</b>    ${_compact_number(vip_limit, 4)}",
+        "",
         SECTION_SEPARATOR,
-        f"💰 Simulated Balance: ${_compact_number(total_balance, 4)}",
-        f"💵 Total P/L: ${_compact_number(total_pnl, 4)}",
-        f"📈 Open Positions: {len(user_trades)}",
-        f"🎯 VIP Limit: ${_compact_number(vip_limit, 4)}",
-        SECTION_SEPARATOR,
-    ]
+    ])
     if user_trades:
-        lines.append("Recent Trades:")
+        lines.append("🧾 <b>RECENT TRADES</b>")
         for trade in user_trades[:5]:
-            symbol = trade.get("symbol", "unknown")
+            symbol = _escape_html(str(trade.get("symbol", "unknown")))
             size = trade.get("size", 0)
             pnl = trade.get("profit", 0)
-            date = trade.get("created_at", "")[:10] if trade.get("created_at") else "unknown"
-            lines.append(f"• {symbol} {_compact_number(size, 4)} @ {date}: ${_compact_number(pnl, 4)}")
+            date = str(trade.get("created_at", ""))[:10] or "unknown"
+            icon = "🟢" if pnl >= 0 else "🔴"
+            lines.append(f"{icon} {symbol} • ${_compact_number(size, 4)} • {date} • P/L ${_compact_number(pnl, 4)}")
         if len(user_trades) > 5:
-            lines.append(f"... and {len(user_trades) - 5} more trades")
+            lines.append(f"… +{len(user_trades) - 5} more trades")
     else:
-        lines.append("No trades yet. Use Paper Trade button on opportunities to start!")
+        lines.append("📭 No paper trades yet.")
+        lines.append("💡 Use <b>🎮 Paper Trade</b> on an opportunity to begin.")
+    lines.append(BOTTOM)
     return "\n".join(lines)
