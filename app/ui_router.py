@@ -9,7 +9,6 @@ from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes, Con
 from .db import DEFAULT_FILTERS, Database
 from .filters import user_filters
 from .handlers import EMAIL_STAGE, EXCHANGES_STAGE, VIP_STAGE, redeem_key
-from .scanner import opportunity_id
 from .ui import format_status_message, format_filters_message
 from .ui_theme import dashboard, welcome, exchange_picker, settings_menu, screen, nav
 
@@ -47,10 +46,7 @@ async def premium_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 async def premium_begin_setup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-    await query.edit_message_text(
-        "📧 <b>ACCOUNT SETUP</b>\n\nEnter the email address associated with your account.",
-        parse_mode="HTML",
-    )
+    await query.edit_message_text("📧 <b>ACCOUNT SETUP</b>\n\nEnter the email address associated with your account.", parse_mode="HTML")
     return EMAIL_STAGE
 
 
@@ -62,11 +58,7 @@ async def premium_capture_email(update: Update, context: ContextTypes.DEFAULT_TY
     context.user_data["email"] = email
     context.user_data["selected_exchanges"] = []
     text, _ = exchange_picker([], context.application.bot_data.get("exchange_names", []))
-    await update.effective_message.reply_text(
-        text,
-        reply_markup=_premium_exchange_keyboard(context),
-        parse_mode="HTML",
-    )
+    await update.effective_message.reply_text(text, reply_markup=_premium_exchange_keyboard(context), parse_mode="HTML")
     return EXCHANGES_STAGE
 
 
@@ -102,10 +94,7 @@ async def premium_exchange_done(update: Update, context: ContextTypes.DEFAULT_TY
         return ConversationHandler.END
     await db.upsert_user(query.from_user.id, query.from_user.username, context.user_data["email"], selected)
     await db.log_action(query.from_user.id, "changed_exchanges", ",".join(selected))
-    await query.edit_message_text(
-        "🔐 <b>VIP ACCESS</b>\n\nEnter your VIP key, or type <code>NONE</code> if you do not have one yet.",
-        parse_mode="HTML",
-    )
+    await query.edit_message_text("🔐 <b>VIP ACCESS</b>\n\nEnter your VIP key, or type <code>NONE</code> if you do not have one yet.", parse_mode="HTML")
     return VIP_STAGE
 
 
@@ -127,27 +116,14 @@ async def ui_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     action = query.data
     db = _db(context)
     user = await db.get_user(query.from_user.id)
-
     if action == "ui:dashboard":
-        if not user:
-            text, keyboard = welcome()
-        else:
-            text, keyboard = dashboard()
+        text, keyboard = dashboard() if user else welcome()
         await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
         return
-
     if action == "ui:help":
-        text = screen("ℹ️ HOW IT WORKS", "A simple arbitrage workflow", [
-            "1️⃣ Select at least two exchanges.",
-            "2️⃣ Scanner compares live bid/ask prices.",
-            "3️⃣ Filters remove weak signals.",
-            "4️⃣ Transfer routes are verified when possible.",
-            "5️⃣ Open Order Book for execution analysis.",
-            "6️⃣ Use Paper Trade to simulate the result.",
-        ])
+        text = screen("ℹ️ HOW IT WORKS", "A simple arbitrage workflow", ["1️⃣ Select at least two exchanges.", "2️⃣ Scanner compares live bid/ask prices.", "3️⃣ Filters remove weak signals.", "4️⃣ Transfer routes are verified when possible.", "5️⃣ Open Order Book for execution analysis.", "6️⃣ Use Paper Trade to simulate the result."])
         await query.edit_message_text(text, reply_markup=nav(("↩️ Dashboard", "ui:dashboard"), columns=1), parse_mode="HTML")
         return
-
     if action == "ui:exchanges":
         if not user:
             await query.edit_message_text("Register first with /start.")
@@ -157,7 +133,6 @@ async def ui_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         text, _ = exchange_picker(selected, context.application.bot_data.get("exchange_names", []))
         await query.edit_message_text(text, reply_markup=_premium_exchange_keyboard(context), parse_mode="HTML")
         return
-
     if action.startswith("ui:exchange:"):
         if action.endswith(":done"):
             selected = list(context.user_data.get("selected_exchanges", []))
@@ -170,17 +145,18 @@ async def ui_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             return
         name = action.split(":", 2)[2]
         selected = set(context.user_data.get("selected_exchanges", []))
-        selected.remove(name) if name in selected else selected.add(name)
+        if name in selected:
+            selected.remove(name)
+        else:
+            selected.add(name)
         context.user_data["selected_exchanges"] = sorted(selected)
         text, _ = exchange_picker(sorted(selected), context.application.bot_data.get("exchange_names", []))
         await query.edit_message_text(text, reply_markup=_premium_exchange_keyboard(context), parse_mode="HTML")
         return
-
     if action in {"ui:filters", "ui:settings"}:
         text, keyboard = settings_menu()
         await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
         return
-
     if action in {"ui:profit", "ui:volume", "ui:watchlist", "ui:blacklist", "ui:alerts", "ui:loose"}:
         if not user:
             await query.edit_message_text("Register first with /start.")
@@ -188,7 +164,6 @@ async def ui_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         text = format_filters_message(user_filters(user))
         await query.edit_message_text(text, reply_markup=nav(("↩️ Controls", "ui:filters"), ("🏠 Dashboard", "ui:dashboard")), parse_mode="HTML")
         return
-
     if action == "ui:reset":
         if not user:
             await query.edit_message_text("Register first with /start.")
@@ -198,7 +173,6 @@ async def ui_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         text, keyboard = settings_menu()
         await query.edit_message_text("♻️ <b>Filters reset</b>\n\n" + text, reply_markup=keyboard, parse_mode="HTML")
         return
-
     if action == "ui:status":
         if not user:
             await query.edit_message_text("Register first with /start.")
@@ -208,27 +182,19 @@ async def ui_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         text = format_status_message(user["vip_status"], user["vip_expiry"], selected, preferences.get("loose_mode", False), preferences.get("paused", False), preferences)
         await query.edit_message_text(text, reply_markup=nav(("🎛️ Controls", "ui:filters"), ("🏠 Dashboard", "ui:dashboard")), parse_mode="HTML")
         return
-
     if action == "ui:scan":
         from .handlers import scan_command
         await scan_command(update, context)
         return
-
     if action == "ui:portfolio":
         if not user:
             await query.edit_message_text("Register first with /start.")
             return
         cursor = await db._db().execute("SELECT COUNT(*) count, COALESCE(SUM(profit), 0) total, COALESCE(MAX(profit), 0) best FROM paper_trades WHERE user_id=?", (query.from_user.id,))
         row = await cursor.fetchone()
-        text = screen("📊 PAPER PORTFOLIO", "Your simulated trading dashboard", [
-            f"💰 Balance  <b>${10000 + row['total']:.2f}</b>",
-            f"📈 Total P/L <b>${row['total']:.4f}</b>",
-            f"🧪 Trades   <b>{row['count']}</b>",
-            f"⭐ Best     <b>${row['best']:.4f}</b>",
-        ])
+        text = screen("📊 PAPER PORTFOLIO", "Your simulated trading dashboard", [f"💰 Balance  <b>${10000 + row['total']:.2f}</b>", f"📈 Total P/L <b>${row['total']:.4f}</b>", f"🧪 Trades   <b>{row['count']}</b>", f"⭐ Best     <b>${row['best']:.4f}</b>"])
         await query.edit_message_text(text, reply_markup=nav(("🏠 Dashboard", "ui:dashboard"), ("🔎 Scan", "ui:scan")), parse_mode="HTML")
         return
-
     if action == "ui:leaderboard":
         cursor = await db._db().execute("SELECT u.username, SUM(p.profit) total FROM paper_trades p JOIN users u ON u.telegram_id=p.user_id WHERE u.leaderboard_hidden=0 GROUP BY p.user_id ORDER BY total DESC LIMIT 10")
         rows = await cursor.fetchall()
@@ -242,30 +208,17 @@ def build_ui_handlers(db: Database, admin_ids: set[int], exchange_names: list[st
     registration = ConversationHandler(
         entry_points=[CommandHandler("start", premium_start)],
         states={
-            EMAIL_STAGE: [
-                CallbackQueryHandler(premium_begin_setup, pattern=r"^ui:start$"),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, premium_capture_email),
-            ],
-            EXCHANGES_STAGE: [
-                CallbackQueryHandler(premium_exchange_toggle, pattern=r"^ui:exchange:[^:]+$"),
-                CallbackQueryHandler(premium_exchange_done, pattern=r"^ui:exchange:done$"),
-            ],
+            EMAIL_STAGE: [CallbackQueryHandler(premium_begin_setup, pattern=r"^ui:start$"), MessageHandler(filters.TEXT & ~filters.COMMAND, premium_capture_email)],
+            EXCHANGES_STAGE: [CallbackQueryHandler(premium_exchange_toggle, pattern=r"^ui:exchange:(?!done$)[^:]+$"), CallbackQueryHandler(premium_exchange_done, pattern=r"^ui:exchange:done$")],
             VIP_STAGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, redeem_key)],
         },
         fallbacks=[CommandHandler("cancel", premium_cancel)],
         allow_reentry=True,
     )
-    return [
-        registration,
-        CommandHandler("menu", premium_menu_command),
-        CallbackQueryHandler(ui_callback, pattern=r"^ui:"),
-    ]
+    return [registration, CommandHandler("menu", premium_menu_command), CallbackQueryHandler(ui_callback, pattern=r"^ui:")]
 
 
 async def premium_menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = await _db(context).get_user(update.effective_user.id)
-    if not user:
-        text, keyboard = welcome()
-    else:
-        text, keyboard = dashboard()
+    text, keyboard = dashboard() if user else welcome()
     await update.effective_message.reply_text(text, reply_markup=keyboard, parse_mode="HTML")
