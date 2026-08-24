@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+import httpx
 from groq import APIConnectionError, APIStatusError, APITimeoutError, AsyncGroq
 
 
@@ -722,3 +723,46 @@ class MaintenanceAssistant:
         if response.strip() == "OK":
             return "OK"
         return response.strip() or "OK"
+
+    async def raw_connectivity_probe(self) -> str:
+        """Bypass the Groq SDK entirely and hit the provider with a bare httpx request so the
+        literal HTTP status, response headers, and response body are visible. The Groq SDK's
+        exception classification (_classify_network_error / _http_error_to_maintenance_error)
+        is usually right, but when the failure mode is ambiguous (e.g. "is this really Cloudflare
+        1010, or something else that happens to mention Cloudflare") this gives ground truth
+        without needing shell access to the host running the bot."""
+        if not self.api_url:
+            return "Cannot probe: AI_API_URL is not set."
+        base = self._sdk_base_url().rstrip("/")
+        url = f"{base}/openai/v1/models"
+        headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
+        try:
+            async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+                response = await client.get(url, headers=headers)
+        except httpx.TimeoutException as exc:
+            return f"Raw probe: connection to {url} timed out.\n{self._redact(str(exc))[:500]}"
+        except httpx.ConnectError as exc:
+            return (
+                f"Raw probe: could not establish a connection to {url} at all "
+                f"(this happens before any HTTP response, so it's a network/DNS/TLS-level block, "
+                f"not a Cloudflare WAF page).\n{self._redact(str(exc))[:500]}"
+            )
+        except httpx.HTTPError as exc:
+            return f"Raw probe: request to {url} failed: {type(exc).__name__}: {self._redact(str(exc))[:500]}"
+
+        header_lines = "\n".join(f"{key}: {value}" for key, value in list(response.headers.items())[:12])
+        body_snippet = self._redact(response.text[:600])
+        is_cloudflare_block = response.status_code in (403, 503, 1010) or "cloudflare" in response.text.lower()
+        verdict = (
+            "Looks like a Cloudflare WAF block page (not a Groq API response)."
+            if is_cloudflare_block and "application/json" not in response.headers.get("content-type", "")
+            else "Looks like a genuine API response (JSON content-type)."
+        )
+        return (
+            f"Raw probe: GET {url}\n"
+            f"HTTP status: {response.status_code}\n"
+            f"Content-Type: {response.headers.get('content-type', 'unknown')}\n"
+            f"Verdict: {verdict}\n\n"
+            f"Response headers (first 12):\n{header_lines}\n\n"
+            f"Response body (first 600 chars):\n{body_snippet}"
+        )
