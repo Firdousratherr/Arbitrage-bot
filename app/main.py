@@ -42,8 +42,21 @@ def run_app() -> None:
         " (missing: " + ", ".join(maintenance.missing_settings) + ")" if not maintenance.configured else "",
     )
     last_alerts: dict[tuple[int, str, str, str], datetime] = {}
+    # Upper bound on how long a cooldown key can live, regardless of any individual user's
+    # alert_cooldown setting. Without this, last_alerts grows forever since nothing else
+    # ever removes entries from it.
+    LAST_ALERTS_MAX_AGE_SECONDS = 24 * 3600
+
+    def _prune_last_alerts() -> None:
+        cutoff = datetime.now(UTC).timestamp() - LAST_ALERTS_MAX_AGE_SECONDS
+        stale_keys = [key for key, sent_at in last_alerts.items() if sent_at.timestamp() < cutoff]
+        for key in stale_keys:
+            del last_alerts[key]
+        if stale_keys:
+            logger.debug("pruned %s stale last_alerts entries", len(stale_keys))
 
     async def alert_opportunities(opportunities) -> None:
+        _prune_last_alerts()
         sent_counts: dict[int, int] = {}
         for opportunity in sorted(opportunities, key=lambda item: item.net_profit, reverse=True):
             base_identifier = opportunity_id(opportunity)
@@ -230,14 +243,6 @@ def _transfer_summary(metadata: dict | None, action: str) -> str:
 def run() -> None:
     run_app()
 
-# Patch addition for pruning old alert cache
-LAST_ALERTS_MAX_AGE_SECONDS = 24 * 3600
-
-def _prune_last_alerts(last_alerts_dict) -> None:
-    cutoff = datetime.now(UTC).timestamp() - LAST_ALERTS_MAX_AGE_SECONDS
-    stale_keys = [key for key, sent_at in last_alerts_dict.items() if sent_at.timestamp() < cutoff]
-    for key in stale_keys:
-        del last_alerts_dict[key]
 
 if __name__ == "__main__":
     run()
