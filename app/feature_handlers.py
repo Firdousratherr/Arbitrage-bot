@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 from datetime import UTC, datetime
 
@@ -67,19 +68,41 @@ async def enhanced_scan_command(update, context) -> None:
     if not scanner:
         await update.effective_message.reply_text("Scanner is still starting. Try again shortly.")
         return
+
     target = update.effective_message or update.callback_query.message
     progress = await target.reply_text("🔎 <b>Scanning all selected exchanges</b>…", parse_mode="HTML")
-    animation = asyncio.create_task(_animate_scan_progress(progress))
+    animation = None
     try:
         user = await _db(context).get_user(update.effective_user.id)
+        if not user:
+            await target.reply_text("❌ Your account could not be loaded. Please run /status and try again.")
+            return
+
         preferences = user_filters(user)
         selected = set(json.loads(user["selected_exchanges"] or "[]"))
         active_selected = selected & set(scanner.exchanges)
         if len(active_selected) < 2:
-            await target.reply_text(format_error("Scan needs at least two active selected exchanges.", f"Selection: {', '.join(sorted(selected)) or 'none'}. Use /exchanges."), parse_mode="HTML")
+            await target.reply_text(
+                format_error(
+                    "Scan needs at least two active selected exchanges.",
+                    f"Selection: {', '.join(sorted(selected)) or 'none'}. Use /exchanges."
+                ),
+                parse_mode="HTML"
+            )
             return
+
+        # The animation helper changed signature during the enhanced-scan rollout.
+        # Inspect it so both one-argument and two-argument deployed versions work
+        # without allowing a signature mismatch to abort the actual scan.
+        parameters = inspect.signature(_animate_scan_progress).parameters
+        animation_args = (progress, active_selected) if len(parameters) >= 2 else (progress,)
+        animation = asyncio.create_task(_animate_scan_progress(*animation_args))
+
         opportunities = await scanner.run_cycle(require_matching_user=False, exchange_names=active_selected)
-        visible = [item for item in opportunities if item.buy_exchange in selected and item.sell_exchange in selected and matches(item, preferences)]
+        visible = [
+            item for item in opportunities
+            if item.buy_exchange in selected and item.sell_exchange in selected and matches(item, preferences)
+        ]
         visible.sort(key=lambda item: item.metadata.get("rank_score", item.net_profit), reverse=True)
         visible = visible[:preferences["max_results"]]
 
@@ -118,10 +141,33 @@ async def enhanced_scan_command(update, context) -> None:
         for index, item in enumerate(visible, 1):
             identifier = opportunity_id(item)
             await _db(context).save_opportunity(identifier, item)
-            await target.reply_text(enhanced_alert_card(item, identifier, float(preferences.get("trade_size", 1000)), index), reply_markup=opportunity_buttons(identifier), parse_mode="HTML")
+            await target.reply_text(
+                enhanced_alert_card(item, identifier, float(preferences.get("trade_size", 1000)), index),
+                reply_markup=opportunity_buttons(identifier),
+                parse_mode="HTML",
+            )
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        # Do not hide scan failures behind the generic global error handler. Include
+        # the exchange health snapshot so a broken exchange is still identifiable.
+        snapshot = get_last_scan_snapshot() or {}
+        summary = snapshot.get("summary", {}) or {}
+        statuses = summary.get("exchange_status", {}) or {}
+        details = [f"{type(exc).__name__}: {exc}"]
+        for name in sorted(active_selected if 'active_selected' in locals() else set()):
+            status = statuses.get(name, {}) or {}
+            state = status.get("status", "not returned")
+            reason = status.get("error") or state
+            details.append(f"{name}: {reason}")
+        await target.reply_text(
+            format_error("Scan failed", "\n".join(details)[:3000]),
+            parse_mode="HTML",
+        )
     finally:
-        animation.cancel()
-        await asyncio.gather(animation, return_exceptions=True)
+        if animation is not None:
+            animation.cancel()
+            await asyncio.gather(animation, return_exceptions=True)
         try:
             await context.bot.delete_message(update.effective_user.id, progress.message_id)
         except Exception:
