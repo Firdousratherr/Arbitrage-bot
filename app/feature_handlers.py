@@ -51,7 +51,6 @@ def enhanced_alert_card(opportunity, identifier: str, trade_size: float = 1000.0
         f"📈 Gap history   {history_text}",
         "🔬 <i>Open Order Book for executable profit at your trade size.</i>",
     ]
-    # Keep the quality block inside the visual card instead of after the closing border.
     if "╰────────────────────────╯" in base:
         base = base.replace("╰────────────────────────╯", "\n".join(quality) + "\n╰────────────────────────╯", 1)
     else:
@@ -216,3 +215,7 @@ def build_feature_handlers():
         CallbackQueryHandler(enhanced_details, pattern=r"^details:"),
         CallbackQueryHandler(enhanced_details, pattern=r"^feature_details:"),
     ]
+
+
+# Backward-compatible private import used by app.main during the first rollout.
+_enhanced_card = enhanced_alert_card
