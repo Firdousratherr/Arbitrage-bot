@@ -184,6 +184,9 @@ class MaintenanceAssistant:
             lowered_text = text.lower()
             score = sum(lowered_text.count(term) for term in terms)
             score += sum(8 for term in terms if term in lowered_path)
+            for term in terms:
+                if re.search(rf"^\s*(?:async\s+)?def\s+{re.escape(term)}\b", text, re.IGNORECASE | re.MULTILINE):
+                    score += 1000
             if relative in changed_paths:
                 score += 12
             if score == 0:
