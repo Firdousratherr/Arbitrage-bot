@@ -5,10 +5,51 @@ import json
 from html import escape
 
 from . import handlers
+from .scan_diagnostics import get_last_scan_diagnostics
 
 
 def _exchange_line(exchanges: list[str]) -> str:
     return " ↔ ".join(escape(name.upper()) for name in exchanges) or "SELECTED EXCHANGES"
+
+
+def _format_scan_result(count: int) -> str:
+    data = get_last_scan_diagnostics() or {}
+    summary = data.get("summary", {}) if isinstance(data, dict) else {}
+    gaps = data.get("gaps", []) if isinstance(data, dict) else []
+    common = int(summary.get("common_markets", 0) or 0)
+    positive = int(summary.get("positive_spreads", 0) or 0)
+    before_filters = int(summary.get("opportunities_before_filters", 0) or 0)
+    returned = summary.get("returned_by_exchange", {}) or {}
+
+    if count:
+        lines = [f"🔍 <b>Found {count} opportunities</b>"]
+    elif before_filters:
+        lines = [
+            "🔍 <b>No opportunities matched your filters</b>",
+            f"📊 {before_filters} profitable candidate{'s' if before_filters != 1 else ''} existed before filters.",
+        ]
+    else:
+        lines = ["🔍 <b>No arbitrage opportunities found</b>"]
+
+    if returned:
+        coverage = "  •  ".join(f"{escape(str(name).upper())}: {value:,}" for name, value in returned.items())
+        lines.extend(["", f"🌐 <b>Usable markets</b>  {coverage}"])
+    lines.append(f"🔗 Common markets: <b>{common:,}</b>")
+    lines.append(f"📈 Positive-spread candidates: <b>{positive:,}</b>")
+
+    if gaps:
+        lines.extend(["", "⚠️ <b>CROSS-EXCHANGE COVERAGE</b>"])
+        for item in gaps[:8]:
+            symbol = escape(str(item.get("symbol", "unknown")))
+            gap_text = "; ".join(
+                f"{escape(str(exchange))}: {escape(str(reason))[:100]}"
+                for exchange, reason in (item.get("gaps", {}) or {}).items()
+            )
+            lines.append(f"• <b>{symbol}</b> — {gap_text}")
+        if len(gaps) > 8:
+            lines.append(f"• … and {len(gaps) - 8} more coverage differences")
+
+    return "\n".join(lines)
 
 
 async def _animate_scan_progress(message, exchanges: list[str]) -> None:
@@ -34,6 +75,7 @@ async def _animate_scan_progress(message, exchanges: list[str]) -> None:
 
 def install() -> None:
     handlers._animate_scan_progress = _animate_scan_progress
+    handlers.format_scan_count = _format_scan_result
 
     async def scan_command(update, context):
         if not await handlers.require_vip(update, context):
