@@ -250,6 +250,19 @@ class Database:
             return None
         return row
 
+    async def purge_expired_opportunities(self) -> int:
+        """Delete opportunity rows past their TTL so the table doesn't grow unbounded.
+
+        opportunity_id() includes a live timestamp, so the same arbitrage pair produces a new
+        row every scan cycle. get_opportunity() only treats old rows as expired at read time;
+        nothing else ever deletes them, so this must be called periodically (e.g. once per scan
+        cycle) to keep the table bounded.
+        """
+        cutoff = (datetime.now(UTC) - timedelta(seconds=self.opportunity_ttl_seconds)).isoformat()
+        cursor = await self._db().execute("DELETE FROM opportunities WHERE created_at < ?", (cutoff,))
+        await self._db().commit()
+        return cursor.rowcount if cursor.rowcount is not None else 0
+
     async def increment_stat(self, key: str, amount: int = 1) -> None:
         await self._db().execute("INSERT INTO stats(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=value+excluded.value", (key, amount))
         await self._db().commit()
@@ -258,9 +271,3 @@ class Database:
         cursor = await self._db().execute("SELECT value FROM stats WHERE key = ?", (key,))
         row = await cursor.fetchone()
         return int(row["value"]) if row else 0
-        
-    async def purge_expired_opportunities(self) -> int:
-        cutoff = (datetime.now(UTC) - timedelta(seconds=self.opportunity_ttl_seconds)).isoformat()
-        cursor = await self._db().execute("DELETE FROM opportunities WHERE created_at < ?", (cutoff,))
-        await self._db().commit()
-        return cursor.rowcount if cursor.rowcount is not None else 0
