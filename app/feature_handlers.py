@@ -4,15 +4,15 @@ import asyncio
 import json
 from datetime import UTC, datetime
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes
 
 from .arbitrage_features import calculate_executable_trade, confidence_score, freshness_label, rank_score
 from .db import Database
 from .filters import matches, user_filters
-from .scan_diagnostics import get_last_scan_diagnostics
+from .scan_diagnostics import get_last_scan_snapshot
 from .scanner import opportunity_id
-from .ui import format_opportunity_card, format_opportunity_details, opportunity_buttons, format_error
+from .ui import format_error, format_opportunity_card, format_opportunity_details, opportunity_buttons
 
 
 def _db(context: ContextTypes.DEFAULT_TYPE) -> Database:
@@ -29,7 +29,7 @@ def _opportunity_from_row(row):
     )
 
 
-def _enhanced_card(opportunity, identifier: str, trade_size: float = 1000.0, card_number: int | None = None) -> str:
+def enhanced_alert_card(opportunity, identifier: str, trade_size: float = 1000.0, card_number: int | None = None) -> str:
     base = format_opportunity_card(opportunity, identifier, card_number=card_number, trade_size=trade_size)
     meta = getattr(opportunity, "metadata", {}) or {}
     confidence = int(meta.get("confidence", 0))
@@ -42,8 +42,7 @@ def _enhanced_card(opportunity, identifier: str, trade_size: float = 1000.0, car
     history_text = " → ".join(f"{point.get('spread', 0):.2f}%" for point in history) if history else "new"
     coverage = "🟢 Complete" if meta.get("coverage_complete") else "🟡 Partial coverage"
     rank = float(meta.get("rank_score", 0.0))
-    extras = [
-        "",
+    quality = [
         "🧠 <b>OPPORTUNITY QUALITY</b>",
         f"🎯 Confidence    <b>{confidence}/100</b>",
         f"🕐 Freshness     <b>{freshness_label(age)}</b>",
@@ -52,10 +51,15 @@ def _enhanced_card(opportunity, identifier: str, trade_size: float = 1000.0, car
         f"📈 Gap history   {history_text}",
         "🔬 <i>Open Order Book for executable profit at your trade size.</i>",
     ]
-    return base + "\n" + "\n".join(extras)
+    # Keep the quality block inside the visual card instead of after the closing border.
+    if "╰────────────────────────╯" in base:
+        base = base.replace("╰────────────────────────╯", "\n".join(quality) + "\n╰────────────────────────╯", 1)
+    else:
+        base += "\n" + "\n".join(quality)
+    return base
 
 
-async def enhanced_scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def enhanced_scan_command(update, context) -> None:
     from .handlers import require_vip, _animate_scan_progress
 
     if not await require_vip(update, context):
@@ -64,9 +68,8 @@ async def enhanced_scan_command(update: Update, context: ContextTypes.DEFAULT_TY
     if not scanner:
         await update.effective_message.reply_text("Scanner is still starting. Try again shortly.")
         return
-
-    message_target = update.effective_message or update.callback_query.message
-    progress = await message_target.reply_text("🔎 <b>Scanning all selected exchanges</b>…", parse_mode="HTML")
+    target = update.effective_message or update.callback_query.message
+    progress = await target.reply_text("🔎 <b>Scanning all selected exchanges</b>…", parse_mode="HTML")
     animation = asyncio.create_task(_animate_scan_progress(progress))
     try:
         user = await _db(context).get_user(update.effective_user.id)
@@ -74,24 +77,24 @@ async def enhanced_scan_command(update: Update, context: ContextTypes.DEFAULT_TY
         selected = set(json.loads(user["selected_exchanges"] or "[]"))
         active_selected = selected & set(scanner.exchanges)
         if len(active_selected) < 2:
-            await message_target.reply_text(format_error("Scan needs at least two active selected exchanges.", f"Selection: {', '.join(sorted(selected)) or 'none'}. Use /exchanges."), parse_mode="HTML")
+            await target.reply_text(format_error("Scan needs at least two active selected exchanges.", f"Selection: {', '.join(sorted(selected)) or 'none'}. Use /exchanges."), parse_mode="HTML")
             return
         opportunities = await scanner.run_cycle(require_matching_user=False, exchange_names=active_selected)
         visible = [item for item in opportunities if item.buy_exchange in selected and item.sell_exchange in selected and matches(item, preferences)]
         visible.sort(key=lambda item: item.metadata.get("rank_score", item.net_profit), reverse=True)
         visible = visible[:preferences["max_results"]]
 
-        diagnostics = get_last_scan_diagnostics() or {}
-        summary = diagnostics.get("summary", {})
+        snapshot = get_last_scan_snapshot() or {}
+        summary = snapshot.get("summary", {})
         statuses = summary.get("exchange_status", {})
         lines = [
             "🔍 <b>ARBITRAGE SCAN COMPLETE</b>",
             "━━━━━━━━━━━━━━━━━━━━",
-            f"🎯 Selected       <b>{len(active_selected)} exchanges</b>",
-            f"📡 Healthy        <b>{sum(1 for value in statuses.values() if value.get('status') in {'ok', 'partial'})}</b>/{len(active_selected)}",
+            f"🎯 Selected        <b>{len(active_selected)} exchanges</b>",
+            f"📡 Healthy         <b>{sum(1 for value in statuses.values() if value.get('status') in {'ok', 'partial'})}</b>/{len(active_selected)}",
             f"🪙 Common markets  <b>{summary.get('common_markets', 0)}</b>",
-            f"⚡ Positive gaps   <b>{summary.get('positive_spreads', 0)}</b>",
-            f"✅ Opportunities   <b>{len(visible)}</b>",
+            f"⚡ Positive spreads <b>{summary.get('positive_spreads', 0)}</b>",
+            f"✅ Opportunities    <b>{len(visible)}</b>",
             "",
             "📡 <b>EXCHANGE HEALTH</b>",
         ]
@@ -101,17 +104,22 @@ async def enhanced_scan_command(update: Update, context: ContextTypes.DEFAULT_TY
             icon = "🟢" if state == "ok" else "🟡" if state == "partial" else "🔴"
             reason = status.get("error") or ("partial market coverage" if state == "partial" else state)
             lines.append(f"{icon} {name} — {reason}")
-        gaps = diagnostics.get("gaps", [])
+        gaps = snapshot.get("gaps", [])
         if gaps:
-            lines.extend(["", f"⚠️ <b>{len(gaps)}</b> symbols had exchange data gaps.", "Use the exchange status above to see which source failed; unavailable coins are not silently discarded."])
+            lines.extend(["", f"⚠️ <b>{len(gaps)}</b> symbols had data gaps.", "<i>Missing markets are reported instead of silently disappearing.</i>"])
+            for item in gaps[:5]:
+                gap_text = "; ".join(f"{name}: {reason}" for name, reason in (item.get("gaps") or {}).items())
+                lines.append(f"• <b>{item.get('symbol', 'unknown')}</b> — {gap_text}")
+            if len(gaps) > 5:
+                lines.append(f"• … and {len(gaps) - 5} more symbols with data gaps")
         else:
             lines.extend(["", "✅ No exchange coverage gaps were reported in this scan."])
-        await message_target.reply_text("\n".join(lines), parse_mode="HTML")
+        await target.reply_text("\n".join(lines), parse_mode="HTML")
 
         for index, item in enumerate(visible, 1):
             identifier = opportunity_id(item)
             await _db(context).save_opportunity(identifier, item)
-            await message_target.reply_text(_enhanced_card(item, identifier, preferences.get("trade_size", 1000), index), reply_markup=opportunity_buttons(identifier), parse_mode="HTML")
+            await target.reply_text(enhanced_alert_card(item, identifier, float(preferences.get("trade_size", 1000)), index), reply_markup=opportunity_buttons(identifier), parse_mode="HTML")
     finally:
         animation.cancel()
         await asyncio.gather(animation, return_exceptions=True)
@@ -121,12 +129,12 @@ async def enhanced_scan_command(update: Update, context: ContextTypes.DEFAULT_TY
             pass
 
 
-async def enhanced_scan_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def enhanced_scan_callback(update, context) -> None:
     await update.callback_query.answer()
     await enhanced_scan_command(update, context)
 
 
-async def enhanced_details(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def enhanced_details(update, context) -> None:
     query = update.callback_query
     await query.answer()
     db = _db(context)
@@ -159,22 +167,9 @@ async def enhanced_details(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             buy_book.get("asks", []), sell_book.get("bids", []), trade_size,
             buy_fee_rate=float(buy_fee), sell_fee_rate=float(sell_fee),
         )
-        buy_fill = result.spent_quote / result.base_amount
-        sell_fill = result.sell_proceeds / result.base_amount
+        buy_fill = result.spent_quote / max(result.base_amount, 1e-12)
+        sell_fill = result.sell_proceeds / max(result.base_amount, 1e-12)
         metadata = json.loads(row["payload"] or "{}")
-        metadata.update({
-            "executable": {
-                "requested_quote": result.requested_quote,
-                "spent_quote": result.spent_quote,
-                "base_amount": result.base_amount,
-                "sell_proceeds": result.sell_proceeds,
-                "gross_profit": result.gross_profit,
-                "net_profit": result.net_profit,
-                "buy_slippage_pct": result.buy_slippage_pct,
-                "sell_slippage_pct": result.sell_slippage_pct,
-                "complete": result.complete,
-            }
-        })
         quality = confidence_score(
             net_profit_pct=(result.net_profit / max(trade_size, 1e-9)) * 100,
             buy_volume=row["volume_buy"] or 0,
@@ -185,12 +180,9 @@ async def enhanced_details(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             coverage_complete=bool(metadata.get("coverage_complete")),
             executable_complete=result.complete,
         )
-        metadata["confidence"] = quality
-        metadata["rank_score"] = rank_score(row["net_profit"], quality, (result.net_profit / max(trade_size, 1e-9)) * 100)
+        executable_pct = (result.net_profit / max(trade_size, 1e-9)) * 100
         transfer = metadata.get("matching_network")
         transfer_text = f"✅ Matching route: {transfer}" if transfer else "⚠️ Transfer route requires re-check"
-        if not transfer:
-            transfer_text += "\n🟡 Deposit/withdrawal compatibility should be verified again before execution."
         message = format_opportunity_details(
             row, buy_fill, sell_fill, float(buy_fee), float(sell_fee), result.gross_profit, result.net_profit,
             result.buy_slippage_pct, result.sell_slippage_pct, transfer_text,
@@ -202,11 +194,11 @@ async def enhanced_details(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         message += f"💵 Gross P/L         <b>${result.gross_profit:,.4f}</b>\n"
         message += f"✅ Net P/L           <b>${result.net_profit:,.4f}</b>\n"
         message += f"🎯 Confidence        <b>{quality}/100</b>\n"
+        message += f"🏆 Execution rank    <b>{rank_score(row['net_profit'], quality, executable_pct):.2f}</b>\n"
         message += ("✅ Full requested size executable" if result.complete else "⚠️ Order-book depth cannot fill the full requested size")
     except Exception as exc:
         await query.edit_message_text(f"⚠️ Executable analysis unavailable: {type(exc).__name__}: {exc}")
         return
-
     await query.edit_message_text(
         message,
         reply_markup=InlineKeyboardMarkup([
