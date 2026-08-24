@@ -15,8 +15,11 @@ class CcxtExchangeAdapter:
     BULK_BIDASK_UNRELIABLE = {"lbank", "xt"}
     FALLBACK_MAX_SYMBOLS = 40
     FALLBACK_CONCURRENCY = 8
-    TARGETED_RECOVERY_MAX_SYMBOLS = 100
-    TARGETED_RECOVERY_CONCURRENCY = 6
+    # Keep targeted recovery bounded: bulk ticker omissions are common on some
+    # exchanges, but probing dozens of symbols individually makes /scan slow.
+    TARGETED_RECOVERY_MAX_SYMBOLS = 30
+    TARGETED_RECOVERY_CONCURRENCY = 8
+    TARGETED_SINGLE_TICKER_FALLBACK_MAX = 8
 
     def __init__(self, name: str, credentials: dict[str, str] | None = None, public_name: str | None = None):
         self._exchange_id = name
@@ -87,15 +90,12 @@ class CcxtExchangeAdapter:
             return []
 
     async def recover_symbols(self, symbols: list[str] | set[str], max_symbols: int | None = None) -> list[Ticker]:
-        """Recover symbols omitted by bulk tickers, while avoiding markets not listed here."""
+        """Recover a bounded set of symbols omitted by bulk tickers."""
         limit = max_symbols or self.TARGETED_RECOVERY_MAX_SYMBOLS
         candidates = list(dict.fromkeys(symbols))[:limit]
         if not candidates:
             return []
 
-        # Do not call XT/LBank for symbols that the exchange does not actually list.
-        # A cross-exchange symbol can legitimately be absent, and trying to fetch it
-        # produces the misleading "targeted recovery failed" message seen by users.
         try:
             await self.client.load_markets()
             available = set(self.client.markets or {})
@@ -104,10 +104,7 @@ class CcxtExchangeAdapter:
             for symbol in not_listed:
                 self.last_fetch_symbols[symbol] = "not listed on exchange"
             candidates = listed
-            logger.info(
-                "%s targeted recovery market filter: %s listed, %s not listed",
-                self.name, len(listed), len(not_listed),
-            )
+            logger.info("%s targeted recovery market filter: %s listed, %s not listed", self.name, len(listed), len(not_listed))
         except Exception as exc:
             logger.info("%s could not load markets before targeted recovery: %s: %s", self.name, type(exc).__name__, exc)
 
@@ -116,10 +113,11 @@ class CcxtExchangeAdapter:
 
         recovered: dict[str, Ticker] = {}
         unresolved = candidates
+        batch_supported = bool(self.client.has.get("fetchBidsAsks"))
 
-        try:
-            if self.client.has.get("fetchBidsAsks"):
-                batch = await self.client.fetch_bids_asks(candidates)
+        if batch_supported:
+            try:
+                batch = await asyncio.wait_for(self.client.fetch_bids_asks(candidates), timeout=8)
                 for symbol, ticker in (batch or {}).items():
                     bid, ask = ticker.get("bid"), ticker.get("ask")
                     if bid and ask and bid > 0 and ask > 0:
@@ -128,15 +126,18 @@ class CcxtExchangeAdapter:
                         )
                 unresolved = [symbol for symbol in candidates if symbol not in recovered]
                 logger.info("%s targeted bid/ask recovery: %s/%s symbols recovered in batch", self.name, len(recovered), len(candidates))
-        except Exception as exc:
-            logger.info("%s targeted bid/ask batch recovery unavailable: %s: %s", self.name, type(exc).__name__, exc)
+            except Exception as exc:
+                logger.info("%s targeted bid/ask batch recovery unavailable: %s: %s", self.name, type(exc).__name__, exc)
 
+        # Only use individual ticker requests for a small remainder. This keeps
+        # /scan responsive when the exchange's bulk endpoint omits many markets.
+        unresolved = unresolved[: self.TARGETED_SINGLE_TICKER_FALLBACK_MAX]
         semaphore = asyncio.Semaphore(self.TARGETED_RECOVERY_CONCURRENCY)
 
         async def _fetch_one(symbol: str) -> None:
             async with semaphore:
                 try:
-                    ticker = await self.client.fetch_ticker(symbol)
+                    ticker = await asyncio.wait_for(self.client.fetch_ticker(symbol), timeout=6)
                     bid, ask = ticker.get("bid"), ticker.get("ask")
                     if bid and ask and bid > 0 and ask > 0:
                         recovered[symbol] = Ticker(
