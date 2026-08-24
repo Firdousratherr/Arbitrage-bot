@@ -13,9 +13,8 @@ logger = logging.getLogger(__name__)
 
 class CcxtExchangeAdapter:
     # Exchanges whose bulk fetch_tickers() endpoint is known/observed to not populate
-    # bid/ask reliably (their summary endpoint returns last/volume but not top-of-book).
-    # For these we fall back to per-symbol order-book lookups for a bounded set of
-    # candidate symbols instead of silently returning zero usable tickers every cycle.
+    # bid/ask reliably. Missing top-of-book values are recovered with bounded order-book
+    # requests instead of silently dropping the symbol from the scan.
     BULK_BIDASK_UNRELIABLE = {"lbank", "xt"}
     FALLBACK_MAX_SYMBOLS = 40
     FALLBACK_CONCURRENCY = 8
@@ -25,35 +24,43 @@ class CcxtExchangeAdapter:
         self.name = public_name or name
         exchange_class = getattr(ccxt, name)
         self.client = exchange_class({"enableRateLimit": True, **(credentials or {})})
-        # Diagnostics from the most recent fetch_tickers() call, so callers (e.g. an admin
-        # /exchangestats command) can tell "exchange returned nothing because every ticker was
-        # missing bid/ask" apart from "exchange request failed" apart from "exchange is fine but
-        # has no overlapping symbols" - all three look identical from the outside otherwise.
+        # Diagnostics from the most recent fetch_tickers() call.
         self.last_fetch_stats: dict[str, int] = {"raw": 0, "dropped_bid_ask": 0, "usable": 0, "fallback_used": 0}
         self.last_fetch_error: str | None = None
+        self.last_fetch_symbols: dict[str, str] = {}
 
     async def fetch_tickers(self, symbols: list[str] | None = None) -> list[Ticker]:
         try:
             data = await self.client.fetch_tickers(symbols)
-            result = []
+            result: list[Ticker] = []
             dropped = 0
+            missing_symbols: dict[str, str] = {}
             for symbol, ticker in data.items():
                 bid, ask = ticker.get("bid"), ticker.get("ask")
                 if bid and ask and bid > 0 and ask > 0:
                     result.append(Ticker(self.name, symbol, float(bid), float(ask), float(ticker.get("quoteVolume") or 0)))
                 else:
                     dropped += 1
+                    missing_symbols[symbol] = "missing/zero bid-ask"
 
             fallback_used = 0
-            if data and not result and self._exchange_id in self.BULK_BIDASK_UNRELIABLE:
+            if missing_symbols and self._exchange_id in self.BULK_BIDASK_UNRELIABLE:
                 logger.info(
-                    "%s bulk tickers missing bid/ask on every symbol; falling back to per-symbol "
+                    "%s bulk tickers missing bid/ask for %s symbols; falling back to per-symbol "
                     "order books for up to %s candidates",
-                    self.name, self.FALLBACK_MAX_SYMBOLS,
+                    self.name,
+                    len(missing_symbols),
+                    self.FALLBACK_MAX_SYMBOLS,
                 )
-                result = await self._fallback_top_of_book(data, symbols)
-                fallback_used = len(result)
+                fallback = await self._fallback_top_of_book(data, list(missing_symbols))
+                if fallback:
+                    recovered_symbols = {ticker.symbol for ticker in fallback}
+                    result.extend(fallback)
+                    fallback_used = len(fallback)
+                    for symbol in recovered_symbols:
+                        missing_symbols.pop(symbol, None)
 
+            self.last_fetch_symbols = missing_symbols
             self.last_fetch_stats = {
                 "raw": len(data),
                 "dropped_bid_ask": dropped,
@@ -61,25 +68,30 @@ class CcxtExchangeAdapter:
                 "fallback_used": fallback_used,
             }
             self.last_fetch_error = None
+
             if data and not result:
                 logger.warning(
                     "%s returned %s tickers but all were dropped for missing/zero bid-ask "
-                    "(fallback yielded nothing usable); this exchange's bulk ticker endpoint "
-                    "may not populate bid/ask reliably",
-                    self.name, len(data),
+                    "(fallback yielded nothing usable)",
+                    self.name,
+                    len(data),
+                )
+            elif missing_symbols:
+                logger.warning(
+                    "%s still has %s symbols without usable bid/ask after fallback",
+                    self.name,
+                    len(missing_symbols),
                 )
             return result
         except Exception as exc:
             self.last_fetch_stats = {"raw": 0, "dropped_bid_ask": 0, "usable": 0, "fallback_used": 0}
             self.last_fetch_error = f"{type(exc).__name__}: {exc}"
+            self.last_fetch_symbols = {}
             logger.warning("%s ticker fetch skipped: %s: %s", self.name, type(exc).__name__, exc)
             return []
 
     async def _fallback_top_of_book(self, data: dict[str, Any], symbols: list[str] | None) -> list[Ticker]:
-        """Per-symbol order-book fallback for exchanges whose bulk ticker endpoint doesn't
-        reliably return bid/ask. Bounded to FALLBACK_MAX_SYMBOLS candidates (chosen by highest
-        reported quote/base volume when no explicit symbol list was requested) so a single bad
-        exchange can't blow up API call volume or RAM on a 500MB free-tier server."""
+        """Fetch top-of-book for a bounded set of symbols with missing bid/ask."""
         if symbols:
             candidates = [symbol for symbol in symbols if symbol in data][: self.FALLBACK_MAX_SYMBOLS]
         else:
