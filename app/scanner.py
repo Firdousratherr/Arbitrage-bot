@@ -16,9 +16,6 @@ logger = logging.getLogger(__name__)
 
 
 class Scanner:
-    # XT and LBank can omit markets from their bulk ticker response. When another
-    # selected exchange proves that a symbol exists, recover that symbol directly
-    # instead of reporting it as "not returned" and losing a possible opportunity.
     TARGETED_RECOVERY_EXCHANGES = {"xt", "lbank"}
     TARGETED_RECOVERY_MAX_SYMBOLS = 100
 
@@ -34,69 +31,48 @@ class Scanner:
         async with self.semaphore:
             return await exchange.fetch_tickers(symbols)
 
-    async def run_cycle(
-        self,
-        *,
-        require_matching_user: bool = True,
-        exchange_names: set[str] | None = None,
-    ) -> list[Opportunity]:
+    async def run_cycle(self, *, require_matching_user: bool = True, exchange_names: set[str] | None = None) -> list[Opportunity]:
         if exchange_names is None and require_matching_user:
             exchange_names = set()
             for user in await self.db.list_users("vip"):
                 exchange_names.update(json.loads(user["selected_exchanges"] or "[]"))
-        active_exchanges = {
-            name: exchange
-            for name, exchange in self.exchanges.items()
-            if exchange_names is None or name in exchange_names
-        }
+        active_exchanges = {name: exchange for name, exchange in self.exchanges.items() if exchange_names is None or name in exchange_names}
         if len(active_exchanges) < 2:
             logger.warning("scan skipped: select at least two active exchanges")
-            set_last_scan_diagnostics([])
+            set_last_scan_diagnostics({"summary": {}, "gaps": []})
             return []
 
-        fetched = await asyncio.gather(
-            *(self._fetch(exchange) for exchange in active_exchanges.values()),
-            return_exceptions=True,
-        )
+        fetched = await asyncio.gather(*(self._fetch(exchange) for exchange in active_exchanges.values()), return_exceptions=True)
         by_symbol: dict[str, list[Ticker]] = {}
         successful_exchanges = 0
         exchange_status: dict[str, dict] = {}
         observed_symbols: set[str] = set()
+        initial_present: dict[str, set[str]] = {name: set() for name in active_exchanges}
 
         for name, exchange, result in zip(active_exchanges.keys(), active_exchanges.values(), fetched):
             stats = getattr(exchange, "last_fetch_stats", {}) or {}
             last_error = getattr(exchange, "last_fetch_error", None)
             missing_symbols = getattr(exchange, "last_fetch_symbols", {}) or {}
-            observed_symbols.update(missing_symbols)
             if isinstance(result, Exception):
-                exchange_status[name] = {
-                    "status": "fetch failed",
-                    "error": f"{type(result).__name__}: {result}",
-                }
+                exchange_status[name] = {"status": "fetch failed", "error": f"{type(result).__name__}: {result}"}
                 logger.warning("%s exchange scan failed: %s", exchange.name, result)
                 continue
-
             if result:
                 successful_exchanges += 1
             for ticker in result:
                 by_symbol.setdefault(ticker.symbol, []).append(ticker)
                 observed_symbols.add(ticker.symbol)
-
+                if ticker.ask > 0 and ticker.bid > 0:
+                    initial_present[name].add(ticker.symbol)
             if last_error:
                 exchange_status[name] = {"status": "fetch failed", "error": last_error}
             elif stats.get("raw", 0) == 0:
                 exchange_status[name] = {"status": "no tickers returned"}
             elif missing_symbols:
-                exchange_status[name] = {
-                    "status": "partial",
-                    "missing": missing_symbols,
-                }
+                exchange_status[name] = {"status": "partial", "missing": missing_symbols}
             else:
                 exchange_status[name] = {"status": "ok"}
 
-        # Second pass: if XT/LBank omitted a symbol completely from bulk tickers but
-        # another exchange returned it, make a bounded targeted request for that
-        # symbol. This closes the exact gap that produced "xt: not returned" in scans.
         all_symbols = set(by_symbol)
         if all_symbols:
             recovery_tasks = []
@@ -105,12 +81,7 @@ class Scanner:
                 exchange_id = getattr(exchange, "_exchange_id", name).lower()
                 if exchange_id not in self.TARGETED_RECOVERY_EXCHANGES:
                     continue
-                present = {
-                    ticker.symbol
-                    for ticker_list in by_symbol.values()
-                    for ticker in ticker_list
-                    if ticker.exchange == name
-                }
+                present = {ticker.symbol for ticker_list in by_symbol.values() for ticker in ticker_list if ticker.exchange == name and ticker.ask > 0 and ticker.bid > 0}
                 missing_candidates = sorted(all_symbols - present)
                 if not missing_candidates:
                     continue
@@ -133,36 +104,41 @@ class Scanner:
                         for ticker in recovered:
                             by_symbol.setdefault(ticker.symbol, []).append(ticker)
                             observed_symbols.add(ticker.symbol)
-                        exchange_status[name] = {
-                            "status": "partial",
-                            "missing": getattr(active_exchanges[name], "last_fetch_symbols", {}) or {},
-                        }
+                        exchange_status[name] = {"status": "partial", "missing": getattr(active_exchanges[name], "last_fetch_symbols", {}) or {}}
 
-        diagnostics: list[dict] = []
-        for symbol in sorted(observed_symbols | set(by_symbol)):
-            statuses: dict[str, str] = {}
-            present_exchanges = {ticker.exchange for ticker in by_symbol.get(symbol, []) if ticker.ask > 0 and ticker.bid > 0}
+        # Only symbols with usable quotes on at least two selected exchanges are
+        # arbitrage candidates. A symbol existing on only one exchange is a
+        # coverage difference, not an arbitrage data failure.
+        valid_by_exchange: dict[str, set[str]] = {name: set() for name in active_exchanges}
+        for symbol, tickers in by_symbol.items():
+            for ticker in tickers:
+                if ticker.ask > 0 and ticker.bid > 0 and ticker.exchange in valid_by_exchange:
+                    valid_by_exchange[ticker.exchange].add(symbol)
+        common_symbols = set.intersection(*valid_by_exchange.values()) if valid_by_exchange else set()
+
+        coverage_gaps: list[dict] = []
+        for symbol in sorted(observed_symbols):
+            present = {name for name, symbols in valid_by_exchange.items() if symbol in symbols}
+            if not present or len(present) >= len(active_exchanges):
+                continue
+            gaps = {}
             for name in active_exchanges:
-                if name in present_exchanges:
-                    statuses[name] = "OK"
+                if name in present:
                     continue
                 status = exchange_status.get(name, {})
                 if status.get("status") == "fetch failed":
-                    statuses[name] = f"fetch failed: {status.get('error', 'unknown error')}"
+                    gaps[name] = f"fetch failed: {status.get('error', 'unknown error')}"
                 elif symbol in status.get("missing", {}):
-                    statuses[name] = status["missing"][symbol]
+                    gaps[name] = status["missing"][symbol]
                 elif status.get("status") == "no tickers returned":
-                    statuses[name] = "no tickers returned"
+                    gaps[name] = "no tickers returned"
                 else:
-                    statuses[name] = "not returned"
+                    gaps[name] = "not returned"
+            if gaps:
+                coverage_gaps.append({"symbol": symbol, "gaps": gaps})
 
-            gaps = {name: reason for name, reason in statuses.items() if reason != "OK"}
-            if gaps and present_exchanges:
-                diagnostics.append({"symbol": symbol, "gaps": gaps})
-
-        set_last_scan_diagnostics(diagnostics)
-
-        opportunities = []
+        opportunities: list[Opportunity] = []
+        positive_spread_symbols = 0
         for symbol, tickers in by_symbol.items():
             valid_tickers = [ticker for ticker in tickers if ticker.ask > 0 and ticker.bid > 0]
             if len(valid_tickers) < 2:
@@ -174,19 +150,15 @@ class Scanner:
             raw_spread = ((sell.bid - buy.ask) / buy.ask) * 100
             if raw_spread <= 0:
                 continue
+            positive_spread_symbols += 1
 
-            # Calculate fee-adjusted net profit
             buy_fee_pct = 0.0
             sell_fee_pct = 0.0
             try:
                 buy_exchange = self.exchanges.get(buy.exchange)
                 sell_exchange = self.exchanges.get(sell.exchange)
                 if buy_exchange and sell_exchange:
-                    fees = await asyncio.gather(
-                        buy_exchange.get_taker_fee(symbol),
-                        sell_exchange.get_taker_fee(symbol),
-                        return_exceptions=True,
-                    )
+                    fees = await asyncio.gather(buy_exchange.get_taker_fee(symbol), sell_exchange.get_taker_fee(symbol), return_exceptions=True)
                     buy_fee_pct = float(fees[0]) * 100 if not isinstance(fees[0], Exception) else 0.1
                     sell_fee_pct = float(fees[1]) * 100 if not isinstance(fees[1], Exception) else 0.1
             except Exception:
@@ -195,20 +167,21 @@ class Scanner:
                 sell_fee_pct = 0.1
 
             net_profit = raw_spread - buy_fee_pct - sell_fee_pct
-            opportunity = Opportunity(
-                symbol,
-                buy.exchange,
-                sell.exchange,
-                buy.ask,
-                sell.bid,
-                raw_spread,
-                net_profit,
-                buy.quote_volume,
-                sell.quote_volume,
-            )
+            opportunity = Opportunity(symbol, buy.exchange, sell.exchange, buy.ask, sell.bid, raw_spread, net_profit, buy.quote_volume, sell.quote_volume)
             if require_matching_user and not await self._has_matching_users(opportunity):
                 continue
             opportunities.append(opportunity)
+
+        summary = {
+            "selected_exchanges": list(active_exchanges),
+            "returned_by_exchange": {name: len(symbols) for name, symbols in valid_by_exchange.items()},
+            "common_markets": len(common_symbols),
+            "positive_spreads": positive_spread_symbols,
+            "opportunities_before_filters": len(opportunities),
+            "coverage_gap_symbols": len(coverage_gaps),
+        }
+        set_last_scan_diagnostics({"summary": summary, "gaps": coverage_gaps})
+
         try:
             purged = await self.db.purge_expired_opportunities()
             if purged:
@@ -217,14 +190,7 @@ class Scanner:
             logger.exception("failed to purge expired opportunities")
         gc.collect()
         await self.db.increment_stat("scans_run")
-        logger.info(
-            "scan complete: %s/%s exchanges returned data, %s symbols, %s opportunities, %s symbol gaps",
-            successful_exchanges,
-            len(active_exchanges),
-            len(by_symbol),
-            len(opportunities),
-            len(diagnostics),
-        )
+        logger.info("scan complete: %s/%s exchanges returned data, %s common markets, %s positive spreads, %s opportunities, %s coverage gaps", successful_exchanges, len(active_exchanges), len(common_symbols), positive_spread_symbols, len(opportunities), len(coverage_gaps))
         return opportunities
 
     async def _has_matching_users(self, opportunity: Opportunity) -> bool:
