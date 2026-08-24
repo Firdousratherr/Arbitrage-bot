@@ -74,6 +74,7 @@ def build_handlers(db: Database, admin_ids: set[int], exchange_names: list[str],
         CommandHandler("health", admin_only(db, admin_ids, health)),
         CommandHandler("exchangestats", admin_only(db, admin_ids, exchangestats)),
         CommandHandler("diagnose", admin_only(db, admin_ids, diagnose)),
+        CommandHandler("aiprobe", admin_only(db, admin_ids, aiprobe)),
         CommandHandler("fixerror", admin_only(db, admin_ids, fixerror)),
         CommandHandler("patchstatus", admin_only(db, admin_ids, patchstatus)),
         CommandHandler("validatefix", admin_only(db, admin_ids, validatefix)),
@@ -279,6 +280,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             "/exportusers — download CSV export",
             "/memstatus — view process memory",
             "/diagnose — summarize recent errors with AI",
+            "/aiprobe — raw HTTP check of the AI provider (bypasses SDK, shows real status/headers/body)",
             "/fixerror ISSUE — propose a patch",
             "/patchstatus — list pending patches",
             "/validatefix PATCH_ID — validate patch",
@@ -781,6 +783,19 @@ async def aistatus(update, context):
     )
 
 
+async def aiprobe(update, context):
+    """Bypass the Groq SDK's error classification and show the literal HTTP status,
+    headers, and response body from a direct request, so a Cloudflare block page can
+    be confirmed (or ruled out) without needing shell access to the host."""
+    service = maintenance_service(context)
+    try:
+        result = await service.raw_connectivity_probe()
+    except Exception as exc:
+        logger.exception("AI raw connectivity probe failed")
+        result = f"❌ Raw probe failed unexpectedly: {type(exc).__name__}: {exc}"
+    await update.effective_message.reply_text(result[:3900])
+
+
 async def fixerror(update, context):
     service = maintenance_service(context)
     issue = " ".join(context.args).strip()
@@ -986,6 +1001,11 @@ async def exchangestats(update, context):
             lines.append(f"{name}: ⚠️ 0 tickers received")
         elif stats["usable"] == 0:
             lines.append(f"{name}: ⚠️ {stats['raw']} tickers received, all {stats['dropped_bid_ask']} dropped for missing/zero bid-ask")
+        elif stats.get("fallback_used"):
+            lines.append(
+                f"{name}: ✅ {stats['usable']} usable via order-book fallback "
+                f"(bulk endpoint dropped all {stats['raw']} tickers for missing bid-ask)"
+            )
         else:
             lines.append(f"{name}: ✅ {stats['usable']}/{stats['raw']} usable (dropped {stats['dropped_bid_ask']} for missing bid-ask)")
     await update.message.reply_text("\n".join(lines))
