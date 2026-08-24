@@ -18,8 +18,7 @@ from .logging_setup import configure_logging
 from .maintenance import MaintenanceAssistant
 from .scanner import Scanner, opportunity_id
 from .ui import format_background_alert, format_error, opportunity_buttons
-from .ui_animations import animate_scan_progress
-from . import handlers as handlers_module
+from .ui_router import build_ui_handlers
 
 logger = logging.getLogger(__name__)
 
@@ -93,16 +92,7 @@ def run_app() -> None:
             verification_ok = buy_available and sell_available and _matching_network_exists(buy_meta, sell_meta)
             if not verification_ok:
                 unverified_identifier = f"{base_identifier}-not-verified"
-                unverified_opportunity = replace(
-                    opportunity,
-                    verified=False,
-                    metadata={
-                        **opportunity.metadata,
-                        "transfer_verification": "not_verified",
-                        "buy_transfer": buy_meta,
-                        "sell_transfer": sell_meta,
-                    },
-                )
+                unverified_opportunity = replace(opportunity, verified=False, metadata={**opportunity.metadata, "transfer_verification": "not_verified", "buy_transfer": buy_meta, "sell_transfer": sell_meta})
                 for user in normal_users:
                     user_id = user["telegram_id"]
                     alert_key = (user_id, opportunity.symbol, opportunity.buy_exchange, opportunity.sell_exchange)
@@ -113,11 +103,7 @@ def run_app() -> None:
                     last_alerts[alert_key] = datetime.now(UTC)
                     sent_counts[user_id] = sent_counts.get(user_id, 0) + 1
                 continue
-            verified_opportunity = replace(
-                opportunity,
-                verified=True,
-                metadata={**opportunity.metadata, "buy_transfer": buy_meta, "sell_transfer": sell_meta, "matching_network": _matching_network(buy_meta, sell_meta)},
-            )
+            verified_opportunity = replace(opportunity, verified=True, metadata={**opportunity.metadata, "buy_transfer": buy_meta, "sell_transfer": sell_meta, "matching_network": _matching_network(buy_meta, sell_meta)})
             for user in normal_users:
                 user_id = user["telegram_id"]
                 alert_key = (user_id, opportunity.symbol, opportunity.buy_exchange, opportunity.sell_exchange)
@@ -158,11 +144,12 @@ def run_app() -> None:
 
     application = Application.builder().token(settings.telegram_bot_token).post_init(post_init_with_context).post_shutdown(post_shutdown).build()
 
-    # Use the shared animated scanner state for the /scan flow. This only changes
-    # message edits; scanner logic, filtering and exchange calls remain untouched.
-    handlers_module._animate_scan_progress = animate_scan_progress
-
-    for handler in build_handlers(db, settings.admin_id_set, settings.exchange_names, settings.admin_secret_key):
+    # Keep all existing commands/callbacks, but replace the old registration ConversationHandler
+    # with the premium UI registration flow. This preserves every scanner/admin feature.
+    existing_handlers = build_handlers(db, settings.admin_id_set, settings.exchange_names, settings.admin_secret_key)
+    for handler in existing_handlers[1:]:
+        application.add_handler(handler)
+    for handler in build_ui_handlers(db, settings.admin_id_set, settings.exchange_names, settings.admin_secret_key):
         application.add_handler(handler)
 
     async def error_handler(update, context):
@@ -184,14 +171,7 @@ def _matching_network_exists(buy_meta: dict, sell_meta: dict) -> bool:
 
 def _network_key(value: object) -> str:
     normalized = "".join(character for character in str(value or "").lower() if character.isalnum())
-    aliases = {
-        "eth": "ethereum", "erc20": "ethereum", "ethereum": "ethereum",
-        "bsc": "bsc", "bep20": "bsc", "binancesmartchain": "bsc",
-        "matic": "polygon", "polygon": "polygon", "polygonpos": "polygon",
-        "arb": "arbitrum", "arbitrum": "arbitrum",
-        "op": "optimism", "optimism": "optimism",
-        "trx": "tron", "trc20": "tron", "tron": "tron",
-    }
+    aliases = {"eth": "ethereum", "erc20": "ethereum", "ethereum": "ethereum", "bsc": "bsc", "bep20": "bsc", "binancesmartchain": "bsc", "matic": "polygon", "polygon": "polygon", "polygonpos": "polygon", "arb": "arbitrum", "arbitrum": "arbitrum", "op": "optimism", "optimism": "optimism", "trx": "tron", "trc20": "tron", "tron": "tron"}
     return aliases.get(normalized, normalized)
 
 
@@ -200,16 +180,8 @@ def _contract_key(value: object) -> str:
 
 
 def _matching_network(buy_meta: dict, sell_meta: dict) -> str | None:
-    buy_networks = {
-        _network_key(item.get("network")): item
-        for item in buy_meta.get("networks", [])
-        if item.get("deposit")
-    }
-    sell_networks = {
-        _network_key(item.get("network")): item
-        for item in sell_meta.get("networks", [])
-        if item.get("withdraw")
-    }
+    buy_networks = {_network_key(item.get("network")): item for item in buy_meta.get("networks", []) if item.get("deposit")}
+    sell_networks = {_network_key(item.get("network")): item for item in sell_meta.get("networks", []) if item.get("withdraw")}
     for network, buy in buy_networks.items():
         sell = sell_networks.get(network)
         if sell and _contract_key(buy.get("contract")) and _contract_key(buy.get("contract")) == _contract_key(sell.get("contract")):
