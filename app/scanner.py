@@ -7,6 +7,7 @@ import json
 import logging
 from datetime import UTC, datetime
 
+from .arbitrage_features import OpportunityHistory, confidence_score, rank_score
 from .db import Database
 from .exchanges.base import Opportunity, Ticker
 from .filters import matches, user_filters
@@ -17,8 +18,6 @@ logger = logging.getLogger(__name__)
 
 class Scanner:
     TARGETED_RECOVERY_EXCHANGES = {"xt", "lbank"}
-    # Recovery is deliberately bounded. The goal is to restore useful common
-    # markets without turning a scan into hundreds of extra API requests.
     TARGETED_RECOVERY_MAX_SYMBOLS = 40
 
     def __init__(self, db: Database, exchanges: dict, interval: int, concurrency: int):
@@ -28,6 +27,7 @@ class Scanner:
         self.semaphore = asyncio.Semaphore(concurrency)
         self.task: asyncio.Task | None = None
         self.running = False
+        self.history = OpportunityHistory(max_points=12)
 
     async def _fetch(self, exchange, symbols: list[str] | None = None) -> list[Ticker]:
         async with self.semaphore:
@@ -113,9 +113,6 @@ class Scanner:
                             "missing": getattr(active_exchanges[name], "last_fetch_symbols", {}) or {},
                         }
 
-        # Only symbols with usable quotes on at least two selected exchanges are
-        # arbitrage candidates. A symbol existing on only one exchange is a
-        # coverage difference, not an arbitrage data failure.
         valid_by_exchange: dict[str, set[str]] = {name: set() for name in active_exchanges}
         for symbol, tickers in by_symbol.items():
             for ticker in tickers:
@@ -148,6 +145,7 @@ class Scanner:
         positive_spread_symbols = 0
         detected_opportunities = 0
         filtered_opportunities = 0
+        observed_at = datetime.now(UTC).isoformat()
         for symbol, tickers in by_symbol.items():
             valid_tickers = [ticker for ticker in tickers if ticker.ask > 0 and ticker.bid > 0]
             if len(valid_tickers) < 2:
@@ -176,13 +174,39 @@ class Scanner:
                 sell_fee_pct = 0.1
 
             net_profit = raw_spread - buy_fee_pct - sell_fee_pct
-            opportunity = Opportunity(symbol, buy.exchange, sell.exchange, buy.ask, sell.bid, raw_spread, net_profit, buy.quote_volume, sell.quote_volume)
+            history_key = f"{symbol}:{buy.exchange}:{sell.exchange}"
+            history = self.history.add(history_key, raw_spread, net_profit)
+            confidence = confidence_score(
+                net_profit_pct=net_profit,
+                buy_volume=buy.quote_volume,
+                sell_volume=sell.quote_volume,
+                trade_size=1000.0,
+                freshness_seconds=0.0,
+                transfer_verified=False,
+                coverage_complete=symbol in common_symbols,
+                executable_complete=False,
+            )
+            metadata = {
+                "observed_at": observed_at,
+                "history": history,
+                "coverage_complete": symbol in common_symbols,
+                "selected_exchange_count": len(active_exchanges),
+                "confidence": confidence,
+                "rank_score": rank_score(net_profit, confidence, None),
+                "headline_only": True,
+            }
+            opportunity = Opportunity(
+                symbol, buy.exchange, sell.exchange, buy.ask, sell.bid,
+                raw_spread, net_profit, buy.quote_volume, sell.quote_volume,
+                metadata=metadata,
+            )
             detected_opportunities += 1
             if require_matching_user and not await self._has_matching_users(opportunity):
                 filtered_opportunities += 1
                 continue
             opportunities.append(opportunity)
 
+        opportunities.sort(key=lambda item: item.metadata.get("rank_score", item.net_profit), reverse=True)
         summary = {
             "selected_exchanges": list(active_exchanges),
             "exchange_status": exchange_status,
@@ -205,7 +229,11 @@ class Scanner:
             logger.exception("failed to purge expired opportunities")
         gc.collect()
         await self.db.increment_stat("scans_run")
-        logger.info("scan complete: %s/%s exchanges returned data, %s common markets, %s positive spreads, %s detected, %s filtered, %s returned, %s coverage gaps", successful_exchanges, len(active_exchanges), len(common_symbols), positive_spread_symbols, detected_opportunities, filtered_opportunities, len(opportunities), len(coverage_gaps))
+        logger.info(
+            "scan complete: %s/%s exchanges returned data, %s common markets, %s positive spreads, %s detected, %s filtered, %s returned, %s coverage gaps",
+            successful_exchanges, len(active_exchanges), len(common_symbols), positive_spread_symbols,
+            detected_opportunities, filtered_opportunities, len(opportunities), len(coverage_gaps),
+        )
         return opportunities
 
     async def _has_matching_users(self, opportunity: Opportunity) -> bool:
