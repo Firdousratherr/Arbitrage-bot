@@ -6,9 +6,9 @@ import logging
 from dataclasses import replace
 from datetime import UTC, datetime
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application
 
+from .arbitrage_features import confidence_score, material_change, rank_score
 from .config import get_settings
 from .db import Database
 from .exchanges.registry import build_exchanges
@@ -19,6 +19,7 @@ from .maintenance import MaintenanceAssistant
 from .scanner import Scanner, opportunity_id
 from .ui import format_background_alert, format_error, opportunity_buttons
 from .ui_router import build_ui_handlers
+from .feature_handlers import _enhanced_card, build_feature_handlers
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,7 @@ def run_app() -> None:
         " (missing: " + ", ".join(maintenance.missing_settings) + ")" if not maintenance.configured else "",
     )
     last_alerts: dict[tuple[int, str, str, str], datetime] = {}
+    last_alert_spreads: dict[tuple[int, str, str, str], float] = {}
     LAST_ALERTS_MAX_AGE_SECONDS = 24 * 3600
 
     def _prune_last_alerts() -> None:
@@ -50,13 +52,14 @@ def run_app() -> None:
         stale_keys = [key for key, sent_at in last_alerts.items() if sent_at.timestamp() < cutoff]
         for key in stale_keys:
             del last_alerts[key]
+            last_alert_spreads.pop(key, None)
         if stale_keys:
             logger.debug("pruned %s stale last_alerts entries", len(stale_keys))
 
     async def alert_opportunities(opportunities) -> None:
         _prune_last_alerts()
         sent_counts: dict[int, int] = {}
-        for opportunity in sorted(opportunities, key=lambda item: item.net_profit, reverse=True):
+        for opportunity in sorted(opportunities, key=lambda item: item.metadata.get("rank_score", item.net_profit), reverse=True):
             base_identifier = opportunity_id(opportunity)
             loose_identifier = f"{base_identifier}-loose"
             verified_identifier = f"{base_identifier}-verified"
@@ -73,10 +76,13 @@ def run_app() -> None:
                 last_sent = last_alerts.get(alert_key)
                 if last_sent and (datetime.now(UTC) - last_sent).total_seconds() < preferences["alert_cooldown"]:
                     continue
+                if last_sent and not material_change(last_alert_spreads.get(alert_key), opportunity.raw_spread):
+                    continue
                 if preferences["loose_mode"]:
                     loose_opportunity = replace(opportunity, loose_mode=True, verified=False)
                     await _send_alert(db, user_id, loose_opportunity, loose_identifier, context.application)
                     last_alerts[alert_key] = datetime.now(UTC)
+                    last_alert_spreads[alert_key] = opportunity.raw_spread
                     sent_counts[user_id] = sent_counts.get(user_id, 0) + 1
                     continue
                 normal_users.append(user)
@@ -97,10 +103,14 @@ def run_app() -> None:
                     user_id = user["telegram_id"]
                     alert_key = (user_id, opportunity.symbol, opportunity.buy_exchange, opportunity.sell_exchange)
                     last_sent = last_alerts.get(alert_key)
-                    if last_sent and (datetime.now(UTC) - last_sent).total_seconds() < user_filters(user)["alert_cooldown"]:
+                    preferences = user_filters(user)
+                    if last_sent and (datetime.now(UTC) - last_sent).total_seconds() < preferences["alert_cooldown"]:
+                        continue
+                    if last_sent and not material_change(last_alert_spreads.get(alert_key), opportunity.raw_spread):
                         continue
                     await _send_alert(db, user_id, unverified_opportunity, unverified_identifier, context.application)
                     last_alerts[alert_key] = datetime.now(UTC)
+                    last_alert_spreads[alert_key] = opportunity.raw_spread
                     sent_counts[user_id] = sent_counts.get(user_id, 0) + 1
                 continue
             verified_opportunity = replace(opportunity, verified=True, metadata={**opportunity.metadata, "buy_transfer": buy_meta, "sell_transfer": sell_meta, "matching_network": _matching_network(buy_meta, sell_meta)})
@@ -108,10 +118,14 @@ def run_app() -> None:
                 user_id = user["telegram_id"]
                 alert_key = (user_id, opportunity.symbol, opportunity.buy_exchange, opportunity.sell_exchange)
                 last_sent = last_alerts.get(alert_key)
-                if last_sent and (datetime.now(UTC) - last_sent).total_seconds() < user_filters(user)["alert_cooldown"]:
+                preferences = user_filters(user)
+                if last_sent and (datetime.now(UTC) - last_sent).total_seconds() < preferences["alert_cooldown"]:
+                    continue
+                if last_sent and not material_change(last_alert_spreads.get(alert_key), opportunity.raw_spread):
                     continue
                 await _send_alert(db, user_id, verified_opportunity, verified_identifier, context.application)
                 last_alerts[alert_key] = datetime.now(UTC)
+                last_alert_spreads[alert_key] = opportunity.raw_spread
                 sent_counts[user_id] = sent_counts.get(user_id, 0) + 1
 
     async def post_init(application: Application) -> None:
@@ -144,8 +158,10 @@ def run_app() -> None:
 
     application = Application.builder().token(settings.telegram_bot_token).post_init(post_init_with_context).post_shutdown(post_shutdown).build()
 
-    # Keep all existing commands/callbacks, but replace the old registration ConversationHandler
-    # with the premium UI registration flow. This preserves every scanner/admin feature.
+    # Enhanced feature handlers are registered first so they supersede legacy /scan and details UI,
+    # while all existing commands/callbacks remain available as fallbacks.
+    for handler in build_feature_handlers():
+        application.add_handler(handler)
     existing_handlers = build_handlers(db, settings.admin_id_set, settings.exchange_names, settings.admin_secret_key)
     for handler in existing_handlers[1:]:
         application.add_handler(handler)
@@ -190,20 +206,34 @@ def _matching_network(buy_meta: dict, sell_meta: dict) -> str | None:
 
 
 async def _send_alert(db: Database, user_id: int, opportunity, identifier: str, application: Application) -> None:
-    message = format_background_alert(opportunity, identifier)
+    user = await db.get_user(user_id)
+    preferences = user_filters(user) if user else {"trade_size": 1000.0}
+    metadata = dict(getattr(opportunity, "metadata", {}) or {})
+    observed_at = metadata.get("observed_at")
+    try:
+        age = max(0.0, (datetime.now(UTC) - datetime.fromisoformat(observed_at)).total_seconds()) if observed_at else 0.0
+    except (TypeError, ValueError):
+        age = 0.0
+    confidence = confidence_score(
+        net_profit_pct=opportunity.net_profit,
+        buy_volume=opportunity.volume_buy,
+        sell_volume=opportunity.volume_sell,
+        trade_size=float(preferences.get("trade_size", 1000.0)),
+        freshness_seconds=age,
+        transfer_verified=bool(opportunity.verified),
+        coverage_complete=bool(metadata.get("coverage_complete")),
+        executable_complete=False,
+    )
+    metadata["confidence"] = confidence
+    metadata["rank_score"] = rank_score(opportunity.net_profit, confidence, None)
+    opportunity = replace(opportunity, metadata=metadata)
+    message = _enhanced_card(opportunity, identifier, float(preferences.get("trade_size", 1000.0)))
     try:
         await db.save_opportunity(identifier, opportunity)
         await application.bot.send_message(user_id, message, reply_markup=opportunity_buttons(identifier), parse_mode="HTML")
         await db.increment_stat("alerts_sent")
     except Exception:
         logger.exception("failed to alert user %s", user_id)
-
-
-def _transfer_summary(metadata: dict | None, action: str) -> str:
-    if not metadata:
-        return "verification pending"
-    networks = [item.get("network", "unknown") for item in metadata.get("networks", []) if item.get(action)]
-    return ", ".join(networks[:3]) if networks else "not available"
 
 
 def run() -> None:
