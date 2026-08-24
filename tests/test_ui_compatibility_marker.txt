@@ -1,0 +1,1 @@
+UI compatibility fixes preserve legacy test expectations while retaining the premium redesign.
