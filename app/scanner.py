@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from .db import Database
 from .exchanges.base import Opportunity, Ticker
 from .filters import matches, user_filters
+from .scan_diagnostics import set_last_scan_diagnostics
 
 logger = logging.getLogger(__name__)
 
@@ -44,18 +45,72 @@ class Scanner:
         }
         if len(active_exchanges) < 2:
             logger.warning("scan skipped: select at least two active exchanges")
+            set_last_scan_diagnostics([])
             return []
-        fetched = await asyncio.gather(*(self._fetch(exchange) for exchange in active_exchanges.values()), return_exceptions=True)
+
+        fetched = await asyncio.gather(
+            *(self._fetch(exchange) for exchange in active_exchanges.values()),
+            return_exceptions=True,
+        )
         by_symbol: dict[str, list[Ticker]] = {}
         successful_exchanges = 0
-        for exchange, result in zip(active_exchanges.values(), fetched):
+        exchange_status: dict[str, dict] = {}
+        observed_symbols: set[str] = set()
+
+        for name, exchange, result in zip(active_exchanges.keys(), active_exchanges.values(), fetched):
+            stats = getattr(exchange, "last_fetch_stats", {}) or {}
+            last_error = getattr(exchange, "last_fetch_error", None)
+            missing_symbols = getattr(exchange, "last_fetch_symbols", {}) or {}
+            observed_symbols.update(missing_symbols)
             if isinstance(result, Exception):
+                exchange_status[name] = {
+                    "status": "fetch failed",
+                    "error": f"{type(result).__name__}: {result}",
+                }
                 logger.warning("%s exchange scan failed: %s", exchange.name, result)
                 continue
+
             if result:
                 successful_exchanges += 1
             for ticker in result:
                 by_symbol.setdefault(ticker.symbol, []).append(ticker)
+                observed_symbols.add(ticker.symbol)
+
+            if last_error:
+                exchange_status[name] = {"status": "fetch failed", "error": last_error}
+            elif stats.get("raw", 0) == 0:
+                exchange_status[name] = {"status": "no tickers returned"}
+            elif missing_symbols:
+                exchange_status[name] = {
+                    "status": "partial",
+                    "missing": missing_symbols,
+                }
+            else:
+                exchange_status[name] = {"status": "ok"}
+
+        diagnostics: list[dict] = []
+        for symbol in sorted(observed_symbols):
+            statuses: dict[str, str] = {}
+            present_exchanges = {ticker.exchange for ticker in by_symbol.get(symbol, []) if ticker.ask > 0 and ticker.bid > 0}
+            for name in active_exchanges:
+                if name in present_exchanges:
+                    statuses[name] = "OK"
+                    continue
+                status = exchange_status.get(name, {})
+                if status.get("status") == "fetch failed":
+                    statuses[name] = f"fetch failed: {status.get('error', 'unknown error')}"
+                elif symbol in status.get("missing", {}):
+                    statuses[name] = status["missing"][symbol]
+                elif status.get("status") == "no tickers returned":
+                    statuses[name] = "no tickers returned"
+                else:
+                    statuses[name] = "not returned"
+
+            gaps = {name: reason for name, reason in statuses.items() if reason != "OK"}
+            if gaps and present_exchanges:
+                diagnostics.append({"symbol": symbol, "gaps": gaps})
+
+        set_last_scan_diagnostics(diagnostics)
 
         opportunities = []
         for symbol, tickers in by_symbol.items():
@@ -69,7 +124,7 @@ class Scanner:
             raw_spread = ((sell.bid - buy.ask) / buy.ask) * 100
             if raw_spread <= 0:
                 continue
-            
+
             # Calculate fee-adjusted net profit
             buy_fee_pct = 0.0
             sell_fee_pct = 0.0
@@ -80,7 +135,7 @@ class Scanner:
                     fees = await asyncio.gather(
                         buy_exchange.get_taker_fee(symbol),
                         sell_exchange.get_taker_fee(symbol),
-                        return_exceptions=True
+                        return_exceptions=True,
                     )
                     buy_fee_pct = float(fees[0]) * 100 if not isinstance(fees[0], Exception) else 0.1
                     sell_fee_pct = float(fees[1]) * 100 if not isinstance(fees[1], Exception) else 0.1
@@ -88,9 +143,19 @@ class Scanner:
                 logger.debug("fee calculation failed for %s, using defaults", symbol)
                 buy_fee_pct = 0.1
                 sell_fee_pct = 0.1
-            
+
             net_profit = raw_spread - buy_fee_pct - sell_fee_pct
-            opportunity = Opportunity(symbol, buy.exchange, sell.exchange, buy.ask, sell.bid, raw_spread, net_profit, buy.quote_volume, sell.quote_volume)
+            opportunity = Opportunity(
+                symbol,
+                buy.exchange,
+                sell.exchange,
+                buy.ask,
+                sell.bid,
+                raw_spread,
+                net_profit,
+                buy.quote_volume,
+                sell.quote_volume,
+            )
             if require_matching_user and not await self._has_matching_users(opportunity):
                 continue
             opportunities.append(opportunity)
@@ -103,11 +168,12 @@ class Scanner:
         gc.collect()
         await self.db.increment_stat("scans_run")
         logger.info(
-            "scan complete: %s/%s exchanges returned data, %s symbols, %s opportunities",
+            "scan complete: %s/%s exchanges returned data, %s symbols, %s opportunities, %s symbol gaps",
             successful_exchanges,
             len(active_exchanges),
             len(by_symbol),
             len(opportunities),
+            len(diagnostics),
         )
         return opportunities
 
