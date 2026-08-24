@@ -242,8 +242,7 @@ class MaintenanceAssistant:
     def repository_context(self, query: str) -> str:
         matches = self.search_repository(query)
         paths = [item["path"] for item in matches]
-        sections = ["Repository: " + str(self.repo_path), "Files discovered: " + str(len(self.list_repository_files()))]
-        sections.append("Relevant search results:")
+        source_sections = []
         for item in matches:
             line_numbers = [
                 int(snippet.split(":", 1)[0])
@@ -258,11 +257,17 @@ class MaintenanceAssistant:
                 source_window += "\n... [middle of file omitted] ...\n" + self.read_repository_file(
                     item["path"], max(first_match + 61, last_match - 24), last_match + 60
                 )
-            sections.append(
+            source_sections.append(
                 f"[{item['score']}] {item['path']}\n"
                 + source_window
             )
-        sections.append("Git context:\n" + self._git_context(paths))
+        sections = [
+            "Repository: " + str(self.repo_path),
+            "Files discovered: " + str(len(self.list_repository_files())),
+            "Relevant source windows:",
+            *source_sections,
+            "Git context:\n" + self._git_context(paths),
+        ]
         return self._fit_prompt("\n\n".join(sections))
 
     async def diagnose(self) -> str:
