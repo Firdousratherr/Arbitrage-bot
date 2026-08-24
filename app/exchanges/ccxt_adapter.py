@@ -18,6 +18,10 @@ class CcxtExchangeAdapter:
     BULK_BIDASK_UNRELIABLE = {"lbank", "xt"}
     FALLBACK_MAX_SYMBOLS = 40
     FALLBACK_CONCURRENCY = 8
+    # If an exchange omits a symbol completely from its bulk response, the scanner can
+    # ask this adapter for a bounded set of symbols observed on another exchange.
+    TARGETED_RECOVERY_MAX_SYMBOLS = 100
+    TARGETED_RECOVERY_CONCURRENCY = 6
 
     def __init__(self, name: str, credentials: dict[str, str] | None = None, public_name: str | None = None):
         self._exchange_id = name
@@ -25,7 +29,13 @@ class CcxtExchangeAdapter:
         exchange_class = getattr(ccxt, name)
         self.client = exchange_class({"enableRateLimit": True, **(credentials or {})})
         # Diagnostics from the most recent fetch_tickers() call.
-        self.last_fetch_stats: dict[str, int] = {"raw": 0, "dropped_bid_ask": 0, "usable": 0, "fallback_used": 0}
+        self.last_fetch_stats: dict[str, int] = {
+            "raw": 0,
+            "dropped_bid_ask": 0,
+            "usable": 0,
+            "fallback_used": 0,
+            "targeted_recovery_used": 0,
+        }
         self.last_fetch_error: str | None = None
         self.last_fetch_symbols: dict[str, str] = {}
 
@@ -66,6 +76,7 @@ class CcxtExchangeAdapter:
                 "dropped_bid_ask": dropped,
                 "usable": len(result),
                 "fallback_used": fallback_used,
+                "targeted_recovery_used": 0,
             }
             self.last_fetch_error = None
 
@@ -84,11 +95,91 @@ class CcxtExchangeAdapter:
                 )
             return result
         except Exception as exc:
-            self.last_fetch_stats = {"raw": 0, "dropped_bid_ask": 0, "usable": 0, "fallback_used": 0}
+            self.last_fetch_stats = {
+                "raw": 0,
+                "dropped_bid_ask": 0,
+                "usable": 0,
+                "fallback_used": 0,
+                "targeted_recovery_used": 0,
+            }
             self.last_fetch_error = f"{type(exc).__name__}: {exc}"
             self.last_fetch_symbols = {}
             logger.warning("%s ticker fetch skipped: %s: %s", self.name, type(exc).__name__, exc)
             return []
+
+    async def recover_symbols(self, symbols: list[str] | set[str], max_symbols: int | None = None) -> list[Ticker]:
+        """Recover symbols that were omitted entirely by the bulk ticker response.
+
+        Prefer CCXT's best-bid/ask batch method when the exchange supports it, then fall
+        back to single-symbol fetch_ticker calls. This is intentionally bounded because
+        a bulk endpoint can omit a very large number of markets and blindly requesting
+        every one would create a rate-limit storm.
+        """
+        limit = max_symbols or self.TARGETED_RECOVERY_MAX_SYMBOLS
+        candidates = list(dict.fromkeys(symbols))[:limit]
+        if not candidates:
+            return []
+
+        recovered: dict[str, Ticker] = {}
+        unresolved = candidates
+
+        try:
+            if self.client.has.get("fetchBidsAsks"):
+                batch = await self.client.fetch_bids_asks(candidates)
+                for symbol, ticker in (batch or {}).items():
+                    bid, ask = ticker.get("bid"), ticker.get("ask")
+                    if bid and ask and bid > 0 and ask > 0:
+                        recovered[symbol] = Ticker(
+                            self.name,
+                            symbol,
+                            float(bid),
+                            float(ask),
+                            float(ticker.get("quoteVolume") or 0),
+                        )
+                unresolved = [symbol for symbol in candidates if symbol not in recovered]
+                logger.info(
+                    "%s targeted bid/ask recovery: %s/%s symbols recovered in batch",
+                    self.name,
+                    len(recovered),
+                    len(candidates),
+                )
+        except Exception as exc:
+            logger.info("%s targeted bid/ask batch recovery unavailable: %s: %s", self.name, type(exc).__name__, exc)
+
+        semaphore = asyncio.Semaphore(self.TARGETED_RECOVERY_CONCURRENCY)
+
+        async def _fetch_one(symbol: str) -> None:
+            async with semaphore:
+                try:
+                    ticker = await self.client.fetch_ticker(symbol)
+                    bid, ask = ticker.get("bid"), ticker.get("ask")
+                    if bid and ask and bid > 0 and ask > 0:
+                        recovered[symbol] = Ticker(
+                            self.name,
+                            symbol,
+                            float(bid),
+                            float(ask),
+                            float(ticker.get("quoteVolume") or 0),
+                        )
+                except Exception as exc:
+                    logger.debug("%s targeted ticker recovery failed for %s: %s", self.name, symbol, exc)
+
+        if unresolved:
+            await asyncio.gather(*(_fetch_one(symbol) for symbol in unresolved))
+
+        if recovered:
+            for symbol in recovered:
+                self.last_fetch_symbols.pop(symbol, None)
+            self.last_fetch_stats["usable"] = self.last_fetch_stats.get("usable", 0) + len(recovered)
+            self.last_fetch_stats["targeted_recovery_used"] = len(recovered)
+
+        logger.info(
+            "%s targeted symbol recovery complete: %s/%s recovered",
+            self.name,
+            len(recovered),
+            len(candidates),
+        )
+        return list(recovered.values())
 
     async def _fallback_top_of_book(self, data: dict[str, Any], symbols: list[str] | None) -> list[Ticker]:
         """Fetch top-of-book for a bounded set of symbols with missing bid/ask."""
