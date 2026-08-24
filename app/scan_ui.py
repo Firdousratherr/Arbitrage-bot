@@ -64,15 +64,16 @@ def _format_scan_result(count: int, candidates: list | None = None, filters: dic
     gaps = data.get("gaps", []) if isinstance(data, dict) else []
     common = int(summary.get("common_markets", 0) or 0)
     positive = int(summary.get("positive_spreads", 0) or 0)
-    before_filters = int(summary.get("opportunities_before_filters", 0) or 0)
+    detected = int(summary.get("opportunities_detected", summary.get("opportunities_before_filters", 0)) or 0)
     returned = summary.get("returned_by_exchange", {}) or {}
+    exchange_status = summary.get("exchange_status", {}) or {}
 
     if count:
         lines = [f"🔍 <b>Found {count} opportunities</b>"]
-    elif before_filters:
+    elif detected:
         lines = [
             "🔍 <b>No opportunities matched your filters</b>",
-            f"📊 {before_filters} profitable candidate{'s' if before_filters != 1 else ''} existed before filters.",
+            f"📊 {detected} profitable candidate{'s' if detected != 1 else ''} were detected before your filters.",
         ]
         if candidates and filters:
             filtered_lines = _format_filtered_candidates(candidates, filters)
@@ -80,6 +81,24 @@ def _format_scan_result(count: int, candidates: list | None = None, filters: dic
                 lines.extend(["", "❌ <b>FILTERED OUT</b>", *filtered_lines])
     else:
         lines = ["🔍 <b>No arbitrage opportunities found</b>"]
+
+    if exchange_status:
+        failed = []
+        partial = []
+        for name, status in exchange_status.items():
+            state = str((status or {}).get("status", "unknown"))
+            if state == "fetch failed":
+                failed.append((name, (status or {}).get("error", "unknown error")))
+            elif state in {"partial", "no tickers returned"}:
+                partial.append((name, state))
+        if failed:
+            lines.extend(["", "🚨 <b>EXCHANGE FETCH ERRORS</b>"])
+            for name, error in failed:
+                lines.append(f"• <b>{escape(str(name).upper())}</b> — {escape(str(error))[:180]}")
+        if partial:
+            lines.extend(["", "⚠️ <b>EXCHANGE COVERAGE</b>"])
+            for name, state in partial:
+                lines.append(f"• <b>{escape(str(name).upper())}</b> — {escape(str(state))}")
 
     if returned:
         coverage = "  •  ".join(f"{escape(str(name).upper())}: {value:,}" for name, value in returned.items())
