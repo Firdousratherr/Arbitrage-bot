@@ -1,0 +1,51 @@
+name: Isolated maintenance context fix
+
+on:
+  push:
+    branches: [fix/maintenance-context-v2]
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install pytest pytest-asyncio
+
+      - name: Apply minimal source-window fix
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path("app/maintenance.py")
+          text = path.read_text(encoding="utf-8")
+          old = '''        sections = ["Repository: " + str(self.repo_path), "Files discovered: " + str(len(self.list_repository_files()))]\n        sections.append("Relevant search results:")\n        for item in matches:\n            line_numbers = [\n                int(snippet.split(\":\", 1)[0])\n                for snippet in item["snippets"]\n                if snippet.split(\":\", 1)[0].isdigit()\n            ]\n            first_match = min(line_numbers or [1])\n            last_match = max(line_numbers or [120])\n            first_line = max(1, first_match - 12)\n            source_window = self.read_repository_file(item["path"], first_line, first_match + 60)\n            if last_match > first_match + 60:\n                source_window += "\\n... [middle of file omitted] ...\\n" + self.read_repository_file(\n                    item["path"], max(first_match + 61, last_match - 24), last_match + 60\n                )\n            sections.append(\n                f"[{item['score']}] {item['path']}\\n"\n                + source_window\n            )\n        sections.append("Git context:\\n" + self._git_context(paths))\n        return self._fit_prompt("\\n\\n".join(sections))'''
+          new = '''        source_sections = []\n        for item in matches:\n            line_numbers = [\n                int(snippet.split(":", 1)[0])\n                for snippet in item["snippets"]\n                if snippet.split(":", 1)[0].isdigit()\n            ]\n            first_match = min(line_numbers or [1])\n            last_match = max(line_numbers or [120])\n            first_line = max(1, first_match - 12)\n            source_window = self.read_repository_file(item["path"], first_line, first_match + 60)\n            if last_match > first_match + 60:\n                source_window += "\\n... [middle of file omitted] ...\\n" + self.read_repository_file(\n                    item["path"], max(first_match + 61, last_match - 24), last_match + 60\n                )\n            source_sections.append(\n                f"[{item['score']}] {item['path']}\\n"\n                + source_window\n            )\n        sections = [\n            "Repository: " + str(self.repo_path),\n            "Files discovered: " + str(len(self.list_repository_files())),\n            "Relevant source windows:",\n            *source_sections,\n            "Git context:\\n" + self._git_context(paths),\n        ]\n        return self._fit_prompt("\\n\\n".join(sections))'''
+          if old not in text:
+              raise SystemExit("Expected repository_context block not found; refusing to modify the file.")
+          path.write_text(text.replace(old, new, 1), encoding="utf-8")
+          PY
+
+      - name: Run tests
+        run: pytest -q
+
+      - name: Commit verified fix and remove this workflow
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/maintenance.py
+          git rm .github/workflows/maintenance-context-fix.yml
+          git commit -m "fix: preserve matched maintenance source window"
+          git push origin HEAD:fix/maintenance-context-v2
