@@ -19,6 +19,7 @@ class CcxtExchangeAdapter:
     FALLBACK_CONCURRENCY = 8
     TARGETED_RECOVERY_BATCH_SIZE = 100
     TARGETED_RECOVERY_CONCURRENCY = 8
+    TARGETED_ORDER_BOOK_RECOVERY_CONCURRENCY = 8
     TARGETED_SINGLE_TICKER_FALLBACK_MAX = 20
 
     def __init__(self, name: str, credentials: dict[str, str] | None = None, public_name: str | None = None):
@@ -115,6 +116,14 @@ class CcxtExchangeAdapter:
             return []
 
     async def recover_symbols(self, symbols: list[str] | set[str], max_symbols: int | None = None) -> list[Ticker]:
+        """Recover missing bid/ask data for every listed symbol.
+
+        Bulk ticker endpoints such as LBank's can legitimately return tickers
+        without bid/ask values. Recovery therefore falls back to the order book,
+        which is the authoritative top-of-book source for actionable spreads.
+        Only the final single-ticker fallback remains bounded to avoid an
+        uncontrolled number of extra requests after order-book recovery.
+        """
         candidates = list(dict.fromkeys(symbols))
         if max_symbols is not None:
             candidates = candidates[:max_symbols]
@@ -145,8 +154,8 @@ class CcxtExchangeAdapter:
         recovered: dict[str, Ticker] = {}
         batch_supported = bool(self.client.has.get("fetchBidsAsks"))
         if batch_supported:
-            for start in range(0, len(candidates), self.TICKER_SYMBOL_BATCH_SIZE):
-                batch_symbols = candidates[start:start + self.TICKER_SYMBOL_BATCH_SIZE]
+            for start in range(0, len(candidates), self.TARGETED_RECOVERY_BATCH_SIZE):
+                batch_symbols = candidates[start:start + self.TARGETED_RECOVERY_BATCH_SIZE]
                 try:
                     batch = await asyncio.wait_for(self.client.fetch_bids_asks(batch_symbols), timeout=12)
                     for symbol, ticker in (batch or {}).items():
@@ -159,6 +168,32 @@ class CcxtExchangeAdapter:
                     logger.info("%s targeted bid/ask batch %s-%s unavailable: %s: %s", self.name, start + 1, start + len(batch_symbols), type(exc).__name__, exc)
             logger.info("%s targeted bid/ask recovery: %s/%s symbols recovered in batch", self.name, len(recovered), len(candidates))
 
+        # LBank currently exposes order-book data even though its ticker feed can
+        # omit bid/ask values. Recover ALL unresolved symbols from top-of-book,
+        # not just the first 20, so coverage diagnostics do not hide valid markets.
+        unresolved = [symbol for symbol in candidates if symbol not in recovered]
+        semaphore = asyncio.Semaphore(self.TARGETED_ORDER_BOOK_RECOVERY_CONCURRENCY)
+
+        async def _recover_order_book(symbol: str) -> None:
+            async with semaphore:
+                try:
+                    book = await asyncio.wait_for(self.client.fetch_order_book(symbol, limit=1), timeout=8)
+                    bids, asks = book.get("bids") or [], book.get("asks") or []
+                    if not bids or not asks:
+                        return
+                    bid, ask = float(bids[0][0]), float(asks[0][0])
+                    if bid > 0 and ask > 0:
+                        quote_volume = 0.0
+                        recovered[symbol] = Ticker(self.name, symbol, bid, ask, quote_volume)
+                except Exception as exc:
+                    logger.debug("%s targeted order-book recovery failed for %s: %s", self.name, symbol, exc)
+
+        if unresolved:
+            await asyncio.gather(*(_recover_order_book(symbol) for symbol in unresolved))
+            logger.info("%s targeted order-book recovery: %s/%s symbols recovered", self.name, len(recovered), len(candidates))
+
+        # A small final fallback handles exchanges/markets where the order-book
+        # endpoint is temporarily unavailable. Keep this bounded for rate safety.
         unresolved = [symbol for symbol in candidates if symbol not in recovered][:self.TARGETED_SINGLE_TICKER_FALLBACK_MAX]
         semaphore = asyncio.Semaphore(self.TARGETED_RECOVERY_CONCURRENCY)
 
