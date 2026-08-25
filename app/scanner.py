@@ -18,7 +18,6 @@ logger = logging.getLogger(__name__)
 
 class Scanner:
     TARGETED_RECOVERY_EXCHANGES = {"xt", "lbank"}
-    TARGETED_RECOVERY_MAX_SYMBOLS = 500
 
     def __init__(self, db: Database, exchanges: dict, interval: int, concurrency: int):
         self.db = db
@@ -52,7 +51,6 @@ class Scanner:
 
     @staticmethod
     def _merge_tickers(by_symbol: dict[str, list[Ticker]], tickers: list[Ticker]) -> int:
-        """Merge recovered tickers without duplicating exchange/symbol pairs."""
         added = 0
         for ticker in tickers:
             existing = by_symbol.setdefault(ticker.symbol, [])
@@ -95,10 +93,7 @@ class Scanner:
                 "coverage_gap_symbols": len(union_market_symbols),
             }
             set_last_scan_diagnostics({"summary": summary, "gaps": []})
-            logger.warning(
-                "scan stopped: no common active spot markets; listed=%s errors=%s",
-                {name: len(symbols) for name, symbols in market_symbols.items()}, market_errors,
-            )
+            logger.warning("scan stopped: no common active spot markets; listed=%s errors=%s", {name: len(symbols) for name, symbols in market_symbols.items()}, market_errors)
             return []
 
         requested_symbols = sorted(common_market_symbols)
@@ -118,9 +113,6 @@ class Scanner:
                 exchange_status[name] = {"status": "fetch failed", "error": f"{type(result).__name__}: {result}"}
                 logger.warning("%s exchange scan failed: %s", exchange.name, result)
                 continue
-
-            # A successful API call counts once even when it returned an empty
-            # usable ticker set. Never increment this during recovery.
             successful_exchanges += 1
             self._merge_tickers(by_symbol, result)
             exchange_status[name] = {
@@ -134,9 +126,6 @@ class Scanner:
             if name in market_errors:
                 exchange_status[name].update({"status": "market discovery failed", "error": market_errors[name]})
 
-        # Recover missing common-market bid/ask data using exchange-specific batch
-        # support. Recovery is merged into the same dataset and never increments
-        # the exchange-success counter.
         async def _recover(name: str, exchange):
             status = exchange_status.get(name, {})
             missing = list(status.get("missing", {}).keys())
@@ -146,7 +135,10 @@ class Scanner:
             if not recover:
                 return name, []
             try:
-                recovered = await recover(missing, max_symbols=min(len(missing), self.TARGETED_RECOVERY_MAX_SYMBOLS))
+                # No artificial scan-wide symbol cap: the adapter batches the
+                # entire missing common-market set and only caps single-symbol
+                # requests as a final rate-limit-safe fallback.
+                recovered = await recover(missing)
                 return name, recovered
             except Exception as exc:
                 logger.warning("%s targeted recovery failed: %s: %s", name, type(exc).__name__, exc)
@@ -184,7 +176,6 @@ class Scanner:
         detected_opportunities = 0
         filtered_opportunities = 0
         observed_at = datetime.now(UTC).isoformat()
-
         for symbol, tickers in by_symbol.items():
             valid_tickers = [ticker for ticker in tickers if ticker.ask > 0 and ticker.bid > 0]
             if len(valid_tickers) < 2:
