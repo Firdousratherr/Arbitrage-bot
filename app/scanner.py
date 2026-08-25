@@ -75,6 +75,7 @@ class Scanner:
         all_market_sets = [market_symbols[name] for name in active_exchanges]
         common_market_symbols = set.intersection(*all_market_sets) if all_market_sets and all(all_market_sets) else set()
         union_market_symbols = set().union(*all_market_sets) if all_market_sets else set()
+        listing_difference_symbols = len(union_market_symbols - common_market_symbols)
 
         if not common_market_symbols:
             summary = {
@@ -87,10 +88,12 @@ class Scanner:
                 "common_listed_markets": 0,
                 "common_markets": 0,
                 "positive_spreads": 0,
+                "fee_positive_spreads": 0,
                 "opportunities_detected": 0,
                 "opportunities_filtered": 0,
                 "opportunities_returned": 0,
-                "coverage_gap_symbols": len(union_market_symbols),
+                "coverage_gap_symbols": 0,
+                "listing_difference_symbols": listing_difference_symbols,
             }
             set_last_scan_diagnostics({"summary": summary, "gaps": []})
             logger.warning("scan stopped: no common active spot markets; listed=%s errors=%s", {name: len(symbols) for name, symbols in market_symbols.items()}, market_errors)
@@ -106,8 +109,6 @@ class Scanner:
         exchange_status: dict[str, dict] = {}
 
         for name, exchange, result in zip(active_exchanges.keys(), active_exchanges.values(), fetched):
-            stats = getattr(exchange, "last_fetch_stats", {}) or {}
-            last_error = getattr(exchange, "last_fetch_error", None)
             missing_symbols = getattr(exchange, "last_fetch_symbols", {}) or {}
             if isinstance(result, Exception):
                 exchange_status[name] = {"status": "fetch failed", "error": f"{type(result).__name__}: {result}"}
@@ -135,9 +136,6 @@ class Scanner:
             if not recover:
                 return name, []
             try:
-                # No artificial scan-wide symbol cap: the adapter batches the
-                # entire missing common-market set and only caps single-symbol
-                # requests as a final rate-limit-safe fallback.
                 recovered = await recover(missing)
                 return name, recovered
             except Exception as exc:
@@ -161,21 +159,27 @@ class Scanner:
                     valid_by_exchange[ticker.exchange].add(symbol)
         common_symbols = set.intersection(*valid_by_exchange.values()) if valid_by_exchange else set()
 
+        # Only report actionable data gaps for markets that are actually listed
+        # on every selected exchange. A symbol listed on one exchange but absent
+        # on another is normal market coverage, not a scan failure, and should
+        # not flood the user with thousands of irrelevant "not listed" rows.
         coverage_gaps: list[dict] = []
-        if all(market_symbols.get(name) for name in active_exchanges):
-            for symbol in sorted(union_market_symbols):
-                present = {name for name, symbols in market_symbols.items() if symbol in symbols}
-                if len(present) >= len(active_exchanges):
-                    continue
-                gaps = {name: "not listed on exchange" for name in active_exchanges if name not in present}
-                if gaps:
-                    coverage_gaps.append({"symbol": symbol, "gaps": gaps})
+        for symbol in sorted(common_market_symbols):
+            gaps = {
+                name: str((exchange_status.get(name, {}).get("missing", {}) or {}).get(symbol, "ticker data unavailable"))
+                for name in active_exchanges
+                if symbol not in valid_by_exchange.get(name, set())
+            }
+            if gaps:
+                coverage_gaps.append({"symbol": symbol, "gaps": gaps})
 
         opportunities: list[Opportunity] = []
         positive_spread_symbols = 0
+        fee_positive_spreads = 0
         detected_opportunities = 0
         filtered_opportunities = 0
         observed_at = datetime.now(UTC).isoformat()
+
         for symbol, tickers in by_symbol.items():
             valid_tickers = [ticker for ticker in tickers if ticker.ask > 0 and ticker.bid > 0]
             if len(valid_tickers) < 2:
@@ -208,6 +212,9 @@ class Scanner:
                 sell_fee_pct = 0.1
 
             net_profit = raw_spread - buy_fee_pct - sell_fee_pct
+            if net_profit > 0:
+                fee_positive_spreads += 1
+
             history_key = f"{symbol}:{buy.exchange}:{sell.exchange}"
             history = self.history.add(history_key, raw_spread, net_profit)
             confidence = confidence_score(
@@ -249,11 +256,13 @@ class Scanner:
             "common_listed_markets": len(common_market_symbols),
             "common_markets": len(common_symbols),
             "positive_spreads": positive_spread_symbols,
+            "fee_positive_spreads": fee_positive_spreads,
             "opportunities_detected": detected_opportunities,
             "opportunities_filtered": filtered_opportunities,
             "opportunities_returned": len(opportunities),
             "opportunities_before_filters": detected_opportunities,
             "coverage_gap_symbols": len(coverage_gaps),
+            "listing_difference_symbols": listing_difference_symbols,
         }
         set_last_scan_diagnostics({"summary": summary, "gaps": coverage_gaps})
 
@@ -266,10 +275,10 @@ class Scanner:
         gc.collect()
         await self.db.increment_stat("scans_run")
         logger.info(
-            "scan complete: %s/%s exchanges returned data, %s/%s listed markets overlap, %s ticker-common markets, %s positive spreads, %s detected, %s filtered, %s returned, %s coverage gaps",
+            "scan complete: %s/%s exchanges returned data, %s/%s listed markets overlap, %s ticker-common markets, %s raw price gaps, %s fee-positive gaps, %s detected, %s filtered, %s returned, %s actionable data gaps, %s listing differences",
             successful_exchanges, len(active_exchanges), len(common_market_symbols), len(union_market_symbols),
-            len(common_symbols), positive_spread_symbols, detected_opportunities, filtered_opportunities,
-            len(opportunities), len(coverage_gaps),
+            len(common_symbols), positive_spread_symbols, fee_positive_spreads, detected_opportunities,
+            filtered_opportunities, len(opportunities), len(coverage_gaps), listing_difference_symbols,
         )
         return opportunities
 
