@@ -5,12 +5,14 @@ from contextvars import ContextVar
 from typing import Any
 
 from .db import DEFAULT_FILTERS
+from .scan_diagnostics import set_filter_rejections
 
 _filter_rejections: ContextVar[dict[str, str]] = ContextVar("filter_rejections", default={})
 
 
 def clear_filter_rejections() -> None:
     _filter_rejections.set({})
+    set_filter_rejections({})
 
 
 def get_filter_rejections() -> dict[str, str]:
@@ -23,9 +25,14 @@ def _record_rejection(opportunity: Any, reason: str) -> None:
     if symbol not in current:
         current[symbol] = reason
     _filter_rejections.set(current)
+    set_filter_rejections(current)
 
 
 def user_filters(user: Any) -> dict[str, Any]:
+    # A fresh filter read starts a new scan/filter diagnostic context. This is
+    # intentionally done here because /scan loads the user's filters immediately
+    # before applying them to the current candidate set.
+    clear_filter_rejections()
     stored = json.loads(user["filters"] or "{}")
     return {**DEFAULT_FILTERS, **stored}
 
