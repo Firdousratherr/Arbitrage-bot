@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Iterable, Sequence
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-from .scan_diagnostics import get_last_scan_diagnostics
+from .scan_diagnostics import get_last_scan_diagnostics, get_last_scan_snapshot
 
 TOP = "╭────────────────────────╮"
 BOTTOM = "╰────────────────────────╯"
@@ -26,8 +26,27 @@ def format_error(message: str, action: str="Try again in a moment")->str:return 
 def format_success(message: str)->str:return f"╭─ ✅ SUCCESS\n│ {_safe_text(message)[:240]}\n╰────────────────────"
 
 def format_scan_count(count: int)->str:
-    diagnostics=get_last_scan_diagnostics();lines=_panel("🔍 SCAN COMPLETE","Live market comparison finished")
-    lines.append(f"✨ Found {count} opportunities" if count else "📭 No opportunities found");lines.append(f"✨ Opportunities found : <b>{count}</b>")
+    diagnostics=get_last_scan_diagnostics();snapshot=get_last_scan_snapshot();summary=snapshot.get("summary",{}) or {}
+    lines=_panel("🔍 SCAN COMPLETE","Live market comparison finished")
+    lines.append(f"✨ Found {count} opportunities" if count else "📭 No opportunities found")
+    lines.append(f"✨ Opportunities shown : <b>{count}</b>")
+    if summary:
+        selected=summary.get("selected_exchanges") or []
+        statuses=summary.get("exchange_status") or {}
+        healthy=sum(1 for value in statuses.values() if value.get("status") in {"ok","partial"})
+        lines.extend([
+            "", "📊 <b>SCAN DIAGNOSTICS</b>", THIN_SEPARATOR,
+            f"🌐 Selected exchanges: <b>{len(selected)}</b>",
+            f"🛰️ Exchange data: <b>{healthy}/{len(selected)}</b>",
+            f"🪙 Common listed markets: <b>{summary.get('common_listed_markets',0)}</b>",
+            f"📡 Common markets with bid/ask: <b>{summary.get('common_markets',0)}</b>",
+            f"⚡ Positive spreads: <b>{summary.get('positive_spreads',0)}</b>",
+            f"🎯 Detected: <b>{summary.get('opportunities_detected',0)}</b>",
+            f"🚫 Filtered: <b>{summary.get('opportunities_filtered',0)}</b>",
+            f"✅ Returned: <b>{summary.get('opportunities_returned',count)}</b>",
+        ])
+        if summary.get("opportunities_filtered") and not count:
+            lines.append("💡 Positive spreads were found but rejected by configured filters.")
     if count:lines.append("💡 Open a result below for full analysis.")
     if diagnostics:
         lines.extend(["","⚠️ DATA QUALITY",THIN_SEPARATOR]);visible=min(8,len(diagnostics))
