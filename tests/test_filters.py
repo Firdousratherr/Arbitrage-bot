@@ -23,17 +23,25 @@ def _opportunity(**overrides):
     return Opportunity(**values)
 
 
-def test_matches_applies_all_filters():
-    opportunity = _opportunity()
-    filters = {
+def _filters(**overrides):
+    values = {
         "min_profit": 3.0,
         "max_profit": 10.0,
-        "min_spread": 4.0,
-        "max_spread": 10.0,
+        "min_spread": 0.0,
+        "max_spread": 100.0,
         "min_volume": 500000,
         "watchlist": [],
         "blacklist": [],
+        "quote_currency": "USDT",
+        "fee_adjusted": True,
     }
+    values.update(overrides)
+    return values
+
+
+def test_matches_applies_all_filters():
+    opportunity = _opportunity()
+    filters = _filters(min_spread=4.0)
     assert matches(opportunity, filters)
 
     filters["min_profit"] = 5.0
@@ -61,39 +69,32 @@ def test_matches_applies_all_filters():
 
 def test_match_reason_identifies_the_actual_rejection():
     opportunity = _opportunity(net_profit=0.25)
-    filters = {
-        "min_profit": 0.5,
-        "max_profit": 100.0,
-        "min_spread": 0.0,
-        "max_spread": 100.0,
-        "min_volume": 10000.0,
-        "watchlist": [],
-        "blacklist": [],
-    }
-    reason = match_reason(opportunity, filters)
+    reason = match_reason(opportunity, _filters(min_profit=0.5))
     assert reason is not None
     assert "net profit" in reason
 
     opportunity = _opportunity(volume_buy=100, volume_sell=100, net_profit=2.0)
-    reason = match_reason(opportunity, filters)
+    reason = match_reason(opportunity, _filters(min_profit=0.5))
     assert reason is not None
     assert "volume" in reason
 
 
 def test_quote_currency_filter_is_respected():
     opportunity = _opportunity(symbol="BTC/USDC")
-    filters = {
-        "min_profit": 0.0,
-        "max_profit": 100.0,
-        "min_spread": 0.0,
-        "max_spread": 100.0,
-        "min_volume": 0.0,
-        "watchlist": [],
-        "blacklist": [],
-        "quote_currency": "USDT",
-    }
+    filters = _filters(min_profit=0.0, min_volume=0.0)
     assert not matches(opportunity, filters)
     assert "quote currency" in (match_reason(opportunity, filters) or "")
+
+
+def test_fee_adjusted_setting_changes_profit_metric():
+    opportunity = _opportunity(raw_spread=5.0, net_profit=0.4)
+    filters = _filters(min_profit=1.0, min_volume=0.0)
+    assert not matches(opportunity, filters)
+    assert "net profit" in (match_reason(opportunity, filters) or "")
+
+    filters["fee_adjusted"] = False
+    assert matches(opportunity, filters)
+    assert match_reason(opportunity, filters) is None
 
 
 async def test_fee_adjusted_filters_are_used():
@@ -111,4 +112,5 @@ if __name__ == "__main__":
     test_matches_applies_all_filters()
     test_match_reason_identifies_the_actual_rejection()
     test_quote_currency_filter_is_respected()
+    test_fee_adjusted_setting_changes_profit_metric()
     asyncio.run(test_fee_adjusted_filters_are_used())
