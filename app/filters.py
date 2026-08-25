@@ -18,16 +18,23 @@ def parse_float(value: str, minimum: float = 0.0) -> float:
     return parsed
 
 
-def match_reason(opportunity, filters: dict[str, Any]) -> str | None:
-    """Return the first configured-filter reason that rejects an opportunity.
+def _effective_profit(opportunity, filters: dict[str, Any]) -> float:
+    """Return the profit metric selected by the user.
 
-    A reason is deliberately returned separately from matches() so the scanner/UI
-    can explain why positive spreads were not shown without weakening any filter.
+    Scanner opportunities expose raw spread and a fee-adjusted net profit. When
+    fee_adjusted is disabled, the profit filter intentionally uses raw spread so
+    the setting has an observable and predictable effect.
     """
+    return float(opportunity.net_profit if filters.get("fee_adjusted", True) else opportunity.raw_spread)
+
+
+def match_reason(opportunity, filters: dict[str, Any]) -> str | None:
+    """Return the first configured-filter reason that rejects an opportunity."""
     raw = float(opportunity.raw_spread)
-    profit = float(opportunity.net_profit)
+    profit = _effective_profit(opportunity, filters)
     if not filters["min_profit"] <= profit <= filters["max_profit"]:
-        return f"net profit {profit:.2f}% outside {filters['min_profit']:.2f}%–{filters['max_profit']:.2f}%"
+        metric = "net profit" if filters.get("fee_adjusted", True) else "spread"
+        return f"{metric} {profit:.2f}% outside {filters['min_profit']:.2f}%–{filters['max_profit']:.2f}%"
     if not filters["min_spread"] <= raw <= filters["max_spread"]:
         return f"spread {raw:.2f}% outside {filters['min_spread']:.2f}%–{filters['max_spread']:.2f}%"
     volume = min(float(opportunity.volume_buy or 0), float(opportunity.volume_sell or 0))
