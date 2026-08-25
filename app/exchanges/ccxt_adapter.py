@@ -17,9 +17,10 @@ class CcxtExchangeAdapter:
     TICKER_SYMBOL_BATCH_SIZE = 100
     FALLBACK_MAX_SYMBOLS = 40
     FALLBACK_CONCURRENCY = 8
-    TARGETED_RECOVERY_MAX_SYMBOLS = 30
+    TARGETED_RECOVERY_MAX_SYMBOLS = 500
+    TARGETED_RECOVERY_BATCH_SIZE = 100
     TARGETED_RECOVERY_CONCURRENCY = 8
-    TARGETED_SINGLE_TICKER_FALLBACK_MAX = 8
+    TARGETED_SINGLE_TICKER_FALLBACK_MAX = 20
 
     def __init__(self, name: str, credentials: dict[str, str] | None = None, public_name: str | None = None):
         self._exchange_id = name
@@ -27,27 +28,34 @@ class CcxtExchangeAdapter:
         exchange_class = getattr(ccxt, name)
         self.client = exchange_class({"enableRateLimit": True, **(credentials or {})})
         self.last_fetch_stats: dict[str, int] = {
-            "raw": 0,
-            "dropped_bid_ask": 0,
-            "usable": 0,
-            "fallback_used": 0,
-            "targeted_recovery_used": 0,
-            "requested_symbols": 0,
+            "raw": 0, "dropped_bid_ask": 0, "usable": 0, "fallback_used": 0,
+            "targeted_recovery_used": 0, "requested_symbols": 0,
         }
         self.last_fetch_error: str | None = None
         self.last_fetch_symbols: dict[str, str] = {}
 
-    async def get_active_spot_symbols(self) -> list[str]:
-        """Return the exchange's complete active spot market list.
+    @staticmethod
+    def _is_active_spot_market(market: dict[str, Any]) -> bool:
+        """Accept all active CCXT spot markets while excluding derivatives.
 
-        This is deliberately separate from fetch_tickers(): several exchanges
-        cap or otherwise limit their all-tickers endpoint, which can make two
-        healthy exchanges appear to have almost no markets in common.
+        Some exchange adapters expose `spot` explicitly, while others have
+        historically omitted/left it unset and only provide `type='spot'`.
+        Contract flags take precedence so futures/swaps/options cannot leak in.
         """
+        if market.get("active") is False:
+            return False
+        if market.get("contract") is True or market.get("swap") is True or market.get("future") is True or market.get("option") is True:
+            return False
+        if market.get("type") == "spot" or market.get("spot") is True:
+            return True
+        return False
+
+    async def get_active_spot_symbols(self) -> list[str]:
+        """Return the complete active spot market list, not a ticker subset."""
         await self.client.load_markets()
         symbols: list[str] = []
         for symbol, market in (self.client.markets or {}).items():
-            if market.get("spot") is True and market.get("active", True) is not False:
+            if self._is_active_spot_market(market):
                 symbols.append(symbol)
         return symbols
 
@@ -56,12 +64,10 @@ class CcxtExchangeAdapter:
             requested = list(dict.fromkeys(symbols or []))
             requested_set = set(requested)
             if requested and self._exchange_id in self.BULK_SYMBOL_FILTER_IGNORED:
-                # LBank's spot implementation accepts a symbols argument but
-                # still requests symbol=all. Fetch once, then filter locally.
+                # LBank's current CCXT implementation requests symbol=all even
+                # when symbols are supplied. Fetch once and filter locally.
                 data = await self.client.fetch_tickers()
             elif requested:
-                # Keep request URLs bounded on exchanges that accept a symbol
-                # list. Merge all batches into one result.
                 data = {}
                 for start in range(0, len(requested), self.TICKER_SYMBOL_BATCH_SIZE):
                     batch = requested[start:start + self.TICKER_SYMBOL_BATCH_SIZE]
@@ -104,24 +110,20 @@ class CcxtExchangeAdapter:
 
             self.last_fetch_symbols = missing_symbols
             self.last_fetch_stats = {
-                "raw": len(data),
-                "dropped_bid_ask": dropped,
-                "usable": len(result),
-                "fallback_used": fallback_used,
-                "targeted_recovery_used": 0,
+                "raw": len(data), "dropped_bid_ask": dropped, "usable": len(result),
+                "fallback_used": fallback_used, "targeted_recovery_used": 0,
                 "requested_symbols": len(requested),
             }
             self.last_fetch_error = None
-
             if data and not result:
-                logger.warning("%s returned %s tickers but none matched the requested markets with usable bid/ask", self.name, len(data))
+                logger.warning("%s returned %s tickers but none matched requested markets with usable bid/ask", self.name, len(data))
             elif missing_symbols:
                 logger.warning("%s still has %s requested symbols without usable ticker data", self.name, len(missing_symbols))
             return result
         except Exception as exc:
             self.last_fetch_stats = {
-                "raw": 0, "dropped_bid_ask": 0, "usable": 0,
-                "fallback_used": 0, "targeted_recovery_used": 0, "requested_symbols": len(symbols or []),
+                "raw": 0, "dropped_bid_ask": 0, "usable": 0, "fallback_used": 0,
+                "targeted_recovery_used": 0, "requested_symbols": len(symbols or []),
             }
             self.last_fetch_error = f"{type(exc).__name__}: {exc}"
             self.last_fetch_symbols = {symbol: self.last_fetch_error for symbol in (symbols or [])}
@@ -129,7 +131,12 @@ class CcxtExchangeAdapter:
             return []
 
     async def recover_symbols(self, symbols: list[str] | set[str], max_symbols: int | None = None) -> list[Ticker]:
-        limit = max_symbols or self.TARGETED_RECOVERY_MAX_SYMBOLS
+        """Recover bid/ask data for listed symbols missing from bulk tickers.
+
+        Prefer the exchange's batch bid/ask endpoint in bounded batches. Only a
+        small number of individual ticker requests are used as a final fallback.
+        """
+        limit = self.TARGETED_RECOVERY_MAX_SYMBOLS if max_symbols is None else max_symbols
         candidates = list(dict.fromkeys(symbols))[:limit]
         if not candidates:
             return []
@@ -137,8 +144,8 @@ class CcxtExchangeAdapter:
         try:
             await self.client.load_markets()
             available = set(self.client.markets or {})
-            listed = [symbol for symbol in candidates if symbol in available]
-            not_listed = [symbol for symbol in candidates if symbol not in available]
+            listed = [symbol for symbol in candidates if symbol in available and self._is_active_spot_market(self.client.markets[symbol])]
+            not_listed = [symbol for symbol in candidates if symbol not in set(listed)]
             for symbol in not_listed:
                 self.last_fetch_symbols[symbol] = "not listed on exchange"
             candidates = listed
@@ -150,20 +157,22 @@ class CcxtExchangeAdapter:
             return []
 
         recovered: dict[str, Ticker] = {}
-        unresolved = candidates
+        unresolved = list(candidates)
         batch_supported = bool(self.client.has.get("fetchBidsAsks"))
 
         if batch_supported:
-            try:
-                batch = await asyncio.wait_for(self.client.fetch_bids_asks(candidates), timeout=8)
-                for symbol, ticker in (batch or {}).items():
-                    bid, ask = ticker.get("bid"), ticker.get("ask")
-                    if bid and ask and bid > 0 and ask > 0:
-                        recovered[symbol] = Ticker(self.name, symbol, float(bid), float(ask), float(ticker.get("quoteVolume") or 0))
-                unresolved = [symbol for symbol in candidates if symbol not in recovered]
-                logger.info("%s targeted bid/ask recovery: %s/%s symbols recovered in batch", self.name, len(recovered), len(candidates))
-            except Exception as exc:
-                logger.info("%s targeted bid/ask batch recovery unavailable: %s: %s", self.name, type(exc).__name__, exc)
+            for start in range(0, len(candidates), self.TARGETED_RECOVERY_BATCH_SIZE):
+                batch_symbols = candidates[start:start + self.TARGETED_RECOVERY_BATCH_SIZE]
+                try:
+                    batch = await asyncio.wait_for(self.client.fetch_bids_asks(batch_symbols), timeout=12)
+                    for symbol, ticker in (batch or {}).items():
+                        bid, ask = ticker.get("bid"), ticker.get("ask")
+                        if bid and ask and bid > 0 and ask > 0:
+                            recovered[symbol] = Ticker(self.name, symbol, float(bid), float(ask), float(ticker.get("quoteVolume") or 0))
+                except Exception as exc:
+                    logger.info("%s targeted bid/ask batch %s-%s unavailable: %s: %s", self.name, start + 1, start + len(batch_symbols), type(exc).__name__, exc)
+            unresolved = [symbol for symbol in candidates if symbol not in recovered]
+            logger.info("%s targeted bid/ask recovery: %s/%s symbols recovered in batch", self.name, len(recovered), len(candidates))
 
         unresolved = unresolved[: self.TARGETED_SINGLE_TICKER_FALLBACK_MAX]
         semaphore = asyncio.Semaphore(self.TARGETED_RECOVERY_CONCURRENCY)
@@ -185,7 +194,7 @@ class CcxtExchangeAdapter:
             for symbol in recovered:
                 self.last_fetch_symbols.pop(symbol, None)
             self.last_fetch_stats["usable"] = self.last_fetch_stats.get("usable", 0) + len(recovered)
-            self.last_fetch_stats["targeted_recovery_used"] = len(recovered)
+            self.last_fetch_stats["targeted_recovery_used"] = self.last_fetch_stats.get("targeted_recovery_used", 0) + len(recovered)
 
         logger.info("%s targeted symbol recovery complete: %s/%s recovered", self.name, len(recovered), len(candidates))
         return list(recovered.values())
@@ -195,7 +204,7 @@ class CcxtExchangeAdapter:
             candidates = [symbol for symbol in symbols if symbol in data][: self.FALLBACK_MAX_SYMBOLS]
         else:
             ranked = sorted(data.items(), key=lambda item: float(item[1].get("quoteVolume") or item[1].get("baseVolume") or 0), reverse=True)
-            candidates = [symbol for symbol, _ in ranked[: self.FALLBACK_MAX_SYMBOLS]]
+            candidates = [symbol for symbol, _ in ranked[:self.FALLBACK_MAX_SYMBOLS]]
 
         semaphore = asyncio.Semaphore(self.FALLBACK_CONCURRENCY)
         results: list[Ticker] = []
@@ -241,10 +250,10 @@ class CcxtExchangeAdapter:
             available = []
             for key, value in networks.items():
                 value = value or {}
-                info = value.get("info", {}) or {}
+                raw_info = value.get("info", {}) or {}
                 available.append({
                     "network": key,
-                    "contract": value.get("contract") or info.get("contractAddress") or info.get("contract_address"),
+                    "contract": value.get("contract") or raw_info.get("contractAddress") or raw_info.get("contract_address"),
                     "deposit": value.get("deposit") is not False,
                     "withdraw": value.get("withdraw") is not False,
                 })
