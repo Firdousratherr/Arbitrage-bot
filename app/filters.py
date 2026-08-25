@@ -18,18 +18,34 @@ def parse_float(value: str, minimum: float = 0.0) -> float:
     return parsed
 
 
-def matches(opportunity, filters: dict[str, Any]) -> bool:
-    raw = opportunity.raw_spread
-    profit = opportunity.net_profit
+def match_reason(opportunity, filters: dict[str, Any]) -> str | None:
+    """Return the first configured-filter reason that rejects an opportunity.
+
+    A reason is deliberately returned separately from matches() so the scanner/UI
+    can explain why positive spreads were not shown without weakening any filter.
+    """
+    raw = float(opportunity.raw_spread)
+    profit = float(opportunity.net_profit)
     if not filters["min_profit"] <= profit <= filters["max_profit"]:
-        return False
+        return f"net profit {profit:.2f}% outside {filters['min_profit']:.2f}%–{filters['max_profit']:.2f}%"
     if not filters["min_spread"] <= raw <= filters["max_spread"]:
-        return False
-    if min(opportunity.volume_buy, opportunity.volume_sell) < filters["min_volume"]:
-        return False
+        return f"spread {raw:.2f}% outside {filters['min_spread']:.2f}%–{filters['max_spread']:.2f}%"
+    volume = min(float(opportunity.volume_buy or 0), float(opportunity.volume_sell or 0))
+    if volume < filters["min_volume"]:
+        return f"volume ${volume:,.0f} below ${filters['min_volume']:,.0f} minimum"
     symbol = opportunity.symbol.upper()
-    if filters["watchlist"] and symbol not in {item.upper() for item in filters["watchlist"]}:
-        return False
+    watchlist = {item.upper() for item in filters["watchlist"]}
+    if watchlist and symbol not in watchlist:
+        return "not in watchlist"
     if symbol in {item.upper() for item in filters["blacklist"]}:
-        return False
-    return True
+        return "blacklisted symbol"
+    quote_currency = str(filters.get("quote_currency") or "").upper()
+    if quote_currency:
+        quote = symbol.split("/", 1)[1].split(":", 1)[0] if "/" in symbol else ""
+        if quote and quote != quote_currency:
+            return f"quote currency {quote} != {quote_currency}"
+    return None
+
+
+def matches(opportunity, filters: dict[str, Any]) -> bool:
+    return match_reason(opportunity, filters) is None
