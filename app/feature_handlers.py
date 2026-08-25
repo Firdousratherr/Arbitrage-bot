@@ -10,7 +10,7 @@ from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes
 
 from .arbitrage_features import calculate_executable_trade, confidence_score, freshness_label, rank_score
 from .db import Database
-from .filters import matches, user_filters
+from .filters import match_reason, matches, user_filters
 from .scan_diagnostics import get_last_scan_snapshot
 from .scanner import opportunity_id
 from .ui import format_error, format_opportunity_card, format_opportunity_details, opportunity_buttons
@@ -50,13 +50,24 @@ def enhanced_alert_card(opportunity, identifier: str, trade_size: float = 1000.0
         f"📡 Coverage      {coverage}",
         f"🏆 Rank score    <b>{rank:.2f}</b>",
         f"📈 Gap history   {history_text}",
-        "🔬 <i>Open Order Book for executable profit at your trade size.</i>",
+        "🔬 <i>Headline spread only; open Order Book for executable profit at your trade size.</i>",
     ]
     if "╰────────────────────────╯" in base:
         base = base.replace("╰────────────────────────╯", "\n".join(quality) + "\n╰────────────────────────╯", 1)
     else:
         base += "\n" + "\n".join(quality)
     return base
+
+
+def _filter_rejection_lines(candidates: list, preferences: dict, limit: int = 8) -> list[str]:
+    lines: list[str] = []
+    for item in candidates:
+        reason = match_reason(item, preferences)
+        if reason:
+            lines.append(f"• <b>{item.symbol}</b> — {reason}")
+        if len(lines) >= limit:
+            break
+    return lines
 
 
 async def enhanced_scan_command(update, context) -> None:
@@ -91,32 +102,36 @@ async def enhanced_scan_command(update, context) -> None:
             )
             return
 
-        # The animation helper changed signature during the enhanced-scan rollout.
-        # Inspect it so both one-argument and two-argument deployed versions work
-        # without allowing a signature mismatch to abort the actual scan.
         parameters = inspect.signature(_animate_scan_progress).parameters
-        animation_args = (progress, active_selected) if len(parameters) >= 2 else (progress,)
+        animation_args = (progress, sorted(active_selected)) if len(parameters) >= 2 else (progress,)
         animation = asyncio.create_task(_animate_scan_progress(*animation_args))
 
         opportunities = await scanner.run_cycle(require_matching_user=False, exchange_names=active_selected)
-        visible = [
+        selected_candidates = [
             item for item in opportunities
-            if item.buy_exchange in selected and item.sell_exchange in selected and matches(item, preferences)
+            if item.buy_exchange in selected and item.sell_exchange in selected
         ]
+        visible = [item for item in selected_candidates if matches(item, preferences)]
         visible.sort(key=lambda item: item.metadata.get("rank_score", item.net_profit), reverse=True)
         visible = visible[:preferences["max_results"]]
 
         snapshot = get_last_scan_snapshot() or {}
-        summary = snapshot.get("summary", {})
-        statuses = summary.get("exchange_status", {})
+        summary = snapshot.get("summary", {}) or {}
+        statuses = summary.get("exchange_status", {}) or {}
+        healthy = sum(1 for value in statuses.values() if value.get("status") in {"ok", "partial"})
+        detected = len(selected_candidates)
+        rejected = detected - len([item for item in selected_candidates if matches(item, preferences)])
         lines = [
             "🔍 <b>ARBITRAGE SCAN COMPLETE</b>",
             "━━━━━━━━━━━━━━━━━━━━",
             f"🎯 Selected        <b>{len(active_selected)} exchanges</b>",
-            f"📡 Healthy         <b>{sum(1 for value in statuses.values() if value.get('status') in {'ok', 'partial'})}</b>/{len(active_selected)}",
-            f"🪙 Common markets  <b>{summary.get('common_markets', 0)}</b>",
+            f"📡 Healthy         <b>{healthy}/{len(active_selected)}</b>",
+            f"🪙 Common listed   <b>{summary.get('common_listed_markets', 0)}</b>",
+            f"📡 Common bid/ask  <b>{summary.get('common_markets', 0)}</b>",
             f"⚡ Positive spreads <b>{summary.get('positive_spreads', 0)}</b>",
-            f"✅ Opportunities    <b>{len(visible)}</b>",
+            f"🎯 Detected        <b>{detected}</b>",
+            f"🚫 Filtered        <b>{rejected}</b>",
+            f"✅ Returned        <b>{len(visible)}</b>",
             "",
             "📡 <b>EXCHANGE HEALTH</b>",
         ]
@@ -126,16 +141,22 @@ async def enhanced_scan_command(update, context) -> None:
             icon = "🟢" if state == "ok" else "🟡" if state == "partial" else "🔴"
             reason = status.get("error") or ("partial market coverage" if state == "partial" else state)
             lines.append(f"{icon} {name} — {reason}")
+        if rejected and not visible:
+            filtered_lines = _filter_rejection_lines(selected_candidates, preferences)
+            if filtered_lines:
+                lines.extend(["", "❌ <b>FILTER REASONS</b>", *filtered_lines])
+                if rejected > len(filtered_lines):
+                    lines.append(f"• … and {rejected - len(filtered_lines)} more filtered candidates")
         gaps = snapshot.get("gaps", [])
         if gaps:
-            lines.extend(["", f"⚠️ <b>{len(gaps)}</b> symbols had data gaps.", "<i>Missing markets are reported instead of silently disappearing.</i>"])
+            lines.extend(["", f"⚠️ <b>{len(gaps)}</b> symbols had listing/coverage differences."])
             for item in gaps[:5]:
                 gap_text = "; ".join(f"{name}: {reason}" for name, reason in (item.get("gaps") or {}).items())
                 lines.append(f"• <b>{item.get('symbol', 'unknown')}</b> — {gap_text}")
             if len(gaps) > 5:
-                lines.append(f"• … and {len(gaps) - 5} more symbols with data gaps")
+                lines.append(f"• … and {len(gaps) - 5} more coverage differences")
         else:
-            lines.extend(["", "✅ No exchange coverage gaps were reported in this scan."])
+            lines.extend(["", "✅ No listing coverage differences were reported."])
         await target.reply_text("\n".join(lines), parse_mode="HTML")
 
         for index, item in enumerate(visible, 1):
@@ -149,21 +170,16 @@ async def enhanced_scan_command(update, context) -> None:
     except asyncio.CancelledError:
         raise
     except Exception as exc:
-        # Do not hide scan failures behind the generic global error handler. Include
-        # the exchange health snapshot so a broken exchange is still identifiable.
         snapshot = get_last_scan_snapshot() or {}
         summary = snapshot.get("summary", {}) or {}
         statuses = summary.get("exchange_status", {}) or {}
         details = [f"{type(exc).__name__}: {exc}"]
-        for name in sorted(active_selected if 'active_selected' in locals() else set()):
+        for name in sorted(active_selected if "active_selected" in locals() else set()):
             status = statuses.get(name, {}) or {}
             state = status.get("status", "not returned")
             reason = status.get("error") or state
             details.append(f"{name}: {reason}")
-        await target.reply_text(
-            format_error("Scan failed", "\n".join(details)[:3000]),
-            parse_mode="HTML",
-        )
+        await target.reply_text(format_error("Scan failed", "\n".join(details)[:3000]), parse_mode="HTML")
     finally:
         if animation is not None:
             animation.cancel()
@@ -263,5 +279,4 @@ def build_feature_handlers():
     ]
 
 
-# Backward-compatible private import used by app.main during the first rollout.
 _enhanced_card = enhanced_alert_card
