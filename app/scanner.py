@@ -33,6 +33,29 @@ class Scanner:
         async with self.semaphore:
             return await exchange.fetch_tickers(symbols)
 
+    async def _load_market_symbols(self, active_exchanges: dict) -> tuple[dict[str, set[str]], dict[str, str]]:
+        """Load full spot market lists before requesting ticker data.
+
+        All-ticker endpoints can return only a capped subset on some exchanges.
+        Using that subset to calculate the intersection can therefore turn a
+        healthy pair such as LBank + XT into an apparent one-market overlap.
+        """
+        async def _one(name: str, exchange):
+            try:
+                symbols = await exchange.get_active_spot_symbols()
+                return name, set(symbols), None
+            except Exception as exc:
+                return name, set(), f"{type(exc).__name__}: {exc}"
+
+        results = await asyncio.gather(*(_one(name, exchange) for name, exchange in active_exchanges.items()))
+        market_symbols: dict[str, set[str]] = {}
+        errors: dict[str, str] = {}
+        for name, symbols, error in results:
+            market_symbols[name] = symbols
+            if error:
+                errors[name] = error
+        return market_symbols, errors
+
     async def run_cycle(self, *, require_matching_user: bool = True, exchange_names: set[str] | None = None) -> list[Opportunity]:
         if exchange_names is None and require_matching_user:
             exchange_names = set()
@@ -44,7 +67,18 @@ class Scanner:
             set_last_scan_diagnostics({"summary": {}, "gaps": []})
             return []
 
-        fetched = await asyncio.gather(*(self._fetch(exchange) for exchange in active_exchanges.values()), return_exceptions=True)
+        # First discover the complete exchange market sets. This prevents an
+        # exchange's capped fetch_tickers() response from defining the overlap.
+        market_symbols, market_errors = await self._load_market_symbols(active_exchanges)
+        usable_market_sets = [symbols for symbols in market_symbols.values() if symbols]
+        common_market_symbols = set.intersection(*usable_market_sets) if len(usable_market_sets) == len(active_exchanges) else set()
+        union_market_symbols = set().union(*(symbols for symbols in market_symbols.values())) if market_symbols else set()
+
+        fetched_symbols = sorted(common_market_symbols) if common_market_symbols else None
+        fetched = await asyncio.gather(
+            *(self._fetch(exchange, fetched_symbols) for exchange in active_exchanges.values()),
+            return_exceptions=True,
+        )
         by_symbol: dict[str, list[Ticker]] = {}
         successful_exchanges = 0
         exchange_status: dict[str, dict] = {}
@@ -63,55 +97,36 @@ class Scanner:
             for ticker in result:
                 by_symbol.setdefault(ticker.symbol, []).append(ticker)
                 observed_symbols.add(ticker.symbol)
-            if last_error:
+
+            if name in market_errors:
+                exchange_status[name] = {"status": "market discovery failed", "error": market_errors[name]}
+            elif last_error:
                 exchange_status[name] = {"status": "fetch failed", "error": last_error}
-            elif stats.get("raw", 0) == 0:
-                exchange_status[name] = {"status": "no tickers returned"}
             elif missing_symbols:
-                exchange_status[name] = {"status": "partial", "missing": missing_symbols}
-            else:
-                exchange_status[name] = {"status": "ok"}
-
-        all_symbols = set(by_symbol)
-        if all_symbols:
-            recovery_tasks = []
-            recovery_names = []
-            for name, exchange in active_exchanges.items():
-                exchange_id = getattr(exchange, "_exchange_id", name).lower()
-                if exchange_id not in self.TARGETED_RECOVERY_EXCHANGES:
-                    continue
-                present = {
-                    ticker.symbol
-                    for ticker_list in by_symbol.values()
-                    for ticker in ticker_list
-                    if ticker.exchange == name and ticker.ask > 0 and ticker.bid > 0
+                exchange_status[name] = {
+                    "status": "partial",
+                    "missing": missing_symbols,
+                    "market_count": len(market_symbols.get(name, set())),
+                    "requested_symbols": stats.get("requested_symbols", len(fetched_symbols or [])),
                 }
-                missing_candidates = sorted(all_symbols - present)[: self.TARGETED_RECOVERY_MAX_SYMBOLS]
-                if not missing_candidates:
-                    continue
-                missing_map = getattr(exchange, "last_fetch_symbols", {}) or {}
-                for symbol in missing_candidates:
-                    missing_map.setdefault(symbol, "not returned; targeted recovery failed")
-                exchange.last_fetch_symbols = missing_map
-                recovery_tasks.append(exchange.recover_symbols(missing_candidates, self.TARGETED_RECOVERY_MAX_SYMBOLS))
-                recovery_names.append(name)
+            else:
+                exchange_status[name] = {
+                    "status": "ok",
+                    "market_count": len(market_symbols.get(name, set())),
+                    "requested_symbols": stats.get("requested_symbols", len(fetched_symbols or [])),
+                }
 
-            if recovery_tasks:
-                recovered_batches = await asyncio.gather(*recovery_tasks, return_exceptions=True)
-                for name, recovered in zip(recovery_names, recovered_batches):
-                    if isinstance(recovered, Exception):
-                        logger.warning("%s targeted symbol recovery failed: %s", name, recovered)
-                        continue
-                    if recovered:
-                        if exchange_status.get(name, {}).get("status") != "ok":
-                            successful_exchanges += 1
-                        for ticker in recovered:
-                            by_symbol.setdefault(ticker.symbol, []).append(ticker)
-                            observed_symbols.add(ticker.symbol)
-                        exchange_status[name] = {
-                            "status": "partial",
-                            "missing": getattr(active_exchanges[name], "last_fetch_symbols", {}) or {},
-                        }
+        # If market discovery worked, the common market set itself is the correct
+        # coverage baseline. Only symbols that actually returned usable tickers
+        # can produce opportunities; missing ticker data is still diagnosed.
+        if common_market_symbols:
+            for name, symbols in market_symbols.items():
+                missing_from_ticker = common_market_symbols - {ticker.symbol for ticker_list in by_symbol.values() for ticker in ticker_list if ticker.exchange == name}
+                if missing_from_ticker:
+                    status = exchange_status.setdefault(name, {})
+                    status.setdefault("missing", {}).update({symbol: "ticker not returned" for symbol in sorted(missing_from_ticker)})
+                    if status.get("status") == "ok":
+                        status["status"] = "partial"
 
         valid_by_exchange: dict[str, set[str]] = {name: set() for name in active_exchanges}
         for symbol, tickers in by_symbol.items():
@@ -121,25 +136,34 @@ class Scanner:
         common_symbols = set.intersection(*valid_by_exchange.values()) if valid_by_exchange else set()
 
         coverage_gaps: list[dict] = []
-        for symbol in sorted(observed_symbols):
-            present = {name for name, symbols in valid_by_exchange.items() if symbol in symbols}
-            if not present or len(present) >= len(active_exchanges):
-                continue
-            gaps = {}
-            for name in active_exchanges:
-                if name in present:
+        # Prefer the full market-list comparison for diagnostics. This reports
+        # genuine listing gaps even when ticker endpoints are capped.
+        if market_symbols and all(market_symbols.get(name) for name in active_exchanges):
+            for symbol in sorted(union_market_symbols):
+                present = {name for name, symbols in market_symbols.items() if symbol in symbols}
+                if len(present) >= len(active_exchanges):
                     continue
-                status = exchange_status.get(name, {})
-                if status.get("status") == "fetch failed":
-                    gaps[name] = f"fetch failed: {status.get('error', 'unknown error')}"
-                elif symbol in status.get("missing", {}):
-                    gaps[name] = status["missing"][symbol]
-                elif status.get("status") == "no tickers returned":
-                    gaps[name] = "no tickers returned"
-                else:
-                    gaps[name] = "not returned"
-            if gaps:
-                coverage_gaps.append({"symbol": symbol, "gaps": gaps})
+                gaps = {name: "not listed on exchange" for name in active_exchanges if name not in present}
+                if gaps:
+                    coverage_gaps.append({"symbol": symbol, "gaps": gaps})
+        else:
+            for symbol in sorted(set().union(*valid_by_exchange.values())):
+                present = {name for name, symbols in valid_by_exchange.items() if symbol in symbols}
+                if not present or len(present) >= len(active_exchanges):
+                    continue
+                gaps = {}
+                for name in active_exchanges:
+                    if name in present:
+                        continue
+                    status = exchange_status.get(name, {})
+                    if status.get("status") == "fetch failed":
+                        gaps[name] = f"fetch failed: {status.get('error', 'unknown error')}"
+                    elif symbol in status.get("missing", {}):
+                        gaps[name] = status["missing"][symbol]
+                    else:
+                        gaps[name] = "not returned"
+                if gaps:
+                    coverage_gaps.append({"symbol": symbol, "gaps": gaps})
 
         opportunities: list[Opportunity] = []
         positive_spread_symbols = 0
@@ -211,6 +235,8 @@ class Scanner:
             "selected_exchanges": list(active_exchanges),
             "exchange_status": exchange_status,
             "returned_by_exchange": {name: len(symbols) for name, symbols in valid_by_exchange.items()},
+            "listed_markets_by_exchange": {name: len(symbols) for name, symbols in market_symbols.items()},
+            "common_listed_markets": len(common_market_symbols),
             "common_markets": len(common_symbols),
             "positive_spreads": positive_spread_symbols,
             "opportunities_detected": detected_opportunities,
@@ -226,13 +252,14 @@ class Scanner:
             if purged:
                 logger.debug("purged %s expired opportunity rows", purged)
         except Exception:
-            logger.exception("failed to purge expired opportunities")
+            logger.exception("failed to purge expired opportunity rows")
         gc.collect()
         await self.db.increment_stat("scans_run")
         logger.info(
-            "scan complete: %s/%s exchanges returned data, %s common markets, %s positive spreads, %s detected, %s filtered, %s returned, %s coverage gaps",
-            successful_exchanges, len(active_exchanges), len(common_symbols), positive_spread_symbols,
-            detected_opportunities, filtered_opportunities, len(opportunities), len(coverage_gaps),
+            "scan complete: %s/%s exchanges returned data, %s/%s listed markets overlap, %s ticker-common markets, %s positive spreads, %s detected, %s filtered, %s returned, %s coverage gaps",
+            successful_exchanges, len(active_exchanges), len(common_market_symbols), len(union_market_symbols),
+            len(common_symbols), positive_spread_symbols, detected_opportunities, filtered_opportunities,
+            len(opportunities), len(coverage_gaps),
         )
         return opportunities
 
