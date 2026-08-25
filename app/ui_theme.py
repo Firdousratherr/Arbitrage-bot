@@ -36,13 +36,13 @@ def dashboard() -> tuple[str, InlineKeyboardMarkup]:
         "⚡ ARBITRAGE COMMAND CENTER",
         "Live cross-exchange intelligence",
         [
-            "🔎 <b>Scanner</b>     Find live price gaps",
-            "🌐 <b>Exchanges</b>   Manage your route",
-            "🎛️ <b>Filters</b>     Control signal quality",
-            "📊 <b>Portfolio</b>   Track paper P/L",
-            "🏆 <b>Leaderboard</b> Compare results",
+            "🔎 Scanner     Find live price gaps",
+            "🌐 Exchanges   Manage your route",
+            "🎛️ Filters     Control signal quality",
+            "📊 Portfolio   Track paper P/L",
+            "🏆 Leaderboard Compare results",
             "",
-            "🟢 <b>Scanner ready</b>",
+            "🟢 Scanner ready",
             FOOTER,
         ],
     )
@@ -67,7 +67,7 @@ def welcome() -> tuple[str, InlineKeyboardMarkup]:
             "📈 Fee-aware opportunity filtering",
             "🎮 Risk-free paper trading",
             "",
-            "<b>Ready to build your route?</b>",
+            "Ready to build your route?",
         ],
     )
     return text, nav(("🚀 Start Setup", "ui:start"), ("ℹ️ How It Works", "ui:help"), columns=2)
@@ -84,7 +84,7 @@ def exchange_picker(selected: list[str], available: list[str]) -> tuple[str, Inl
     return screen(
         "🌐 EXCHANGE ROUTE",
         "Select two or more exchanges",
-        [f"Selected: <b>{len(chosen)} / {len(available)}</b>"],
+        [f"Selected: <b>{len(chosen)}</b> / {len(available)}"],
     ), nav(*buttons, columns=2)
 
 
