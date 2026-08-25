@@ -9,6 +9,7 @@ from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes, Con
 from .db import DEFAULT_FILTERS, Database
 from .filters import user_filters
 from .handlers import EMAIL_STAGE, EXCHANGES_STAGE, VIP_STAGE, redeem_key
+from .feature_handlers import enhanced_scan_command
 from .ui import format_status_message, format_filters_message
 from .ui_theme import dashboard, welcome, exchange_picker, settings_menu, screen, nav
 
@@ -183,8 +184,7 @@ async def ui_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await query.edit_message_text(text, reply_markup=nav(("🎛️ Controls", "ui:filters"), ("🏠 Dashboard", "ui:dashboard")), parse_mode="HTML")
         return
     if action == "ui:scan":
-        from .handlers import scan_command
-        await scan_command(update, context)
+        await enhanced_scan_command(update, context)
         return
     if action == "ui:portfolio":
         if not user:
