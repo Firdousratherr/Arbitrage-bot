@@ -81,7 +81,7 @@ async def enhanced_scan_command(update, context) -> None:
         return
 
     target = update.effective_message or update.callback_query.message
-    progress = await target.reply_text("🔎 <b>Scanning all selected exchanges</b>…", parse_mode="HTML")
+    progress = await target.reply_text("🔎 <b>Scanning price gaps across selected exchanges</b>…", parse_mode="HTML")
     animation = None
     try:
         user = await _db(context).get_user(update.effective_user.id)
@@ -115,49 +115,22 @@ async def enhanced_scan_command(update, context) -> None:
         visible.sort(key=lambda item: item.metadata.get("rank_score", item.net_profit), reverse=True)
         visible = visible[:preferences["max_results"]]
 
-        snapshot = get_last_scan_snapshot() or {}
-        summary = snapshot.get("summary", {}) or {}
-        statuses = summary.get("exchange_status", {}) or {}
-        healthy = sum(1 for value in statuses.values() if value.get("status") in {"ok", "partial"})
-        detected = len(selected_candidates)
-        rejected = detected - len([item for item in selected_candidates if matches(item, preferences)])
-        lines = [
-            "🔍 <b>ARBITRAGE SCAN COMPLETE</b>",
-            "━━━━━━━━━━━━━━━━━━━━",
-            f"🎯 Selected        <b>{len(active_selected)} exchanges</b>",
-            f"📡 Healthy         <b>{healthy}/{len(active_selected)}</b>",
-            f"🪙 Common listed   <b>{summary.get('common_listed_markets', 0)}</b>",
-            f"📡 Common bid/ask  <b>{summary.get('common_markets', 0)}</b>",
-            f"⚡ Positive spreads <b>{summary.get('positive_spreads', 0)}</b>",
-            f"🎯 Detected        <b>{detected}</b>",
-            f"🚫 Filtered        <b>{rejected}</b>",
-            f"✅ Returned        <b>{len(visible)}</b>",
-            "",
-            "📡 <b>EXCHANGE HEALTH</b>",
-        ]
-        for name in sorted(active_selected):
-            status = statuses.get(name, {})
-            state = status.get("status", "not returned")
-            icon = "🟢" if state == "ok" else "🟡" if state == "partial" else "🔴"
-            reason = status.get("error") or ("partial market coverage" if state == "partial" else state)
-            lines.append(f"{icon} {name} — {reason}")
-        if rejected and not visible:
-            filtered_lines = _filter_rejection_lines(selected_candidates, preferences)
-            if filtered_lines:
-                lines.extend(["", "❌ <b>FILTER REASONS</b>", *filtered_lines])
-                if rejected > len(filtered_lines):
-                    lines.append(f"• … and {rejected - len(filtered_lines)} more filtered candidates")
-        gaps = snapshot.get("gaps", [])
-        if gaps:
-            lines.extend(["", f"⚠️ <b>{len(gaps)}</b> symbols had listing/coverage differences."])
-            for item in gaps[:5]:
-                gap_text = "; ".join(f"{name}: {reason}" for name, reason in (item.get("gaps") or {}).items())
-                lines.append(f"• <b>{item.get('symbol', 'unknown')}</b> — {gap_text}")
-            if len(gaps) > 5:
-                lines.append(f"• … and {len(gaps) - 5} more coverage differences")
+        # /scan is intentionally an arbitrage finder, not a diagnostics report.
+        # Technical scan health, coverage gaps and filter rejection details remain
+        # available through /scaninfo.
+        if visible:
+            await target.reply_text(
+                f"🔍 <b>ARBITRAGE GAPS FOUND: {len(visible)}</b>\n"
+                f"⚡ Showing the strongest cross-exchange price gaps.",
+                parse_mode="HTML",
+            )
         else:
-            lines.extend(["", "✅ No listing coverage differences were reported."])
-        await target.reply_text("\n".join(lines), parse_mode="HTML")
+            await target.reply_text(
+                "🔍 <b>NO ARBITRAGE GAPS FOUND</b>\n"
+                "No price gaps currently passed your configured filters.\n"
+                "Use /scaninfo if you want technical scan diagnostics.",
+                parse_mode="HTML",
+            )
 
         for index, item in enumerate(visible, 1):
             identifier = opportunity_id(item)
@@ -188,6 +161,65 @@ async def enhanced_scan_command(update, context) -> None:
             await context.bot.delete_message(update.effective_user.id, progress.message_id)
         except Exception:
             pass
+
+
+async def scaninfo_command(update, context) -> None:
+    """Show technical diagnostics for the most recent scanner cycle."""
+    from .handlers import require_vip
+
+    if not await require_vip(update, context):
+        return
+
+    snapshot = get_last_scan_snapshot() or {}
+    summary = snapshot.get("summary", {}) or {}
+    if not summary:
+        await update.effective_message.reply_text(
+            "🛠 <b>SCAN INFO</b>\n\nNo completed scan diagnostics are available yet. Run /scan first.",
+            parse_mode="HTML",
+        )
+        return
+
+    selected = summary.get("selected_exchanges") or []
+    statuses = summary.get("exchange_status") or {}
+    healthy = sum(1 for value in statuses.values() if value.get("status") in {"ok", "partial"})
+    gaps = snapshot.get("gaps", []) or []
+
+    lines = [
+        "🛠 <b>SCANNER INFO</b>",
+        "━━━━━━━━━━━━━━━━━━━━",
+        f"🌐 Selected exchanges : <b>{len(selected)}</b>",
+        f"🟢 Exchange data      : <b>{healthy}/{len(selected)}</b>",
+        f"🪙 Common listed      : <b>{summary.get('common_listed_markets', 0)}</b>",
+        f"📡 Common bid/ask     : <b>{summary.get('common_markets', 0)}</b>",
+        f"⚡ Positive gaps      : <b>{summary.get('positive_spreads', 0)}</b>",
+        f"🎯 Detected candidates: <b>{summary.get('opportunities_detected', 0)}</b>",
+        f"🚫 Filtered           : <b>{summary.get('opportunities_filtered', 0)}</b>",
+        f"✅ Returned            : <b>{summary.get('opportunities_returned', 0)}</b>",
+        f"⚠️ Coverage differences: <b>{len(gaps)}</b>",
+        "",
+        "📡 <b>EXCHANGE STATUS</b>",
+    ]
+
+    for name in sorted(selected):
+        status = statuses.get(name, {}) or {}
+        state = status.get("status", "not returned")
+        icon = "🟢" if state == "ok" else "🟡" if state == "partial" else "🔴"
+        reason = status.get("error") or ("partial market coverage" if state == "partial" else state)
+        lines.append(f"{icon} {name} — {reason}")
+        missing = status.get("missing") or {}
+        recovered = status.get("recovered", 0)
+        if missing or recovered:
+            lines.append(f"   ↳ missing ticker data: {len(missing)} • recovered: {recovered}")
+
+    if gaps:
+        lines.extend(["", "⚠️ <b>LISTING / COVERAGE DIFFERENCES</b>"])
+        for item in gaps[:10]:
+            gap_text = "; ".join(f"{name}: {reason}" for name, reason in (item.get("gaps") or {}).items())
+            lines.append(f"• <b>{item.get('symbol', 'unknown')}</b> — {gap_text}")
+        if len(gaps) > 10:
+            lines.append(f"• … and {len(gaps) - 10} more")
+
+    await update.effective_message.reply_text("\n".join(lines), parse_mode="HTML")
 
 
 async def enhanced_scan_callback(update, context) -> None:
@@ -273,6 +305,7 @@ async def enhanced_details(update, context) -> None:
 def build_feature_handlers():
     return [
         CommandHandler("scan", enhanced_scan_command),
+        CommandHandler("scaninfo", scaninfo_command),
         CallbackQueryHandler(enhanced_scan_callback, pattern=r"^ui:scan$"),
         CallbackQueryHandler(enhanced_details, pattern=r"^details:"),
         CallbackQueryHandler(enhanced_details, pattern=r"^feature_details:"),
