@@ -5,6 +5,7 @@ from threading import Lock
 
 _lock = Lock()
 _last_scan_diagnostics: dict = {"summary": {}, "gaps": []}
+_manual_scan_diagnostics: dict = {"summary": {}, "gaps": [], "filter_rejections": {}}
 _last_filter_rejections: dict[str, str] = {}
 
 
@@ -17,6 +18,13 @@ def set_last_scan_diagnostics(diagnostics: dict | list[dict]) -> None:
             _last_scan_diagnostics = deepcopy(diagnostics)
 
 
+def set_manual_scan_diagnostics(diagnostics: dict) -> None:
+    """Store the most recent user-triggered /scan separately from the background loop."""
+    global _manual_scan_diagnostics
+    with _lock:
+        _manual_scan_diagnostics = deepcopy(diagnostics)
+
+
 def set_filter_rejections(rejections: dict[str, str] | None) -> None:
     global _last_filter_rejections
     with _lock:
@@ -24,12 +32,6 @@ def set_filter_rejections(rejections: dict[str, str] | None) -> None:
 
 
 def get_last_scan_diagnostics() -> list[dict]:
-    """Return filter rejection reasons first, followed by market data gaps.
-
-    The normal /scan result only displays the first few diagnostics, so filter
-    rejections must come first; otherwise hundreds of coverage-gap symbols could
-    hide the exact reasons that caused a zero-result scan.
-    """
     with _lock:
         filter_diagnostics = [
             {"symbol": symbol, "gaps": {"filter": reason}}
@@ -39,8 +41,13 @@ def get_last_scan_diagnostics() -> list[dict]:
 
 
 def get_last_scan_snapshot() -> dict:
-    """Full latest-scan snapshot, including coverage and candidate counts."""
     with _lock:
         snapshot = deepcopy(_last_scan_diagnostics)
         snapshot["filter_rejections"] = deepcopy(_last_filter_rejections)
         return snapshot
+
+
+def get_manual_scan_snapshot() -> dict:
+    """Return the latest completed manual /scan snapshot, if one exists."""
+    with _lock:
+        return deepcopy(_manual_scan_diagnostics)
