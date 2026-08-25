@@ -28,10 +28,21 @@ def _record_rejection(opportunity: Any, reason: str) -> None:
     set_filter_rejections(current)
 
 
+def _gap_context(opportunity: Any) -> str:
+    raw = float(getattr(opportunity, "raw_spread", 0) or 0)
+    net = float(getattr(opportunity, "net_profit", 0) or 0)
+    buy = str(getattr(opportunity, "buy_exchange", "?"))
+    sell = str(getattr(opportunity, "sell_exchange", "?"))
+    return f"gap {raw:.2f}% ({buy}→{sell}), net {net:.2f}%"
+
+
+def _reject(opportunity: Any, reason: str) -> str:
+    full_reason = f"{_gap_context(opportunity)} • rejected: {reason}"
+    _record_rejection(opportunity, full_reason)
+    return full_reason
+
+
 def user_filters(user: Any) -> dict[str, Any]:
-    # A fresh filter read starts a new scan/filter diagnostic context. This is
-    # intentionally done here because /scan loads the user's filters immediately
-    # before applying them to the current candidate set.
     clear_filter_rejections()
     stored = json.loads(user["filters"] or "{}")
     return {**DEFAULT_FILTERS, **stored}
@@ -45,50 +56,31 @@ def parse_float(value: str, minimum: float = 0.0) -> float:
 
 
 def _effective_profit(opportunity, filters: dict[str, Any]) -> float:
-    """Return the profit metric selected by the user.
-
-    Scanner opportunities expose raw spread and a fee-adjusted net profit. When
-    fee_adjusted is disabled, the profit filter intentionally uses raw spread so
-    the setting has an observable and predictable effect.
-    """
     return float(opportunity.net_profit if filters.get("fee_adjusted", True) else opportunity.raw_spread)
 
 
 def match_reason(opportunity, filters: dict[str, Any]) -> str | None:
-    """Return the first configured-filter reason that rejects an opportunity."""
     raw = float(opportunity.raw_spread)
     profit = _effective_profit(opportunity, filters)
     if not filters["min_profit"] <= profit <= filters["max_profit"]:
         metric = "net profit" if filters.get("fee_adjusted", True) else "spread"
-        reason = f"{metric} {profit:.2f}% outside {filters['min_profit']:.2f}%–{filters['max_profit']:.2f}%"
-        _record_rejection(opportunity, reason)
-        return reason
+        return _reject(opportunity, f"{metric} {profit:.2f}% outside {filters['min_profit']:.2f}%–{filters['max_profit']:.2f}%")
     if not filters["min_spread"] <= raw <= filters["max_spread"]:
-        reason = f"spread {raw:.2f}% outside {filters['min_spread']:.2f}%–{filters['max_spread']:.2f}%"
-        _record_rejection(opportunity, reason)
-        return reason
+        return _reject(opportunity, f"spread {raw:.2f}% outside {filters['min_spread']:.2f}%–{filters['max_spread']:.2f}%")
     volume = min(float(opportunity.volume_buy or 0), float(opportunity.volume_sell or 0))
     if volume < filters["min_volume"]:
-        reason = f"volume ${volume:,.0f} below ${filters['min_volume']:,.0f} minimum"
-        _record_rejection(opportunity, reason)
-        return reason
+        return _reject(opportunity, f"volume ${volume:,.0f} below ${filters['min_volume']:,.0f} minimum")
     symbol = opportunity.symbol.upper()
     watchlist = {item.upper() for item in filters["watchlist"]}
     if watchlist and symbol not in watchlist:
-        reason = "not in watchlist"
-        _record_rejection(opportunity, reason)
-        return reason
+        return _reject(opportunity, "not in watchlist")
     if symbol in {item.upper() for item in filters["blacklist"]}:
-        reason = "blacklisted symbol"
-        _record_rejection(opportunity, reason)
-        return reason
+        return _reject(opportunity, "blacklisted symbol")
     quote_currency = str(filters.get("quote_currency") or "").upper()
     if quote_currency:
         quote = symbol.split("/", 1)[1].split(":", 1)[0] if "/" in symbol else ""
         if quote and quote != quote_currency:
-            reason = f"quote currency {quote} != {quote_currency}"
-            _record_rejection(opportunity, reason)
-            return reason
+            return _reject(opportunity, f"quote currency {quote} != {quote_currency}")
     return None
 
 
