@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-
 HEADER = "╭━━━━━━━━━━━━━━━━━━━━╮"
 FOOTER = "╰━━━━━━━━━━━━━━━━━━━━╯"
 DIVIDER = "━━━━━━━━━━━━━━━━━━━━"
@@ -76,16 +75,17 @@ def welcome() -> tuple[str, InlineKeyboardMarkup]:
 
 def exchange_picker(selected: list[str], available: list[str]) -> tuple[str, InlineKeyboardMarkup]:
     chosen = set(selected)
-    rows = []
-    for index in range(0, len(available), 2):
-        row = []
-        for name in available[index:index + 2]:
-            mark = "✅" if name in chosen else "▫️"
-            row.append(InlineKeyboardButton(f"{mark} {name}", callback_data=f"ui:exchange:{name}"))
-        rows.append(row)
-    rows.append([InlineKeyboardButton(f"✨ Done · {len(chosen)} selected", callback_data="ui:exchange:done")])
-    rows.append([InlineKeyboardButton("↩️ Back", callback_data="ui:dashboard")])
-    return screen("🌐 EXCHANGE ROUTE", "Select two or more exchanges", [f"Selected: <b>{len(chosen)}</b> / {len(available)}"]), InlineKeyboardMarkup(rows)
+    buttons = []
+    for name in available:
+        mark = "✅" if name in chosen else "▫️"
+        buttons.append((f"{mark} {name}", f"ui:exchange:{name}"))
+    buttons.append((f"✨ Done · {len(chosen)} selected", "ui:exchange:done"))
+    buttons.append(("↩️ Back", "ui:dashboard"))
+    return screen(
+        "🌐 EXCHANGE ROUTE",
+        "Select two or more exchanges",
+        [f"Selected: <b>{len(chosen)} / {len(available)}</b>"],
+    ), nav(*buttons, columns=2)
 
 
 def settings_menu() -> tuple[str, InlineKeyboardMarkup]:
