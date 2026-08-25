@@ -24,17 +24,18 @@ def set_filter_rejections(rejections: dict[str, str] | None) -> None:
 
 
 def get_last_scan_diagnostics() -> list[dict]:
-    """Backward-compatible symbol-level diagnostics list.
+    """Return filter rejection reasons first, followed by market data gaps.
 
-    Also includes the exact user-filter rejection reasons captured during the
-    latest /scan filter pass, so the normal scan result can explain why a
-    detected opportunity was not returned.
+    The normal /scan result only displays the first few diagnostics, so filter
+    rejections must come first; otherwise hundreds of coverage-gap symbols could
+    hide the exact reasons that caused a zero-result scan.
     """
     with _lock:
-        diagnostics = deepcopy(_last_scan_diagnostics.get("gaps", []))
-        for symbol, reason in _last_filter_rejections.items():
-            diagnostics.append({"symbol": symbol, "gaps": {"filter": reason}})
-        return diagnostics
+        filter_diagnostics = [
+            {"symbol": symbol, "gaps": {"filter": reason}}
+            for symbol, reason in _last_filter_rejections.items()
+        ]
+        return filter_diagnostics + deepcopy(_last_scan_diagnostics.get("gaps", []))
 
 
 def get_last_scan_snapshot() -> dict:
