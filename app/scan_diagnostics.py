@@ -10,12 +10,16 @@ _last_filter_rejections: dict[str, str] = {}
 
 
 def set_last_scan_diagnostics(diagnostics: dict | list[dict]) -> None:
-    global _last_scan_diagnostics
+    global _last_scan_diagnostics, _last_filter_rejections
     with _lock:
         if isinstance(diagnostics, list):
             _last_scan_diagnostics = {"summary": {}, "gaps": deepcopy(diagnostics)}
         else:
             _last_scan_diagnostics = deepcopy(diagnostics)
+        # A new scan replaces the previous scan's data-quality context. Keeping
+        # old filter rejections here causes unrelated symbols to leak into the
+        # next scan's bounded diagnostics and makes the result misleading.
+        _last_filter_rejections = {}
 
 
 def set_manual_scan_diagnostics(diagnostics: dict) -> None:
