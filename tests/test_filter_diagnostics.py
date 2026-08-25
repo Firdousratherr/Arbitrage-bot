@@ -32,16 +32,20 @@ def _opportunity(symbol="TEST/USDT", raw_spread=2.0, net_profit=0.25, volume_buy
     )
 
 
-def test_exact_filter_rejection_reason_is_captured():
+def test_exact_filter_rejection_reason_is_captured_with_gap():
     clear_filter_rejections()
     opportunity = _opportunity()
     assert not matches(opportunity, _filters(min_profit=0.5))
-    reasons = get_filter_rejections()
-    assert reasons["TEST/USDT"] == "net profit 0.25% outside 0.50%–100.00%"
+    reason = get_filter_rejections()["TEST/USDT"]
+    assert "gap 2.00% (lbank→xt)" in reason
+    assert "net 0.25%" in reason
+    assert "rejected: net profit 0.25%" in reason
 
 
-def test_volume_rejection_is_captured():
+def test_volume_rejection_is_captured_with_gap():
     clear_filter_rejections()
     opportunity = _opportunity(net_profit=2.0, volume_buy=100, volume_sell=200)
     assert not matches(opportunity, _filters(min_volume=10000))
-    assert "volume" in get_filter_rejections()["TEST/USDT"]
+    reason = get_filter_rejections()["TEST/USDT"]
+    assert "gap 2.00% (lbank→xt)" in reason
+    assert "volume" in reason
