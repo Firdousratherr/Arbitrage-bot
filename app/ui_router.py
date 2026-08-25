@@ -24,7 +24,6 @@ def _premium_exchange_keyboard(context: ContextTypes.DEFAULT_TYPE) -> InlineKeyb
     selected = set(context.user_data.get("selected_exchanges", []))
     names = list(dict.fromkeys(context.application.bot_data.get("exchange_names", [])))
     rows = []
-    # Compact two-column exchange grid for mobile screens.
     for index in range(0, len(names), 2):
         row = []
         for name in names[index:index + 2]:
@@ -40,8 +39,6 @@ async def premium_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     user = update.effective_user
     existing = await _db(context).get_user(user.id)
     if existing and existing["email"]:
-        # A skipped/expired VIP key must not permanently hide the setup path.
-        # Rehydrate the registration context so the user can enter a key later.
         if not await _db(context).active_vip(user.id):
             context.user_data["email"] = existing["email"]
             context.user_data["selected_exchanges"] = json.loads(existing["selected_exchanges"] or "[]")
