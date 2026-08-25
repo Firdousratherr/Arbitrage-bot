@@ -24,10 +24,14 @@ def _premium_exchange_keyboard(context: ContextTypes.DEFAULT_TYPE) -> InlineKeyb
     selected = set(context.user_data.get("selected_exchanges", []))
     names = list(dict.fromkeys(context.application.bot_data.get("exchange_names", [])))
     rows = []
-    for name in names:
-        mark = "✅" if name in selected else "▫️"
-        rows.append([InlineKeyboardButton(f"{mark} {name}", callback_data=f"ui:exchange:{name}")])
-    rows.append([InlineKeyboardButton("✨ Done", callback_data="ui:exchange:done")])
+    # Compact two-column exchange grid for mobile screens.
+    for index in range(0, len(names), 2):
+        row = []
+        for name in names[index:index + 2]:
+            mark = "✅" if name in selected else "▫️"
+            row.append(InlineKeyboardButton(f"{mark} {name}", callback_data=f"ui:exchange:{name}"))
+        rows.append(row)
+    rows.append([InlineKeyboardButton(f"✨ Done · {len(selected)} selected", callback_data="ui:exchange:done")])
     rows.append([InlineKeyboardButton("↩️ Back", callback_data="ui:dashboard")])
     return InlineKeyboardMarkup(rows)
 
@@ -36,6 +40,16 @@ async def premium_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     user = update.effective_user
     existing = await _db(context).get_user(user.id)
     if existing and existing["email"]:
+        # A skipped/expired VIP key must not permanently hide the setup path.
+        # Rehydrate the registration context so the user can enter a key later.
+        if not await _db(context).active_vip(user.id):
+            context.user_data["email"] = existing["email"]
+            context.user_data["selected_exchanges"] = json.loads(existing["selected_exchanges"] or "[]")
+            await update.effective_message.reply_text(
+                "🔐 <b>VIP ACCESS</b>\n\nYour account is registered, but VIP access is not active.\nEnter your VIP key below, or type <code>NONE</code> to skip for now.",
+                parse_mode="HTML",
+            )
+            return VIP_STAGE
         text, keyboard = dashboard()
         await update.effective_message.reply_text(text, reply_markup=keyboard, parse_mode="HTML")
         return ConversationHandler.END
@@ -167,7 +181,7 @@ async def ui_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
     if action == "ui:reset":
         if not user:
-            await query.edit_message_text("Register first with /start.")
+            await query.edit_message_text("Register first with /start")
             return
         await db.set_user(query.from_user.id, filters=DEFAULT_FILTERS)
         await db.log_action(query.from_user.id, "reset_filters")
