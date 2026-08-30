@@ -9,10 +9,11 @@ class ScanFilters:
     min_volume:float=10000.
     min_liquidity:float=1000.
     max_data_age:float=10.
-    require_network:bool=False
+    require_network:bool=True
     require_fees:bool=False
     selected_coins:set[str]=field(default_factory=set)
     quote_currency:str='USDT'
+    validation_mode:str='strict'
 
     def check(self,o:Opportunity):
         if o.raw_gap<self.min_gap:return f"gap {o.raw_gap:.3f}% below {self.min_gap:.3f}%"
@@ -23,5 +24,7 @@ class ScanFilters:
         if self.selected_coins and o.symbol.split('/',1)[0] not in self.selected_coins:return 'coin not selected'
         if self.quote_currency and o.symbol.split('/',1)[1]!=self.quote_currency.upper():return 'quote currency mismatch'
         if self.require_fees and not o.metadata.get('fee_data_available',False):return 'fee data unavailable'
-        if self.require_network and not o.metadata.get('network_available',False):return 'network information unavailable'
+        if self.validation_mode.lower()!='loose':
+            if not o.metadata.get('network_available',False):return 'deposit/withdrawal or network validation unavailable'
+            if not o.metadata.get('contract_match',False):return 'contract/address matching unavailable or mismatched'
         return None
