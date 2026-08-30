@@ -1,14 +1,15 @@
 from __future__ import annotations
 import asyncio,time
 from datetime import datetime,timezone
-from typing import Any
 import ccxt.async_support as ccxt
 from arbitrage_terminal.domain.models import Market,MarketType,Ticker
 from arbitrage_terminal.domain.normalization import normalize_symbol
 from .base import ExchangeAdapter,ExchangeError
+
 class CcxtAdapter(ExchangeAdapter):
     def __init__(self,exchange_id,public_name=None,credentials=None):
-        self.exchange_id=exchange_id; self.name=public_name or exchange_id; klass=getattr(ccxt,exchange_id,None)
+        self.exchange_id=exchange_id; self.name=public_name or exchange_id
+        klass=getattr(ccxt,exchange_id,None)
         if klass is None: raise ValueError(f'CCXT exchange not available: {exchange_id}')
         self.client=klass({'enableRateLimit':True,'timeout':15000,**(credentials or {})}); self._markets={}; self.last_diagnostics={}
     async def _call(self,op,fn,*args,**kwargs):
@@ -32,7 +33,7 @@ class CcxtAdapter(ExchangeAdapter):
             out.append(Market(self.name,sym,base,quote,MarketType.SPOT,True))
         return out
     async def get_tickers(self,symbols=None):
-        if not self._markets:await self.get_markets()
+        if not self._markets: await self.get_markets()
         raw=await self._call('tickers',self.client.fetch_tickers); wanted={s.upper() for s in symbols} if symbols else None; out=[]
         for raw_symbol,t in (raw or {}).items():
             try:sym,base,quote,_=normalize_symbol(raw_symbol)
@@ -44,10 +45,10 @@ class CcxtAdapter(ExchangeAdapter):
             ts=t.get('timestamp'); stamp=datetime.fromtimestamp(ts/1000,timezone.utc) if ts else datetime.now(timezone.utc)
             out.append(Ticker(self.name,sym,base,quote,bid,ask,max(0,vol),stamp))
         return out
-    async def get_orderbook(self,symbol,limit=10):return await self._call('orderbook',self.client.fetch_order_book,symbol,limit)
+    async def get_orderbook(self,symbol,limit=10): return await self._call('orderbook',self.client.fetch_order_book,symbol,limit)
     async def get_trading_fees(self,symbols=None):
-        if not self._markets:await self.get_markets()
-        wanted=symbols; default=self.client.fees.get('trading',{}).get('taker'); result={}
+        if not self._markets: await self.get_markets()
+        wanted=set(symbols or []); default=self.client.fees.get('trading',{}).get('taker'); result={}
         for raw,m in self._markets.items():
             if not self._spot(m):continue
             try:sym,*_=normalize_symbol(raw)
@@ -59,21 +60,9 @@ class CcxtAdapter(ExchangeAdapter):
                 except (TypeError,ValueError):pass
         return result
     async def get_transfer_info(self,asset):
-        try:currencies=await self._call('currencies',self.client.fetch_currencies)
-        except ExchangeError as e:return {'available':False,'error':str(e),'error_type':e.error_type}
+        currencies=await self._call('currencies',self.client.fetch_currencies)
         info=(currencies or {}).get(asset.upper(),{}); networks=[]
         for key,n in (info.get('networks') or {}).items():
             n=n or {}; networks.append({'network':key,'deposit':n.get('deposit') is not False,'withdraw':n.get('withdraw') is not False,'fee':n.get('fee')})
         return {'available':bool(networks),'asset':asset.upper(),'networks':networks}
-    async def close(self):await self.client.close()
-class LBankAdapter(CcxtAdapter):
-    async def get_tickers(self,symbols=None):
-        result=await super().get_tickers(symbols); missing=(set(symbols)-{x.symbol for x in result}) if symbols else set()
-        async def one(sym):
-            try:
-                ob=await self.get_orderbook(sym,1);b=ob.get('bids') or [];a=ob.get('asks') or []
-                if b and a and float(b[0][0])>0 and float(a[0][0])>0:
-                    _,base,quote,_=normalize_symbol(sym);return Ticker(self.name,sym,base,quote,float(b[0][0]),float(a[0][0]),0,datetime.now(timezone.utc))
-            except Exception:return None
-        result.extend(x for x in await asyncio.gather(*(one(s) for s in missing)) if x); return result
-class XTAdapter(LBankAdapter): pass
+    async def close(self): await self.client.close()
