@@ -1,5 +1,5 @@
 from __future__ import annotations
-from dataclasses import dataclass,field
+from dataclasses import dataclass, field
 from .models import Opportunity
 @dataclass(slots=True)
 class ScanFilters:
@@ -13,4 +13,5 @@ class ScanFilters:
         if self.selected_coins and o.symbol.split('/',1)[0] not in self.selected_coins:return 'coin not selected'
         if self.quote_currency and o.symbol.split('/',1)[1]!=self.quote_currency.upper():return 'quote currency mismatch'
         if self.require_fees and (o.buy_fee is None or o.sell_fee is None):return 'fee data unavailable'
+        if self.require_network and not o.metadata.get('network_available',False):return 'network information unavailable'
         return None
