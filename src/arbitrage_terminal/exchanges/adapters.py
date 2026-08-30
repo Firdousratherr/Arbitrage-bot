@@ -1,12 +1,13 @@
-from __future__ import annotations
 from .ccxt_adapter import CcxtAdapter
 
 
 class LBankAdapter(CcxtAdapter):
-    """LBank adapter. LBank-specific fallback/recovery belongs here."""
-    pass
+    """LBank-specific adapter; exchange-specific behavior stays here."""
+    async def get_tickers(self, symbols=None):
+        return await super().get_tickers(symbols)
 
 
 class XTAdapter(CcxtAdapter):
-    """XT adapter. XT behavior is deliberately independent from LBank."""
-    pass
+    """XT-specific adapter; deliberately independent from LBank."""
+    async def get_tickers(self, symbols=None):
+        return await super().get_tickers(symbols)
