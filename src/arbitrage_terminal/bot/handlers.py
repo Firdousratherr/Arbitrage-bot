@@ -6,14 +6,11 @@ from .ui import dashboard,scan_status,card
 def kb(rows):return InlineKeyboardMarkup([[InlineKeyboardButton(t,callback_data=d) for t,d in row] for row in rows if row])
 def order_text(route):
     def levels(book,key):
-        if isinstance(book,Exception): return f'⚠️ {type(book).__name__}'
+        if isinstance(book,Exception):return f'⚠️ {type(book).__name__}'
         vals=(book or {}).get(key,[])[:3]
         if not vals:return 'Unavailable'
         return '\n'.join(f'  ${float(x[0]):,.6f} × {float(x[1]):,.6f}' for x in vals)
-    return (f"📖 <b>{route['symbol']} ORDER ROUTE</b>\n\n"
-            f"🟢 <b>BUY on {route['buy_exchange']}</b> — required <b>ASKS</b>\n{levels(route['buy'],'asks')}\n\n"
-            f"🔴 <b>SELL on {route['sell_exchange']}</b> — required <b>BIDS</b>\n{levels(route['sell'],'bids')}\n\n"
-            'ℹ️ Only the order-book sides required for this arbitrage route are shown. Prices are live market data, not placed orders.')
+    return f"📖 <b>{route['symbol']} ORDER ROUTE</b>\n\n🟢 <b>BUY on {route['buy_exchange']}</b> — required <b>ASKS</b>\n{levels(route['buy'],'asks')}\n\n🔴 <b>SELL on {route['sell_exchange']}</b> — required <b>BIDS</b>\n{levels(route['sell'],'bids')}\n\nℹ️ Only the order-book sides required for this arbitrage route are shown. Prices are live market data, not placed orders."
 async def start(update,context):
     svc=context.application.bot_data['service'];await svc.ensure_user(update.effective_user);row=await svc.get_user(update.effective_user.id)
     if not row['email']:context.user_data['await_email']=True;await update.effective_message.reply_text('⚡ <b>Welcome to Arbitrage Terminal</b>\n\nSend your email to continue.',parse_mode='HTML');return
@@ -42,7 +39,7 @@ async def callbacks(update,context):
     if data=='scan':
         row=await svc.get_user(uid)
         if svc.settings.require_vip and row['vip_status']!='active':await q.answer('Active VIP access is required.',show_alert=True);return
-        await q.edit_message_text('⚡ Starting scan...\n🔄 Connecting to exchanges...');await asyncio.sleep(.1);await q.edit_message_text('🔍 Scanning markets...\n📊 Comparing markets...');snap=await svc.run_scan(uid);p=snap.to_dict();context.user_data['last_scan']=p;await q.edit_message_text(scan_status(p),parse_mode='HTML',reply_markup=kb([[('🔥 Best Results',f'page:{p["scan_id"]}:0'),('📋 All Results',f'page:{p["scan_id"]}:0')],[('📡 Diagnostics',f'diag:{p["scan_id"]}'),('🔎 Debug Coin',f'debug:{p["scan_id"]}')],[('🧠 AI Analysis',f'aian:{p["scan_id"]}'),('🔄 Scan Again','scan')]]));return
+        await q.edit_message_text('⚡ Starting scan...\n🔄 Connecting to exchanges...');await asyncio.sleep(.1);await q.edit_message_text('🔍 Scanning markets...\n📊 Comparing markets...');snap=await svc.run_scan(uid);p=snap.to_dict();await q.edit_message_text(scan_status(p),parse_mode='HTML',reply_markup=kb([[('🔥 Best Results',f'page:{p["scan_id"]}:0'),('📋 All Results',f'page:{p["scan_id"]}:0')],[('📡 Diagnostics',f'diag:{p["scan_id"]}'),('🔎 Debug Coin',f'debug:{p["scan_id"]}')],[('🧠 AI Analysis',f'aian:{p["scan_id"]}'),('🔄 Scan Again','scan')]]));return
     if data.startswith('ex:'):
         row=await svc.get_user(uid);selected=set(json.loads(row['exchanges'] or '[]'));name=data[3:]
         if name=='all':selected=set(context.application.bot_data['exchange_names'])
@@ -55,19 +52,22 @@ async def callbacks(update,context):
     if data=='help':await q.edit_message_text('<b>COMMANDS</b>\n/scan /results /exchanges /filters /settings /status /diagnostics /ai /aiprobe /aiprobestatus /aiprobelogs /aiproberepair',parse_mode='HTML');return
     if data=='filters':
         f=svc.repo.filters_from_row(await svc.get_user(uid));await q.edit_message_text(f'📊 <b>SCAN FILTERS</b>\n\n📈 Gap ≥ {f.min_gap:.2f}%\n💰 Net ≥ {f.min_net_profit:.2f}%\n💧 Volume ≥ ${f.min_volume:,.0f}\n⏱ Max age {f.max_data_age:.1f}s',parse_mode='HTML');return
-    if data=='settings':await q.edit_message_text('⚙️ <b>SETTINGS</b>\n\nUse Exchanges, Filters and AI screens to change configuration.',parse_mode='HTML');return
+    if data=='settings':
+        f=svc.repo.filters_from_row(await svc.get_user(uid));mode=f.validation_mode.lower();await q.edit_message_text(f'⚙️ <b>SETTINGS</b>\n\n🔐 <b>Validation Mode:</b> {mode.upper()}\n\n🛡️ Strict: require verified deposit/withdrawal network and contract/address match.\n🔓 Loose: bypass those two checks; results remain explicitly unverified.',parse_mode='HTML',reply_markup=kb([[('🛡️ Strict','val:strict'),('🔓 Loose','val:loose')],[('⬅️ Dashboard','home')]]));return
+    if data.startswith('val:'):
+        mode=data.split(':',1)[1]
+        if mode not in {'strict','loose'}:await q.answer('Invalid validation mode.',show_alert=True);return
+        await svc.set_validation_mode(uid,mode);await q.edit_message_text(f"✅ Validation mode set to <b>{mode.upper()}</b>.",parse_mode='HTML',reply_markup=kb([[('⚙️ Settings','settings'),('🏠 Dashboard','home')]]));return
     if data.startswith('page:'):
-        _,scan_id,page=data.split(':');p=await svc.scan(uid,scan_id);page=int(page);size=5;items=p['opportunities'];total=max(1,(len(items)+size-1)//size);page=min(page,total-1);text=f'⚡ <b>ALL RESULTS</b> · Page {page+1}/{total}\n\n'+('\\n\\n'.join(card(o,page*size+i+1) for i,o in enumerate(items[page*size:(page+1)*size])) if items else '🔍 <b>NO RESULTS</b>\n\nNo opportunities match your filters.');nav=[]
+        _,scan_id,page=data.split(':');p=await svc.scan(uid,scan_id);page=int(page);size=5;items=p['opportunities'];total=max(1,(len(items)+size-1)//size);page=min(page,total-1);txt=f'⚡ <b>ALL RESULTS</b> · Page {page+1}/{total}\n\n'+('\n\n'.join(card(o,page*size+i+1) for i,o in enumerate(items[page*size:(page+1)*size])) if items else '🔍 <b>NO RESULTS</b>\n\nNo opportunities match your filters.');nav=[]
         if page:nav.append(('⬅️ Previous',f'page:{scan_id}:{page-1}'))
         if page<total-1:nav.append(('Next ➡️',f'page:{scan_id}:{page+1}'))
-        # Each result page gets one targeted Orders action per opportunity row; it never rescans.
-        order_rows=[]
-        for i,o in enumerate(items[page*size:(page+1)*size]): order_rows.append([(f'📖 Orders #{page*size+i+1}',f'order:{scan_id}:{page*size+i}')])
-        await q.edit_message_text(text,parse_mode='HTML',reply_markup=kb(order_rows+[nav,[('🏠 Dashboard','home'),('🔄 Scan Again','scan')]]));return
+        order_rows=[[(f'📖 Orders #{page*size+i+1}',f'order:{scan_id}:{page*size+i}')] for i in range(len(items[page*size:(page+1)*size]))]
+        await q.edit_message_text(txt,parse_mode='HTML',reply_markup=kb(order_rows+[nav,[('🏠 Dashboard','home'),('🔄 Scan Again','scan')]]));return
     if data.startswith('order:'):
-        _,scan_id,index=data.split(':');
+        _,scan_id,index=data.split(':')
         try:route=await svc.order_route(uid,scan_id,int(index));await q.edit_message_text(order_text(route),parse_mode='HTML',reply_markup=kb([[('⬅️ Back to Results',f'page:{scan_id}:{int(index)//5}')],[('🏠 Dashboard','home')]]))
-        except Exception as exc:await q.edit_message_text(f'⚠️ <b>Orders unavailable</b>\n\n{type(exc).__name__}: {str(exc)[:250]}',parse_mode='HTML',reply_markup=kb([[('⬅️ Back','page:'+scan_id+':'+str(int(index)//5))]]))
+        except Exception as exc:await q.edit_message_text(f'⚠️ <b>Orders unavailable</b>\n\n{type(exc).__name__}: {str(exc)[:250]}',parse_mode='HTML',reply_markup=kb([[('⬅️ Back',f'page:{scan_id}:{int(index)//5}')]]))
         return
     if data.startswith('diag:'):
         p=await svc.scan(uid,data.split(':',1)[1]);lines=['📡 <b>SCAN DIAGNOSTICS</b>']+[f"{'🟢' if d['status']=='ok' else '🔴'} {d['exchange']} · {d['status']} · {d['latency_ms']:.0f}ms" for d in p['diagnostics']];await q.edit_message_text('\n'.join(lines),parse_mode='HTML',reply_markup=kb([[('⬅️ Back',f'page:{p["scan_id"]}:0')]]));return
@@ -80,7 +80,7 @@ async def callbacks(update,context):
     if data=='status':
         row=await svc.get_user(uid);await q.edit_message_text('📡 <b>EXCHANGE STATUS</b>\n\n'+'\n'.join(('🟢' if n in context.application.bot_data['exchanges'] else '🔴')+' '+n.title() for n in json.loads(row['exchanges'] or '[]')),parse_mode='HTML');return
     if data=='history':
-        rows=await svc.history(uid);await q.edit_message_text('📋 <b>SCAN HISTORY</b>\n\n'+'\n'.join(f"{r['started_at'][:16]} · {r['opportunities_found']} opportunities · {r['state']}" for r in rows) or 'No scans yet.',parse_mode='HTML');return
+        rows=await svc.history(uid);await q.edit_message_text('📋 <b>SCAN HISTORY</b>\n\n'+(''.join(f"{r['started_at'][:16]} · {r['opportunities_found']} opportunities · {r['state']}\n" for r in rows) or 'No scans yet.'),parse_mode='HTML');return
     if data=='home':await start(update,context)
 async def scan(update,context):
     row=await context.application.bot_data['service'].get_user(update.effective_user.id)
