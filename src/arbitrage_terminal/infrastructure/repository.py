@@ -4,7 +4,7 @@ from datetime import datetime,timezone,timedelta
 import aiosqlite
 from arbitrage_terminal.domain.models import ScanSnapshot
 from arbitrage_terminal.domain.filters import ScanFilters
-DEFAULT_FILTERS={'min_gap':.50,'min_net_profit':.20,'min_volume':10000.,'min_liquidity':1000.,'max_data_age':10.,'require_network':False,'require_fees':False,'selected_coins':[],'quote_currency':'USDT'}
+DEFAULT_FILTERS={'min_gap':.50,'min_net_profit':.20,'min_volume':10000.,'min_liquidity':1000.,'max_data_age':10.,'require_network':False,'require_fees':False,'selected_coins':[],'quote_currency':'USDT','validation_mode':'strict'}
 class Repository:
     def __init__(self,path):self.path=path;self.db=None
     async def connect(self):
@@ -31,8 +31,7 @@ class Repository:
     def filters_from_row(self,row):
         raw=json.loads(row['filters'] or '{}');return ScanFilters(**{**DEFAULT_FILTERS,**raw,'selected_coins':set(raw.get('selected_coins',[]))})
     async def save_scan(self,s):
-        await self.db.execute('INSERT OR REPLACE INTO scan_snapshots VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',(s.scan_id,s.user_id,s.started_at,s.completed_at,json.dumps(s.selected_exchanges),json.dumps(s.healthy_exchanges),json.dumps(s.degraded_exchanges),json.dumps(s.failed_exchanges),s.state.value,s.markets_discovered,s.markets_validated,s.candidates_evaluated,s.opportunities_found,json.dumps(s.to_dict())))
-        await self.db.commit()
+        await self.db.execute('INSERT OR REPLACE INTO scan_snapshots VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',(s.scan_id,s.user_id,s.started_at,s.completed_at,json.dumps(s.selected_exchanges),json.dumps(s.healthy_exchanges),json.dumps(s.degraded_exchanges),json.dumps(s.failed_exchanges),s.state.value,s.markets_discovered,s.markets_validated,s.candidates_evaluated,s.opportunities_found,json.dumps(s.to_dict())));await self.db.commit()
     async def get_scan(self,user_id,scan_id):
         r=await (await self.db.execute('SELECT payload FROM scan_snapshots WHERE scan_id=? AND user_id=?',(scan_id,user_id))).fetchone();return json.loads(r['payload']) if r else None
     async def history(self,user_id,limit=20):return await (await self.db.execute('SELECT scan_id,started_at,state,opportunities_found FROM scan_snapshots WHERE user_id=? ORDER BY started_at DESC LIMIT ?',(user_id,limit))).fetchall()
