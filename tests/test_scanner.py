@@ -16,7 +16,7 @@ class Fake(ExchangeAdapter):
         return [Ticker(self.name,'BTC/USDT','BTC','USDT',self.price-1,self.price,100000,datetime.now(timezone.utc))]
     async def get_orderbook(self,symbol,limit=10):return {'bids':[[self.price-1,1]],'asks':[[self.price,1]]}
     async def get_trading_fees(self,symbols=None):return {'BTC/USDT':.1}
-    async def get_transfer_info(self,asset):return {'available':True}
+    async def get_transfer_info(self,asset):return {'available':True,'networks':[{'network':'ERC20','deposit':True,'withdraw':True,'contract_address':'0xabc'}]}
     async def close(self):pass
 @pytest.mark.asyncio
 async def test_partial_failure():
