@@ -3,7 +3,17 @@ import json,asyncio
 from telegram import InlineKeyboardButton,InlineKeyboardMarkup
 from telegram.ext import CommandHandler,CallbackQueryHandler,MessageHandler,ContextTypes,filters
 from .ui import dashboard,scan_status,card
-def kb(rows):return InlineKeyboardMarkup([[InlineKeyboardButton(t,callback_data=d) for t,d in row] for row in rows])
+def kb(rows):return InlineKeyboardMarkup([[InlineKeyboardButton(t,callback_data=d) for t,d in row] for row in rows if row])
+def order_text(route):
+    def levels(book,key):
+        if isinstance(book,Exception): return f'⚠️ {type(book).__name__}'
+        vals=(book or {}).get(key,[])[:3]
+        if not vals:return 'Unavailable'
+        return '\n'.join(f'  ${float(x[0]):,.6f} × {float(x[1]):,.6f}' for x in vals)
+    return (f"📖 <b>{route['symbol']} ORDER ROUTE</b>\n\n"
+            f"🟢 <b>BUY on {route['buy_exchange']}</b> — required <b>ASKS</b>\n{levels(route['buy'],'asks')}\n\n"
+            f"🔴 <b>SELL on {route['sell_exchange']}</b> — required <b>BIDS</b>\n{levels(route['sell'],'bids')}\n\n"
+            'ℹ️ Only the order-book sides required for this arbitrage route are shown. Prices are live market data, not placed orders.')
 async def start(update,context):
     svc=context.application.bot_data['service'];await svc.ensure_user(update.effective_user);row=await svc.get_user(update.effective_user.id)
     if not row['email']:context.user_data['await_email']=True;await update.effective_message.reply_text('⚡ <b>Welcome to Arbitrage Terminal</b>\n\nSend your email to continue.',parse_mode='HTML');return
@@ -50,7 +60,15 @@ async def callbacks(update,context):
         _,scan_id,page=data.split(':');p=await svc.scan(uid,scan_id);page=int(page);size=5;items=p['opportunities'];total=max(1,(len(items)+size-1)//size);page=min(page,total-1);text=f'⚡ <b>ALL RESULTS</b> · Page {page+1}/{total}\n\n'+('\\n\\n'.join(card(o,page*size+i+1) for i,o in enumerate(items[page*size:(page+1)*size])) if items else '🔍 <b>NO RESULTS</b>\n\nNo opportunities match your filters.');nav=[]
         if page:nav.append(('⬅️ Previous',f'page:{scan_id}:{page-1}'))
         if page<total-1:nav.append(('Next ➡️',f'page:{scan_id}:{page+1}'))
-        await q.edit_message_text(text,parse_mode='HTML',reply_markup=kb([nav,[('🏠 Dashboard','home'),('🔄 Scan Again','scan')]]));return
+        # Each result page gets one targeted Orders action per opportunity row; it never rescans.
+        order_rows=[]
+        for i,o in enumerate(items[page*size:(page+1)*size]): order_rows.append([(f'📖 Orders #{page*size+i+1}',f'order:{scan_id}:{page*size+i}')])
+        await q.edit_message_text(text,parse_mode='HTML',reply_markup=kb(order_rows+[nav,[('🏠 Dashboard','home'),('🔄 Scan Again','scan')]]));return
+    if data.startswith('order:'):
+        _,scan_id,index=data.split(':');
+        try:route=await svc.order_route(uid,scan_id,int(index));await q.edit_message_text(order_text(route),parse_mode='HTML',reply_markup=kb([[('⬅️ Back to Results',f'page:{scan_id}:{int(index)//5}')],[('🏠 Dashboard','home')]]))
+        except Exception as exc:await q.edit_message_text(f'⚠️ <b>Orders unavailable</b>\n\n{type(exc).__name__}: {str(exc)[:250]}',parse_mode='HTML',reply_markup=kb([[('⬅️ Back','page:'+scan_id+':'+str(int(index)//5))]]))
+        return
     if data.startswith('diag:'):
         p=await svc.scan(uid,data.split(':',1)[1]);lines=['📡 <b>SCAN DIAGNOSTICS</b>']+[f"{'🟢' if d['status']=='ok' else '🔴'} {d['exchange']} · {d['status']} · {d['latency_ms']:.0f}ms" for d in p['diagnostics']];await q.edit_message_text('\n'.join(lines),parse_mode='HTML',reply_markup=kb([[('⬅️ Back',f'page:{p["scan_id"]}:0')]]));return
     if data.startswith('debug:'):
