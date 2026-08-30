@@ -30,7 +30,9 @@ class Repository:
     async def set_ai_mode(self,user_id,mode):await self.db.execute('UPDATE user_ai_config SET result_mode=? WHERE user_id=?',(mode,user_id));await self.db.commit()
     def filters_from_row(self,row):
         raw=json.loads(row['filters'] or '{}');return ScanFilters(**{**DEFAULT_FILTERS,**raw,'selected_coins':set(raw.get('selected_coins',[]))})
-    async def save_scan(self,s):await self.db.execute('INSERT OR REPLACE INTO scan_snapshots VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',(s.scan_id,s.user_id,s.started_at,s.completed_at,json.dumps(s.selected_exchanges),json.dumps(s.healthy_exchanges),json.dumps(s.degraded_exchanges),json.dumps(s.failed_exchanges),s.state.value,s.markets_discovered,s.markets_validated,s.candidates_evaluated,s.opportunities_found,json.dumps(s.to_dict())));await self.db.commit()
+    async def save_scan(self,s):
+        await self.db.execute('INSERT OR REPLACE INTO scan_snapshots VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',(s.scan_id,s.user_id,s.started_at,s.completed_at,json.dumps(s.selected_exchanges),json.dumps(s.healthy_exchanges),json.dumps(s.degraded_exchanges),json.dumps(s.failed_exchanges),s.state.value,s.markets_discovered,s.markets_validated,s.candidates_evaluated,s.opportunities_found,json.dumps(s.to_dict())))
+        await self.db.commit()
     async def get_scan(self,user_id,scan_id):
         r=await (await self.db.execute('SELECT payload FROM scan_snapshots WHERE scan_id=? AND user_id=?',(scan_id,user_id))).fetchone();return json.loads(r['payload']) if r else None
     async def history(self,user_id,limit=20):return await (await self.db.execute('SELECT scan_id,started_at,state,opportunities_found FROM scan_snapshots WHERE user_id=? ORDER BY started_at DESC LIMIT ?',(user_id,limit))).fetchall()
@@ -41,4 +43,4 @@ class Repository:
         await self.db.execute("UPDATE vip_keys SET status='active',redeemed_by=?,redeemed_at=? WHERE key=?",(user_id,datetime.now(timezone.utc).isoformat(),key));await self.db.execute("UPDATE users SET vip_status='active',vip_expiry=? WHERE telegram_id=?",(r['expiry_date'],user_id));await self.db.commit();return True,'VIP access activated.'
     async def create_vip_key(self,admin_id,key,days):
         expiry=None if str(days).lower() in ('lifetime','0') else (datetime.now(timezone.utc)+timedelta(days=int(days))).isoformat();await self.db.execute('INSERT INTO vip_keys(key,created_by,created_at,expiry_date) VALUES(?,?,?,?)',(key.strip().upper(),admin_id,datetime.now(timezone.utc).isoformat(),expiry));await self.db.commit();return key.strip().upper()
-    async def save_ai(self,user_id,scan_id,kind,payload):await self.db.execute('INSERT INTO ai_analyses VALUES(?,?,?,?,?)',(uuid.uuid4().hex,user_id,scan_id,kind,json.dumps(payload),datetime.now(timezone.utc).isoformat()));await self.db.commit()
+    async def save_ai(self,user_id,scan_id,kind,payload):await self.db.execute('INSERT INTO ai_analyses VALUES(?,?,?,?,?,?)',(uuid.uuid4().hex,user_id,scan_id,kind,json.dumps(payload),datetime.now(timezone.utc).isoformat()));await self.db.commit()
