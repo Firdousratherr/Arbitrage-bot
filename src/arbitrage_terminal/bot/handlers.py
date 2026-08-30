@@ -3,7 +3,6 @@ import json,asyncio
 from telegram import InlineKeyboardButton,InlineKeyboardMarkup
 from telegram.ext import CommandHandler,CallbackQueryHandler,MessageHandler,ContextTypes,filters
 from .ui import dashboard,scan_status,card
-
 def kb(rows):return InlineKeyboardMarkup([[InlineKeyboardButton(t,callback_data=d) for t,d in row] for row in rows])
 async def start(update,context):
     svc=context.application.bot_data['service'];await svc.ensure_user(update.effective_user);row=await svc.get_user(update.effective_user.id)
@@ -20,13 +19,20 @@ async def exchange_markup(context,row):
     rows.append([('Select All','ex:all'),('Clear All','ex:none')]);rows.append([('✅ Save Selection','ex:save')]);return kb(rows)
 async def exchanges(update,context):
     row=await context.application.bot_data['service'].get_user(update.effective_user.id);await update.effective_message.reply_text('🏦 <b>SELECT EXCHANGES</b>\nAll selected exchanges are equal. No priority.',parse_mode='HTML',reply_markup=await exchange_markup(context,row))
+async def vipkey(update,context):
+    if not context.args:await update.effective_message.reply_text('Usage: /vipkey YOUR_KEY');return
+    ok,msg=await context.application.bot_data['repo'].redeem_vip_key(update.effective_user.id,context.args[0]);await update.effective_message.reply_text(('🔐 ' if ok else '⚠️ ')+msg)
+async def genkey(update,context):
+    if update.effective_user.id not in context.application.bot_data['settings'].admin_ids:await update.effective_message.reply_text('Not authorized.');return
+    if len(context.args)!=2:await update.effective_message.reply_text('Usage: /genkey KEY DAYS|lifetime');return
+    try:key=await context.application.bot_data['repo'].create_vip_key(update.effective_user.id,context.args[0],context.args[1]);await update.effective_message.reply_text(f'🔑 Created VIP key: <code>{key}</code>',parse_mode='HTML')
+    except Exception as e:await update.effective_message.reply_text(f'⚠️ Could not create key: {type(e).__name__}')
 async def callbacks(update,context):
     q=update.callback_query;await q.answer();svc=context.application.bot_data['service'];uid=q.from_user.id;data=q.data
     if data=='scan':
         row=await svc.get_user(uid)
         if svc.settings.require_vip and row['vip_status']!='active':await q.answer('Active VIP access is required.',show_alert=True);return
-        await q.edit_message_text('⚡ Starting scan...\n🔄 Connecting to exchanges...');await asyncio.sleep(.1);await q.edit_message_text('🔍 Scanning markets...\n📊 Comparing markets...');snap=await svc.run_scan(uid);p=snap.to_dict();context.user_data['last_scan']=p
-        await q.edit_message_text(scan_status(p),parse_mode='HTML',reply_markup=kb([[('🔥 Best Results',f'page:{p["scan_id"]}:0'),('📋 All Results',f'page:{p["scan_id"]}:0')],[('📡 Diagnostics',f'diag:{p["scan_id"]}'),('🔎 Debug Coin',f'debug:{p["scan_id"]}')],[('🧠 AI Analysis',f'aian:{p["scan_id"]}'),('🔄 Scan Again','scan')]]));return
+        await q.edit_message_text('⚡ Starting scan...\n🔄 Connecting to exchanges...');await asyncio.sleep(.1);await q.edit_message_text('🔍 Scanning markets...\n📊 Comparing markets...');snap=await svc.run_scan(uid);p=snap.to_dict();context.user_data['last_scan']=p;await q.edit_message_text(scan_status(p),parse_mode='HTML',reply_markup=kb([[('🔥 Best Results',f'page:{p["scan_id"]}:0'),('📋 All Results',f'page:{p["scan_id"]}:0')],[('📡 Diagnostics',f'diag:{p["scan_id"]}'),('🔎 Debug Coin',f'debug:{p["scan_id"]}')],[('🧠 AI Analysis',f'aian:{p["scan_id"]}'),('🔄 Scan Again','scan')]]));return
     if data.startswith('ex:'):
         row=await svc.get_user(uid);selected=set(json.loads(row['exchanges'] or '[]'));name=data[3:]
         if name=='all':selected=set(context.application.bot_data['exchange_names'])
@@ -62,7 +68,6 @@ async def scan(update,context):
     row=await context.application.bot_data['service'].get_user(update.effective_user.id)
     if context.application.bot_data['settings'].require_vip and row['vip_status']!='active':await update.effective_message.reply_text('🔒 Active VIP access is required.');return
     await update.effective_message.reply_text('Use the dashboard Scan button.',reply_markup=kb([[('🔎 Scan Arbitrage','scan')]]))
-async def status_cmd(update,context):await start(update,context)
 async def results_cmd(update,context):
     rows=await context.application.bot_data['service'].history(update.effective_user.id)
     if not rows:await update.effective_message.reply_text('📋 No scan history yet. Use /scan.');return
@@ -72,4 +77,4 @@ async def ai_cmd(update,context):
 async def aiprobe(update,context):
     if update.effective_user.id not in context.application.bot_data['settings'].admin_ids:await update.effective_message.reply_text('Not authorized.');return
     await update.effective_message.reply_text('🧠 <b>AI PROBE</b>\n\n'+json.dumps(await context.application.bot_data['ai'].probe(),indent=2)[:3500],parse_mode='HTML')
-def build_handlers():return [CommandHandler('start',start),CommandHandler('scan',scan),CommandHandler('results',results_cmd),CommandHandler('exchanges',exchanges),CommandHandler('status',status_cmd),CommandHandler('ai',ai_cmd),CommandHandler('aiprobe',aiprobe),CommandHandler('aiprobestatus',aiprobe),CommandHandler('aiprobelogs',aiprobe),CommandHandler('aiproberepair',aiprobe),CommandHandler('diagnostics',status_cmd),CommandHandler('filters',start),CommandHandler('settings',start),CommandHandler('help',start),CallbackQueryHandler(callbacks),MessageHandler(filters.TEXT & ~filters.COMMAND,text)]
+def build_handlers():return [CommandHandler('start',start),CommandHandler('vipkey',vipkey),CommandHandler('genkey',genkey),CommandHandler('scan',scan),CommandHandler('results',results_cmd),CommandHandler('exchanges',exchanges),CommandHandler('status',start),CommandHandler('ai',ai_cmd),CommandHandler('aiprobe',aiprobe),CommandHandler('aiprobestatus',aiprobe),CommandHandler('aiprobelogs',aiprobe),CommandHandler('aiproberepair',aiprobe),CommandHandler('diagnostics',start),CommandHandler('filters',start),CommandHandler('settings',start),CommandHandler('help',start),CallbackQueryHandler(callbacks),MessageHandler(filters.TEXT & ~filters.COMMAND,text)]
