@@ -12,5 +12,5 @@ def pair_opportunity(buy,sell,buy_fee,sell_fee,withdrawal_cost_pct=0,max_age=10)
     age=max(0,(datetime.now(timezone.utc)-min(buy.timestamp,sell.timestamp)).total_seconds())
     if age>max_age*3:return None
     net=gap-buy_fee-sell_fee-withdrawal_cost_pct;liq=min(buy.quote_volume,sell.quote_volume);pc=max(0,min(1,1-abs(gap)/10))
-    score=confidence(freshness=age,liquidity=liq,price_consistency=pc,fees_known=True,network_known=True,exchange_health=1)
-    return Opportunity(buy.symbol,buy.exchange,sell.exchange,buy.ask,sell.bid,gap,buy_fee,sell_fee,withdrawal_cost_pct,net,buy.quote_volume,sell.quote_volume,age,score,MarketType.SPOT)
+    score=confidence(freshness=age,liquidity=liq,price_consistency=pc,fees_known=True,network_known=False,exchange_health=1)
+    return Opportunity(buy.symbol,buy.exchange,sell.exchange,buy.ask,sell.bid,gap,buy_fee,sell_fee,withdrawal_cost_pct,net,buy.quote_volume,sell.quote_volume,age,score,MarketType.SPOT,{'network_available':False,'fee_data_available':True,'deterministic':True})
