@@ -6,9 +6,7 @@ import json
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from .handlers import ai_cmd, exchanges, help as _unused  # type: ignore[attr-defined]
-from .handlers import start
-from .handlers import kb
+from .handlers import kb, start
 
 
 async def dashboard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -64,8 +62,7 @@ async def diagnostics_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def filters_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     svc = context.application.bot_data['service']
-    uid = update.effective_user.id
-    row = await svc.get_user(uid)
+    row = await svc.get_user(update.effective_user.id)
     f = svc.repo.filters_from_row(row)
     coins = ', '.join(sorted(f.selected_coins)) if f.selected_coins else 'All'
     text = (
