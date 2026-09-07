@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections import Counter
+from collections import Counter, defaultdict
 
 from arbitrage_terminal.domain.models import AIMode
 
@@ -42,6 +42,73 @@ class TerminalService:
         async with self._scan_locks_guard:
             return self._scan_locks.setdefault(user_id, asyncio.Lock())
 
+    def _add_exchange_coverage(self, snap):
+        """Attach exchange-level accounting without changing scanner decisions."""
+        selected = list(snap.selected_exchanges)
+        healthy = set(snap.healthy_exchanges)
+        failed = set(snap.failed_exchanges)
+        degraded = set(snap.degraded_exchanges)
+        adapters = self.exchanges
+
+        symbol_exchanges = defaultdict(set)
+        coverage = {}
+        for name in selected:
+            adapter = adapters.get(name)
+            market_symbols = set(getattr(adapter, 'last_market_symbols', set()) or set()) if adapter else set()
+            ticker_symbols = set(getattr(adapter, 'last_ticker_symbols', set()) or set()) if adapter else set()
+            ticker_count = int(getattr(adapter, 'last_ticker_count', len(ticker_symbols)) or 0) if adapter else 0
+            for symbol in ticker_symbols:
+                symbol_exchanges[symbol].add(name)
+            status = 'healthy' if name in healthy else 'degraded' if name in degraded else 'failed'
+            error = None
+            for d in snap.diagnostics:
+                if d.exchange == name and d.status == 'failed' and d.detail:
+                    error = str(d.detail)[:350]
+                    break
+            coverage[name] = {
+                'status': status,
+                'market_count': len(market_symbols),
+                'ticker_count': ticker_count,
+                'usable_symbols': len(ticker_symbols),
+                'shared_symbols': 0,
+                'candidate_comparisons': 0,
+                'candidate_rejections': 0,
+                'final_opportunities': 0,
+                'network_rejections': 0,
+                'filter_rejections': 0,
+                'error': error,
+            }
+
+        for name in selected:
+            adapter = adapters.get(name)
+            ticker_symbols = set(getattr(adapter, 'last_ticker_symbols', set()) or set()) if adapter else set()
+            shared = {s for s in ticker_symbols if len(symbol_exchanges[s]) >= 2}
+            coverage[name]['shared_symbols'] = len(shared)
+            # The scanner compares every usable ticker against every other exchange's
+            # usable ticker for the same symbol, in both directions.
+            coverage[name]['candidate_comparisons'] = sum(len(symbol_exchanges[s]) - 1 for s in ticker_symbols)
+
+        for rejection in snap.filter_rejections:
+            buy = str(rejection.get('buy', '')).lower()
+            sell = str(rejection.get('sell', '')).lower()
+            reason = str(rejection.get('reason', ''))
+            for name in {buy, sell}:
+                if name not in coverage:
+                    continue
+                coverage[name]['candidate_rejections'] += 1
+                if reason.startswith('deposit/withdrawal') or reason.startswith('contract/address'):
+                    coverage[name]['network_rejections'] += 1
+                else:
+                    coverage[name]['filter_rejections'] += 1
+
+        for opportunity in snap.opportunities:
+            for name in {str(opportunity.buy_exchange).lower(), str(opportunity.sell_exchange).lower()}:
+                if name in coverage:
+                    coverage[name]['final_opportunities'] += 1
+
+        snap.exchange_coverage = coverage
+        return snap
+
     async def run_scan(self, user_id, progress=None):
         lock = await self._scan_lock(user_id)
         if lock.locked():
@@ -52,6 +119,7 @@ class TerminalService:
             snap = await self.scanner.scan(
                 user_id, selected, self.repo.filters_from_row(row), progress=progress
             )
+            self._add_exchange_coverage(snap)
             await self.repo.save_scan(snap)
             return snap
 
@@ -78,7 +146,7 @@ class TerminalService:
             'failed_exchanges': snap.get('failed_exchanges', []),
             'markets_discovered': snap.get('markets_discovered', 0),
             'markets_validated': snap.get('markets_validated', 0),
-            'tickers_received': snap.get('markets_validated', 0),
+            'tickers_received': sum(v.get('ticker_count', 0) for v in (snap.get('exchange_coverage') or {}).values()),
             'candidates_evaluated': snap.get('candidates_evaluated', 0),
             'opportunity_count': snap.get('opportunities_found', 0),
             'opportunities': snap.get('opportunities', []),
@@ -95,6 +163,7 @@ class TerminalService:
                 'quote_currency': filters.quote_currency,
                 'selected_coins': sorted(filters.selected_coins),
             },
+            'exchange_coverage': snap.get('exchange_coverage', {}),
             'diagnostics': snap.get('diagnostics', []),
             'warnings': snap.get('warnings', []),
             'errors': snap.get('errors', []),
