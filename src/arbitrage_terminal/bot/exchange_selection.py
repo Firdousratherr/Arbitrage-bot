@@ -17,6 +17,57 @@ def _markup(names, selected):
     return InlineKeyboardMarkup(rows)
 
 
+def _selection_text(selected, names):
+    return (
+        '🏦 <b>SELECT EXCHANGES</b>\n\n'
+        'All selected exchanges are equal. No priority.\n\n'
+        f'Selected: <b>{len(selected)}</b> / {len(names)}'
+    )
+
+
+async def dashboard_exchanges_callback(update, context):
+    """Open the exchange selector from the inline dashboard button."""
+    q = update.callback_query
+    try:
+        svc = context.application.bot_data['service']
+        uid = q.from_user.id
+        if svc.settings.require_vip and not await svc.repo.vip_active(uid):
+            await q.answer()
+            await q.edit_message_text(
+                '🔐 <b>VIP ACCESS REQUIRED</b>\n\nEnter your VIP key to activate access.',
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton('🔑 Enter VIP Key', callback_data='vip:enter')]
+                ]),
+            )
+            return
+        row = await svc.get_user(uid)
+        selected = set(json.loads(row['exchanges'] or '[]'))
+        names = context.application.bot_data['exchange_names']
+        await q.answer()
+        await q.edit_message_text(
+            _selection_text(selected, names),
+            parse_mode='HTML',
+            reply_markup=_markup(names, selected),
+        )
+    except Exception as exc:
+        context.application.logger.exception('dashboard exchange selector failed')
+        try:
+            await q.answer('Exchange selection failed. Please try again.', show_alert=True)
+        except Exception:
+            pass
+        try:
+            await q.edit_message_text(
+                f'⚠️ <b>Exchange selection error</b>\n\n{type(exc).__name__}: {str(exc)[:180]}',
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton('🔄 Try Again', callback_data='exchanges')]
+                ]),
+            )
+        except Exception:
+            pass
+
+
 async def exchange_selection_callback(update, context):
     q = update.callback_query
     try:
@@ -59,9 +110,7 @@ async def exchange_selection_callback(update, context):
         await svc.set_exchanges(uid, list(selected))
         await q.answer('Updated.')
         await q.edit_message_text(
-            '🏦 <b>SELECT EXCHANGES</b>\n\n'
-            'All selected exchanges are equal. No priority.\n\n'
-            f'Selected: <b>{len(selected)}</b> / {len(names)}',
+            _selection_text(selected, names),
             parse_mode='HTML',
             reply_markup=_markup(names, selected),
         )
