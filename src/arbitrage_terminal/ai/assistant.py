@@ -88,3 +88,36 @@ class AIAssistant:
             return {'text': r.json()['choices'][0]['message']['content'], 'model': self.model}
         except Exception as e:
             return {'error': f'AI analysis unavailable: {type(e).__name__}: {e}'}
+
+    async def generate_code_fix(self, problem: str, source_files: dict[str, str], extra_context: str = ''):
+        """Return a machine-readable proposed repair; never applies code itself."""
+        if not self.configured:
+            return {'error': 'AI provider is not configured'}
+        system = '''You are a senior Python maintainer repairing a production crypto-arbitrage Telegram bot.
+Return ONLY valid JSON with this shape:
+{"summary":"...","root_cause":"...","risk":"low|medium|high","files":[{"path":"src/...","content":"COMPLETE FILE CONTENT"}],"tests":["pytest ..."]}
+Rules: modify only the supplied files unless a missing file is clearly required; never output secrets; never modify .env, credentials, Docker deployment, GitHub workflows, or production configuration; preserve public APIs unless the bug requires a change; keep the patch minimal; include complete replacement file contents, not diffs; tests must be safe pytest commands; if evidence is insufficient, return an empty files list and explain why.'''
+        prompt = (
+            f'Problem reported by the administrator:\n{problem}\n\n'
+            f'Additional runtime/CI context:\n{extra_context or "None"}\n\n'
+            'Source files available for inspection:\n' +
+            '\n\n'.join(f'===== {path} =====\n{content}' for path, content in source_files.items())
+        )
+        try:
+            r, _, _ = await self.http.request(
+                'POST', self.url + '/chat/completions',
+                headers={'Authorization': f'Bearer {self.key}', 'Content-Type': 'application/json'},
+                json={
+                    'model': self.model,
+                    'temperature': .0,
+                    'response_format': {'type': 'json_object'},
+                    'messages': [
+                        {'role': 'system', 'content': system},
+                        {'role': 'user', 'content': prompt},
+                    ],
+                },
+            )
+            raw = r.json()['choices'][0]['message']['content']
+            return json.loads(raw)
+        except Exception as e:
+            return {'error': f'AI code repair unavailable: {type(e).__name__}: {e}'}
