@@ -53,8 +53,6 @@ class AIAssistant:
     def _compact_analysis_payload(cls, payload):
         """Keep AI analysis evidence useful while preventing oversized HTTP bodies."""
         compact = dict(payload)
-
-        # Opportunities can contain verbose metadata such as transfer/network data.
         opportunities = []
         for item in (payload.get('opportunities') or [])[:cls.MAX_OPPORTUNITIES]:
             if not isinstance(item, dict):
@@ -69,8 +67,6 @@ class AIAssistant:
                 if key in item
             })
         compact['opportunities'] = opportunities
-
-        # Diagnostics/errors are useful, but raw exchange exceptions can be verbose.
         diagnostics = []
         for item in (payload.get('diagnostics') or [])[:cls.MAX_DIAGNOSTICS]:
             if isinstance(item, dict):
@@ -86,9 +82,6 @@ class AIAssistant:
         compact['warnings'] = [str(x)[:300] for x in (payload.get('warnings') or [])[:cls.MAX_MESSAGES]]
         compact['errors'] = [str(x)[:300] for x in (payload.get('errors') or [])[:cls.MAX_MESSAGES]]
         compact['selected_coins'] = list((payload.get('filters') or {}).get('selected_coins', []))[:50]
-
-        # Keep exchange coverage intact when the scanner provides it, but strip any
-        # unexpected verbose fields from future/extended coverage records.
         coverage = payload.get('exchange_coverage')
         if isinstance(coverage, dict):
             compact['exchange_coverage'] = {
@@ -103,9 +96,6 @@ class AIAssistant:
                 for exchange, record in coverage.items()
                 if isinstance(record, dict)
             }
-
-        # Deterministically reduce the largest sections until the serialized body is
-        # comfortably below common reverse-proxy request limits.
         while len(json.dumps(compact, default=str, separators=(',', ':'))) > cls.ANALYSIS_PAYLOAD_LIMIT:
             if len(compact['opportunities']) > 3:
                 compact['opportunities'] = compact['opportunities'][: max(3, len(compact['opportunities']) // 2)]
@@ -119,8 +109,6 @@ class AIAssistant:
             if len(compact['errors']) > 5:
                 compact['errors'] = compact['errors'][: max(5, len(compact['errors']) // 2)]
                 continue
-            # Last-resort bound for unusually large future fields while preserving
-            # the deterministic summary fields above.
             for key in ('exchange_coverage', 'filters'):
                 if isinstance(compact.get(key), dict):
                     compact[key] = dict(list(compact[key].items())[:15])
@@ -143,7 +131,12 @@ class AIAssistant:
                 " no qualifying opportunities were found and use filter_rejections/rejection_summary"
                 " when supplied to explain why candidates were rejected."
                 " Recommendations must be clearly labeled as recommendations and must not be presented"
-                " as observed scan facts. Keep the response concise and Telegram-friendly."
+                " as observed scan facts."
+                " Never recommend executing, placing, or committing a trade."
+                " Never treat a ticker symbol alone as proof that two exchange markets represent the same asset."
+                " Never recommend an opportunity unless the deterministic scanner marks the route as verified;"
+                " if asset identity, network, contract, fee, or depth evidence is missing, explicitly say so."
+                " Keep the response concise and Telegram-friendly."
                 " The supplied scan JSON is intentionally compact; do not assume omitted records are absent."
             )
             compact_payload = self._compact_analysis_payload(payload)
