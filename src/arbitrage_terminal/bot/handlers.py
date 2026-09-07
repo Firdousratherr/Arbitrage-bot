@@ -96,7 +96,7 @@ async def callbacks(update,context):
         await q.edit_message_text(txt,parse_mode='HTML',reply_markup=kb(order_rows+[nav,[('🏠 Dashboard','home'),('🔄 Scan Again','scan')],[('👨‍💻 Contact Developer','https://t.me/firdousratherr')]]));return
     if data.startswith('order:'):
         _,scan_id,index=data.split(':')
-        try:route=await svc.order_route(uid,scan_id,int(index));await q.edit_message_text(order_text(route),parse_mode='HTML',reply_markup=kb([[('⬅️ Back to Results',f'page:{scan_id}:{int(index)//5}')],[('🏠 Dashboard','home')]))
+        try:route=await svc.order_route(uid,scan_id,int(index));await q.edit_message_text(order_text(route),parse_mode='HTML',reply_markup=kb([[('⬅️ Back to Results',f'page:{scan_id}:{int(index)//5}')],[('🏠 Dashboard','home')]]))
         except Exception as exc:await q.edit_message_text(f'⚠️ <b>Orders unavailable</b>\n\n{type(exc).__name__}: {str(exc)[:250]}',parse_mode='HTML',reply_markup=kb([[('⬅️ Back',f'page:{scan_id}:{int(index)//5}')]]))
         return
     if data.startswith('diag:'):
