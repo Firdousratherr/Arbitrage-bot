@@ -8,7 +8,7 @@ from .arbitrage import ArbitrageScanner
 from .bot import build_handlers
 from .bot.exchange_selection import exchange_selection_callback
 from .bot.live_scan import live_scan_callback
-from .bot.results import results_page_callback
+from .bot.results import results_page_callback, results_detail_callback
 from .exchanges.registry import build_exchanges
 from .infrastructure.config import get_settings
 from .infrastructure.logging import configure
@@ -41,6 +41,7 @@ async def _run():
     app.add_handler(CallbackQueryHandler(exchange_selection_callback,pattern=r'^ex:'))
     app.add_handler(CallbackQueryHandler(live_scan_callback,pattern=r'^scan$'))
     app.add_handler(CallbackQueryHandler(results_page_callback,pattern=r'^page:'))
+    app.add_handler(CallbackQueryHandler(results_detail_callback,pattern=r'^r(?:diag|debug|aian|order):'))
     [app.add_handler(h) for h in build_handlers()]
     app.add_error_handler(_error_handler)
     await app.initialize();await app.start();await app.updater.start_polling()
