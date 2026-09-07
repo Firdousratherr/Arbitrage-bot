@@ -14,16 +14,18 @@ def _filter_text(f):
     coins = ', '.join(sorted(f.selected_coins)) if f.selected_coins else 'All'
     return (
         '📊 <b>SCAN FILTERS</b>\n\n'
-        f'📈 Minimum gap: <b>{f.min_gap:.2f}%</b>\n'
-        f'💰 Minimum net profit: <b>{f.min_net_profit:,.2f} {html.escape(f.quote_currency)}</b>\n'
-        f'💵 Trade size: <b>{f.trade_size:,.2f} {html.escape(f.quote_currency)}</b>\n'
-        f'💧 Minimum volume: <b>${f.min_volume:,.0f}</b>\n'
-        f'💦 Minimum liquidity: <b>${f.min_liquidity:,.0f}</b>\n'
-        f'⏱ Maximum data age: <b>{f.max_data_age:.1f}s</b>\n'
-        f'💱 Quote: <b>{html.escape(f.quote_currency)}</b>\n'
-        f'🪙 Coins: <b>{html.escape(coins)}</b>\n'
-        f'🛡️ Validation: <b>{html.escape(f.validation_mode.upper())}</b>\n'
-        f'💸 Require fees: <b>{"YES" if f.require_fees else "NO"}</b>'
+        '╭────────────────────────╮\n'
+        f'│ 📈 Gap ≥ <b>{f.min_gap:.2f}%</b>\n'
+        f'│ 💰 Net ≥ <b>{f.min_net_profit:,.2f} {html.escape(f.quote_currency)}</b>\n'
+        f'│ 💵 Trade size <b>{f.trade_size:,.2f} {html.escape(f.quote_currency)}</b>\n'
+        f'│ 💧 Volume ≥ <b>${f.min_volume:,.0f}</b>\n'
+        f'│ 💦 Liquidity ≥ <b>${f.min_liquidity:,.0f}</b>\n'
+        f'│ ⏱ Data age ≤ <b>{f.max_data_age:.1f}s</b>\n'
+        f'│ 💱 Quote <b>{html.escape(f.quote_currency)}</b>\n'
+        f'│ 🪙 Coins <b>{html.escape(coins)}</b>\n'
+        f'│ 🛡️ Validation <b>{html.escape(f.validation_mode.upper())}</b>\n'
+        f'│ 💸 Require fees <b>{"YES" if f.require_fees else "NO"}</b>\n'
+        '╰────────────────────────╯'
     )
 
 
@@ -31,7 +33,7 @@ def _filter_keyboard(f):
     fees = '💸 Fees: ON' if f.require_fees else '💸 Fees: OFF'
     validation = '🛡️ Strict' if f.validation_mode == 'strict' else '🔓 Loose'
     return kb([
-        [('✏️ Edit Filters', 'filter:help'), ('🔄 Reset Filters', 'filter:reset')],
+        [('✏️ Edit Filters', 'filter:help'), ('🔄 Reset', 'filter:reset')],
         [(validation, 'filter:toggle_validation'), (fees, 'filter:toggle_fees')],
         [('⚙️ Settings', 'settings'), ('🏠 Dashboard', 'home')],
     ])
@@ -45,20 +47,20 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     svc = context.application.bot_data['service']
     uid = update.effective_user.id
     if svc.settings.require_vip and not await svc.repo.vip_active(uid):
-        await update.effective_message.reply_text('🔒 Active VIP access is required.')
+        await update.effective_message.reply_text('🔒 <b>Active VIP access is required.</b>', parse_mode='HTML')
         return
     row = await svc.get_user(uid)
     selected = json.loads(row['exchanges'] or '[]')
     available = context.application.bot_data['exchanges']
-    lines = ['📡 <b>EXCHANGE STATUS</b>', '']
+    lines = ['📡 <b>EXCHANGE STATUS</b>', '━━━━━━━━━━━━━━━━━━━━', '']
     for name in selected:
-        lines.append(f"{'🟢' if name in available else '🔴'} {html.escape(name.title())} · {'available' if name in available else 'unavailable'}")
+        lines.append(f"{'🟢' if name in available else '🔴'} <b>{html.escape(name.title())}</b> · {'ONLINE' if name in available else 'OFFLINE'}")
     if not selected:
         lines.append('⚠️ No exchanges selected. Use /exchanges.')
     rows = await svc.history(uid, limit=1)
     if rows:
         r = rows[0]
-        lines += ['', f"Last scan: <b>{html.escape(str(r['state']).upper())}</b> · {r['opportunities_found']} opportunities"]
+        lines += ['', f"📋 Last scan: <b>{html.escape(str(r['state']).upper())}</b> · 🔥 {r['opportunities_found']} opportunities"]
     await update.effective_message.reply_text('\n'.join(lines), parse_mode='HTML', reply_markup=kb([[('🏠 Dashboard', 'home'), ('🏦 Exchanges', 'exchanges')]]))
 
 
@@ -67,25 +69,25 @@ async def diagnostics_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     rows = await svc.history(uid, limit=1)
     if not rows:
-        await update.effective_message.reply_text('📡 No scan diagnostics yet. Run /scan first.')
+        await update.effective_message.reply_text('📡 <b>NO DIAGNOSTICS YET</b>\n\nRun /scan first.', parse_mode='HTML')
         return
     scan_id = rows[0]['scan_id']
     p = await svc.scan(uid, scan_id)
     if not p:
         await update.effective_message.reply_text('⚠️ Latest scan snapshot is unavailable.')
         return
-    lines = ['📡 <b>LATEST SCAN DIAGNOSTICS</b>', f"🆔 <code>{html.escape(scan_id)}</code>", '']
+    lines = ['📡 <b>LATEST SCAN DIAGNOSTICS</b>', '━━━━━━━━━━━━━━━━━━━━', f'🆔 <code>{html.escape(scan_id)}</code>', '']
     for d in p.get('diagnostics', []):
         status = str(d.get('status', 'unknown'))
         icon = '🟢' if status == 'ok' else '🟡' if status == 'degraded' else '🔴'
         latency = d.get('latency_ms')
-        latency_text = f" · {float(latency):.0f}ms" if latency is not None else ''
+        latency_text = f' · {float(latency):.0f}ms' if latency is not None else ''
         detail = d.get('error_type') or d.get('detail') or ''
-        suffix = f" · {html.escape(str(detail)[:100])}" if detail else ''
-        lines.append(f"{icon} {html.escape(str(d.get('exchange','?')))} · {html.escape(status)}{latency_text}{suffix}")
+        suffix = f' · {html.escape(str(detail)[:100])}' if detail else ''
+        lines.append(f"{icon} <b>{html.escape(str(d.get('exchange','?')))}</b> · {html.escape(status)}{latency_text}{suffix}")
     if p.get('warnings'):
-        lines += ['', '<b>Warnings</b>'] + [f"⚠️ {html.escape(str(x))}" for x in p['warnings'][:5]]
-    await update.effective_message.reply_text('\n'.join(lines), parse_mode='HTML', reply_markup=kb([[('⬅️ Results', f"page:{scan_id}:0:all"), ('🏠 Dashboard', 'home')]]))
+        lines += ['', '<b>⚠️ Warnings</b>'] + [f"• {html.escape(str(x))}" for x in p['warnings'][:5]]
+    await update.effective_message.reply_text('\n'.join(lines), parse_mode='HTML', reply_markup=kb([[('⬅️ Results', f'page:{scan_id}:0:all'), ('🏠 Dashboard', 'home')]]))
 
 
 async def filters_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -119,15 +121,14 @@ async def setfilter_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     svc = context.application.bot_data['service']
     uid = update.effective_user.id
     if svc.settings.require_vip and not await svc.repo.vip_active(uid):
-        await update.effective_message.reply_text('🔒 Active VIP access is required.')
+        await update.effective_message.reply_text('🔒 <b>Active VIP access is required.</b>', parse_mode='HTML')
         return
     if len(context.args) < 2:
         await update.effective_message.reply_text(
-            '📊 <b>SET FILTER</b>\n\n'
-            'Usage:\n'
+            '✏️ <b>SET FILTER</b>\n\n'
             '<code>/setfilter gap 1.0</code>\n'
-            '<code>/setfilter net 5</code> — minimum net profit in quote currency\n'
-            '<code>/setfilter trade_size 1000</code> — capital used to calculate profit\n'
+            '<code>/setfilter net 5</code>\n'
+            '<code>/setfilter trade_size 1000</code>\n'
             '<code>/setfilter volume 50000</code>\n'
             '<code>/setfilter liquidity 5000</code>\n'
             '<code>/setfilter age 10</code>\n'
@@ -135,21 +136,11 @@ async def setfilter_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             '<code>/setfilter coins BTC,ETH,SOL</code>\n'
             '<code>/setfilter fees on</code>\n'
             '<code>/setfilter validation strict</code>\n\n'
-            'Net profit is calculated from Trade Size × net ROI. Use <code>coins all</code> to remove the coin restriction.', parse_mode='HTML')
+            '💡 Net profit = Trade Size × net ROI. Use <code>coins all</code> for all coins.', parse_mode='HTML')
         return
     key = context.args[0].lower().strip()
     value = ' '.join(context.args[1:]).strip()
-    aliases = {
-        'gap':'min_gap','min_gap':'min_gap',
-        'net':'min_net_profit','min_net_profit':'min_net_profit',
-        'trade_size':'trade_size','tradesize':'trade_size','size':'trade_size',
-        'volume':'min_volume','min_volume':'min_volume',
-        'liquidity':'min_liquidity','min_liquidity':'min_liquidity',
-        'age':'max_data_age','max_data_age':'max_data_age',
-        'quote':'quote_currency','coins':'selected_coins',
-        'fees':'require_fees','require_fees':'require_fees',
-        'validation':'validation_mode','validation_mode':'validation_mode'
-    }
+    aliases = {'gap':'min_gap','min_gap':'min_gap','net':'min_net_profit','min_net_profit':'min_net_profit','trade_size':'trade_size','tradesize':'trade_size','size':'trade_size','volume':'min_volume','min_volume':'min_volume','liquidity':'min_liquidity','min_liquidity':'min_liquidity','age':'max_data_age','max_data_age':'max_data_age','quote':'quote_currency','coins':'selected_coins','fees':'require_fees','require_fees':'require_fees','validation':'validation_mode','validation_mode':'validation_mode'}
     field = aliases.get(key)
     if not field:
         await update.effective_message.reply_text('⚠️ Unknown filter. Use /setfilter to see supported filters.')
@@ -187,7 +178,7 @@ async def resetfilters_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     svc = context.application.bot_data['service']
     uid = update.effective_user.id
     if svc.settings.require_vip and not await svc.repo.vip_active(uid):
-        await update.effective_message.reply_text('🔒 Active VIP access is required.')
+        await update.effective_message.reply_text('🔒 <b>Active VIP access is required.</b>', parse_mode='HTML')
         return
     await svc.repo.set_filters(uid, dict(DEFAULT_FILTERS))
     f = svc.repo.filters_from_row(await svc.get_user(uid))
@@ -204,7 +195,7 @@ async def filter_settings_callback(update: Update, context: ContextTypes.DEFAULT
         return
     data = q.data
     if data == 'filter:help':
-        await q.edit_message_text('✏️ <b>FILTER COMMANDS</b>\n\n<code>/setfilter gap 1.0</code>\n<code>/setfilter net 5</code>\n<code>/setfilter trade_size 1000</code>\n<code>/setfilter volume 50000</code>\n<code>/setfilter liquidity 5000</code>\n<code>/setfilter age 10</code>\n<code>/setfilter quote USDT</code>\n<code>/setfilter coins BTC,ETH,SOL</code>\n<code>/setfilter fees on</code>\n<code>/setfilter validation strict</code>\n\nTrade Size is the quote-currency amount used to calculate absolute net profit. Example: 1000 USDT at 1.2% net ROI = 12 USDT profit. Use <code>/setfilter coins all</code> to scan all coins.', parse_mode='HTML', reply_markup=kb([[('⬅️ Filters','filter:back')]]))
+        await q.edit_message_text('✏️ <b>FILTER COMMANDS</b>\n\n<code>/setfilter gap 1.0</code>\n<code>/setfilter net 5</code>\n<code>/setfilter trade_size 1000</code>\n<code>/setfilter volume 50000</code>\n<code>/setfilter liquidity 5000</code>\n<code>/setfilter age 10</code>\n<code>/setfilter quote USDT</code>\n<code>/setfilter coins BTC,ETH,SOL</code>\n<code>/setfilter fees on</code>\n<code>/setfilter validation strict</code>\n\nTrade Size is the quote-currency amount used to calculate absolute net profit.', parse_mode='HTML', reply_markup=kb([[('⬅️ Filters','filter:back')]]))
     elif data == 'filter:back':
         f = svc.repo.filters_from_row(await svc.get_user(uid))
         await q.edit_message_text(_filter_text(f), parse_mode='HTML', reply_markup=_filter_keyboard(f))
@@ -226,10 +217,40 @@ async def settings_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     svc = context.application.bot_data['service']
     row = await svc.get_user(update.effective_user.id)
     f = svc.repo.filters_from_row(row)
-    text = ('⚙️ <b>SETTINGS</b>\n\n' f'🔐 Validation mode: <b>{html.escape(f.validation_mode.upper())}</b>\n' f'🧠 AI mode: <b>{html.escape((row["result_mode"] or "off").upper())}</b>\n' f'🧪 Simulation: <b>ON</b>\n\n' 'Strict validation requires compatible transfer networks and contract/address matching.\n' 'Loose validation bypasses those two checks and marks results as unverified.')
+    text = (
+        '⚙️ <b>ARBITRAGE TERMINAL SETTINGS</b>\n'
+        '━━━━━━━━━━━━━━━━━━━━\n\n'
+        f'🛡️ Validation: <b>{html.escape(f.validation_mode.upper())}</b>\n'
+        f'🧠 AI mode: <b>{html.escape((row["result_mode"] or "off").upper())}</b>\n'
+        '🧪 Simulation: <b>ON</b>\n\n'
+        '🔒 <b>Strict</b> requires compatible transfer networks and contract/address matching.\n'
+        '🔓 <b>Loose</b> bypasses those two checks and marks results as unverified.'
+    )
     await update.effective_message.reply_text(text, parse_mode='HTML', reply_markup=kb([[('🛡️ Strict','val:strict'),('🔓 Loose','val:loose')],[('🧠 AI Mode','ai'),('🏠 Dashboard','home')]]))
 
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = ('❓ <b>ARBITRAGE TERMINAL COMMANDS</b>\n\n' '/dashboard — open dashboard\n' '/scan — open scanner\n' '/results — scan history/results\n' '/exchanges — select exchanges\n' '/filters — view and edit scan filters\n' '/setfilter KEY VALUE — change a filter\n' '/resetfilters — restore default filters\n' '/settings — validation and AI settings\n' '/status — exchange/runtime status\n' '/diagnostics — latest scan diagnostics\n' '/ai — AI result mode\n' '/vipkey — activate VIP access\n\n' 'Admin: /genkey KEY DAYS|lifetime, /aiprobe')
-    await update.effective_message.reply_text(text, parse_mode='HTML', reply_markup=kb([[('📊 Filters','filters'),('🏠 Dashboard','home')]]))
+    text = (
+        '🤖 <b>ARBITRAGE TERMINAL</b>\n'
+        '━━━━━━━━━━━━━━━━━━━━\n\n'
+        '🚀 <b>USER COMMANDS</b>\n'
+        '/start — start the bot\n'
+        '/dashboard — open dashboard\n'
+        '/scan — scan for arbitrage\n'
+        '/results — scan history & results\n'
+        '/exchanges — select exchanges\n'
+        '/filters — view/edit filters\n'
+        '/setfilter KEY VALUE — change a filter\n'
+        '/resetfilters — restore defaults\n'
+        '/settings — validation & AI settings\n'
+        '/status — exchange/runtime status\n'
+        '/diagnostics — latest scan diagnostics\n'
+        '/ai — AI result mode\n'
+        '/vipkey — activate VIP access\n'
+        '/help — show this menu\n\n'
+        '🛡️ <b>ADMIN COMMANDS</b>\n'
+        '<i>Admin-only commands are hidden from the public command menu.</i>\n\n'
+        '👨‍💻 <b>Developer Support</b>\n'
+        'For bugs, support or suggestions: @firdousratherr'
+    )
+    await update.effective_message.reply_text(text, parse_mode='HTML', reply_markup=kb([[('📊 Filters','filters'),('⚙️ Settings','settings')],[('👨‍💻 Contact Developer','https://t.me/firdousratherr')],[('🏠 Dashboard','home')]]))
