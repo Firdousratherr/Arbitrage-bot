@@ -1,7 +1,6 @@
 from __future__ import annotations
 import html
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-from .handlers import kb, card
+from .handlers import kb
 from .ui import scan_status
 
 
@@ -11,9 +10,12 @@ def _window(stage, selected, states, comparisons=0, opportunities=0, best=None, 
         icon='🟢' if status=='healthy' else '🔴' if status=='failed' else '🟡'
         lines.append(f'{icon} {html.escape(name.title())} · {status}')
     lines += ['',f'🔄 <b>{html.escape(stage)}</b>',f'📊 Comparisons: <b>{comparisons:,}</b>',f'🔥 Opportunities: <b>{opportunities:,}</b>']
-    if best: lines.append(f'💎 Best: <b>{html.escape(best["symbol"])}</b> +{best["gap"]:.3f}% · {html.escape(best["buy"])} → {html.escape(best["sell"])}')
-    if detail: lines += ['',f'ℹ️ {html.escape(detail)}']
+    if best:
+        lines.append(f'💎 Best: <b>{html.escape(best["symbol"])}</b> +{best["gap"]:.3f}% · {html.escape(best["buy"])} → {html.escape(best["sell"])}')
+    if detail:
+        lines += ['',f'ℹ️ {html.escape(detail)}']
     return '\n'.join(lines)
+
 
 async def live_scan_callback(update, context):
     q=update.callback_query;svc=context.application.bot_data['service'];uid=q.from_user.id
@@ -41,7 +43,14 @@ async def live_scan_callback(update, context):
         try:await q.edit_message_text(text,parse_mode='HTML')
         except Exception:pass
     try:
-        snap=await svc.run_scan(uid,progress=progress);p=snap.to_dict()
-        await q.edit_message_text(scan_status(p),parse_mode='HTML',reply_markup=kb([[('🔥 Best Results',f'page:{p["scan_id"]}:0'),('📋 All Results',f'page:{p["scan_id"]}:0')],[('📡 Diagnostics',f'diag:{p["scan_id"]}'),('🔎 Debug Coin',f'debug:{p["scan_id"]}')],[('🧠 AI Analysis',f'aian:{p["scan_id"]}'),('🔄 Scan Again','scan')]]))
+        snap=await svc.run_scan(uid,progress=progress);p=snap.to_dict();scan_id=p['scan_id']
+        await q.edit_message_text(
+            scan_status(p),parse_mode='HTML',
+            reply_markup=kb([
+                [('🔥 Best Results',f'page:{scan_id}:0:best'),('📋 All Results',f'page:{scan_id}:0:all')],
+                [('📡 Diagnostics',f'rdiag:{scan_id}:0:all'),('🔎 Debug Coin',f'rdebug:{scan_id}:0:all')],
+                [('🧠 AI Analysis',f'raian:{scan_id}:0:all'),('🔄 Scan Again','scan')],
+            ])
+        )
     except Exception as exc:
         await q.edit_message_text(f'❌ <b>Scan failed</b>\n\n{type(exc).__name__}: {html.escape(str(exc)[:250])}',parse_mode='HTML',reply_markup=kb([[('🔄 Try Again','scan'),('🏠 Dashboard','home')]]))
