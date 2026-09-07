@@ -30,14 +30,17 @@ class LBankAdapter(CcxtAdapter):
             except ValueError:
                 continue
             if normalized.upper() in wanted:
-                # CCXT market keys are unified symbols, while LBank's implicit
-                # endpoint expects the exchange market id such as btc_usdt.
                 api_symbol = str(market.get('id') or raw_symbol).lower()
-                by_symbol[normalized] = (api_symbol, base, quote)
+                by_symbol[normalized] = (
+                    api_symbol,
+                    base,
+                    quote,
+                    self.last_market_asset_identities.get(normalized),
+                )
 
         semaphore = asyncio.Semaphore(12)
 
-        async def fetch_one(symbol, api_symbol, base, quote):
+        async def fetch_one(symbol, api_symbol, base, quote, asset_identity):
             async with semaphore:
                 response = await self._call(
                     f"book_ticker:{symbol}",
@@ -54,7 +57,7 @@ class LBankAdapter(CcxtAdapter):
                 return None
             stamp = response.get("ts") or response.get("timestamp")
             timestamp = datetime.fromtimestamp(float(stamp) / 1000, timezone.utc) if stamp else datetime.now(timezone.utc)
-            return Ticker(self.name, symbol, base, quote, bid, ask, 0.0, timestamp)
+            return Ticker(self.name, symbol, base, quote, bid, ask, 0.0, timestamp, asset_identity)
 
         results = await asyncio.gather(
             *(fetch_one(symbol, *details) for symbol, details in by_symbol.items()),
