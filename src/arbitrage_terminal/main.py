@@ -6,7 +6,7 @@ from .application.service import TerminalService
 from .ai import AIAssistant
 from .arbitrage import ArbitrageScanner
 from .bot import build_handlers
-from .bot.exchange_selection import exchange_selection_callback
+from .bot.exchange_selection import dashboard_exchanges_callback, exchange_selection_callback
 from .bot.live_scan import live_scan_callback
 from .bot.results import results_page_callback, results_detail_callback
 from .exchanges.registry import build_exchanges
@@ -38,6 +38,7 @@ async def _error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
 async def _run():
     settings,repo,exchanges,scanner,ai,service,exchange_diagnostics=await build_runtime();app=Application.builder().token(settings.telegram_bot_token).build()
     app.bot_data.update({'settings':settings,'repo':repo,'exchanges':exchanges,'exchange_names':[n for n in settings.exchanges if n in exchanges],'scanner':scanner,'ai':ai,'service':service,'exchange_diagnostics':exchange_diagnostics})
+    app.add_handler(CallbackQueryHandler(dashboard_exchanges_callback,pattern=r'^exchanges$'))
     app.add_handler(CallbackQueryHandler(exchange_selection_callback,pattern=r'^ex:'))
     app.add_handler(CallbackQueryHandler(live_scan_callback,pattern=r'^scan$'))
     app.add_handler(CallbackQueryHandler(results_page_callback,pattern=r'^page:'))
