@@ -4,7 +4,7 @@ import asyncio
 import logging
 import os
 
-from telegram import Update
+from telegram import BotCommand, Update
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
 
 from .application.service import TerminalService
@@ -24,6 +24,24 @@ from .exchanges.registry import build_exchanges
 from .infrastructure.config import get_settings
 from .infrastructure.logging import configure
 from .infrastructure.repository import Repository
+
+
+PUBLIC_COMMANDS = [
+    BotCommand('start', 'Start the Arbitrage Terminal'),
+    BotCommand('dashboard', 'Open the main dashboard'),
+    BotCommand('scan', 'Scan for arbitrage opportunities'),
+    BotCommand('results', 'View scan history and results'),
+    BotCommand('exchanges', 'Select exchanges'),
+    BotCommand('filters', 'View and edit scan filters'),
+    BotCommand('setfilter', 'Change a scan filter'),
+    BotCommand('resetfilters', 'Reset filters to defaults'),
+    BotCommand('settings', 'Validation and AI settings'),
+    BotCommand('status', 'Exchange and runtime status'),
+    BotCommand('diagnostics', 'View latest scan diagnostics'),
+    BotCommand('ai', 'Configure AI result mode'),
+    BotCommand('vipkey', 'Activate VIP access'),
+    BotCommand('help', 'Show help and commands'),
+]
 
 
 async def build_runtime():
@@ -124,6 +142,11 @@ async def _run():
     app.add_error_handler(_error_handler)
 
     await app.initialize()
+    try:
+        await app.bot.set_my_commands(PUBLIC_COMMANDS)
+        logging.getLogger(__name__).info('Telegram public command menu refreshed (%d commands)', len(PUBLIC_COMMANDS))
+    except Exception:
+        logging.getLogger(__name__).exception('Failed to refresh Telegram public command menu')
     await app.start()
     await app.updater.start_polling()
     try:
