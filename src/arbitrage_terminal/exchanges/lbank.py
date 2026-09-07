@@ -21,6 +21,7 @@ class LBankAdapter(CcxtAdapter):
         if not wanted:
             return []
 
+        identities = getattr(self, 'last_market_asset_identities', {})
         by_symbol = {}
         for raw_symbol, market in self._markets.items():
             if not self._spot(market):
@@ -31,12 +32,7 @@ class LBankAdapter(CcxtAdapter):
                 continue
             if normalized.upper() in wanted:
                 api_symbol = str(market.get('id') or raw_symbol).lower()
-                by_symbol[normalized] = (
-                    api_symbol,
-                    base,
-                    quote,
-                    self.last_market_asset_identities.get(normalized),
-                )
+                by_symbol[normalized] = (api_symbol, base, quote, identities.get(normalized))
 
         semaphore = asyncio.Semaphore(12)
 
