@@ -15,7 +15,8 @@ def _filter_text(f):
     return (
         '📊 <b>SCAN FILTERS</b>\n\n'
         f'📈 Minimum gap: <b>{f.min_gap:.2f}%</b>\n'
-        f'💰 Minimum net profit: <b>{f.min_net_profit:.2f}%</b>\n'
+        f'💰 Minimum net profit: <b>{f.min_net_profit:,.2f} {html.escape(f.quote_currency)}</b>\n'
+        f'💵 Trade size: <b>{f.trade_size:,.2f} {html.escape(f.quote_currency)}</b>\n'
         f'💧 Minimum volume: <b>${f.min_volume:,.0f}</b>\n'
         f'💦 Minimum liquidity: <b>${f.min_liquidity:,.0f}</b>\n'
         f'⏱ Maximum data age: <b>{f.max_data_age:.1f}s</b>\n'
@@ -125,7 +126,8 @@ async def setfilter_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             '📊 <b>SET FILTER</b>\n\n'
             'Usage:\n'
             '<code>/setfilter gap 1.0</code>\n'
-            '<code>/setfilter net 0.5</code>\n'
+            '<code>/setfilter net 5</code> — minimum net profit in quote currency\n'
+            '<code>/setfilter trade_size 1000</code> — capital used to calculate profit\n'
             '<code>/setfilter volume 50000</code>\n'
             '<code>/setfilter liquidity 5000</code>\n'
             '<code>/setfilter age 10</code>\n'
@@ -133,19 +135,29 @@ async def setfilter_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             '<code>/setfilter coins BTC,ETH,SOL</code>\n'
             '<code>/setfilter fees on</code>\n'
             '<code>/setfilter validation strict</code>\n\n'
-            'Use <code>coins all</code> to remove the coin restriction.', parse_mode='HTML')
+            'Net profit is calculated from Trade Size × net ROI. Use <code>coins all</code> to remove the coin restriction.', parse_mode='HTML')
         return
     key = context.args[0].lower().strip()
     value = ' '.join(context.args[1:]).strip()
-    aliases = {'gap':'min_gap','min_gap':'min_gap','net':'min_net_profit','min_net_profit':'min_net_profit','volume':'min_volume','min_volume':'min_volume','liquidity':'min_liquidity','min_liquidity':'min_liquidity','age':'max_data_age','max_data_age':'max_data_age','quote':'quote_currency','coins':'selected_coins','fees':'require_fees','require_fees':'require_fees','validation':'validation_mode','validation_mode':'validation_mode'}
+    aliases = {
+        'gap':'min_gap','min_gap':'min_gap',
+        'net':'min_net_profit','min_net_profit':'min_net_profit',
+        'trade_size':'trade_size','tradesize':'trade_size','size':'trade_size',
+        'volume':'min_volume','min_volume':'min_volume',
+        'liquidity':'min_liquidity','min_liquidity':'min_liquidity',
+        'age':'max_data_age','max_data_age':'max_data_age',
+        'quote':'quote_currency','coins':'selected_coins',
+        'fees':'require_fees','require_fees':'require_fees',
+        'validation':'validation_mode','validation_mode':'validation_mode'
+    }
     field = aliases.get(key)
     if not field:
         await update.effective_message.reply_text('⚠️ Unknown filter. Use /setfilter to see supported filters.')
         return
     try:
-        if field in {'min_gap','min_net_profit','min_volume','min_liquidity'}:
+        if field in {'min_gap','min_net_profit','min_volume','min_liquidity','trade_size'}:
             parsed = float(value)
-            if parsed < 0: raise ValueError('must be non-negative')
+            if parsed < 0 or (field == 'trade_size' and parsed <= 0): raise ValueError('value must be positive' if field == 'trade_size' else 'must be non-negative')
         elif field == 'max_data_age':
             parsed = float(value)
             if not 1 <= parsed <= 120: raise ValueError('age must be between 1 and 120 seconds')
@@ -192,7 +204,7 @@ async def filter_settings_callback(update: Update, context: ContextTypes.DEFAULT
         return
     data = q.data
     if data == 'filter:help':
-        await q.edit_message_text('✏️ <b>FILTER COMMANDS</b>\n\n<code>/setfilter gap 1.0</code>\n<code>/setfilter net 0.5</code>\n<code>/setfilter volume 50000</code>\n<code>/setfilter liquidity 5000</code>\n<code>/setfilter age 10</code>\n<code>/setfilter quote USDT</code>\n<code>/setfilter coins BTC,ETH,SOL</code>\n<code>/setfilter fees on</code>\n<code>/setfilter validation strict</code>\n\nUse <code>/setfilter coins all</code> to scan all coins.', parse_mode='HTML', reply_markup=kb([[('⬅️ Filters','filter:back')]]))
+        await q.edit_message_text('✏️ <b>FILTER COMMANDS</b>\n\n<code>/setfilter gap 1.0</code>\n<code>/setfilter net 5</code>\n<code>/setfilter trade_size 1000</code>\n<code>/setfilter volume 50000</code>\n<code>/setfilter liquidity 5000</code>\n<code>/setfilter age 10</code>\n<code>/setfilter quote USDT</code>\n<code>/setfilter coins BTC,ETH,SOL</code>\n<code>/setfilter fees on</code>\n<code>/setfilter validation strict</code>\n\nTrade Size is the quote-currency amount used to calculate absolute net profit. Example: 1000 USDT at 1.2% net ROI = 12 USDT profit. Use <code>/setfilter coins all</code> to scan all coins.', parse_mode='HTML', reply_markup=kb([[('⬅️ Filters','filter:back')]]))
     elif data == 'filter:back':
         f = svc.repo.filters_from_row(await svc.get_user(uid))
         await q.edit_message_text(_filter_text(f), parse_mode='HTML', reply_markup=_filter_keyboard(f))
