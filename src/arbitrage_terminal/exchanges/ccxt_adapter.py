@@ -120,7 +120,7 @@ class CcxtAdapter(ExchangeAdapter):
 
     def _parse_tickers(self, name, raw, wanted):
         out = []
-        identities = self.last_market_asset_identities
+        identities = getattr(self, 'last_market_asset_identities', {}) or {}
         for raw_symbol, t in (raw or {}).items():
             try:
                 sym, base, quote, _ = normalize_symbol(raw_symbol)
