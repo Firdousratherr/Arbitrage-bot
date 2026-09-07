@@ -3,6 +3,8 @@ from datetime import datetime,timezone
 from math import isfinite
 from arbitrage_terminal.domain.models import Opportunity,MarketType
 
+MAX_UNVERIFIED_GAP_PERCENT = 1000.0
+
 def confidence(*,freshness,liquidity,price_consistency,fees_known,network_known,exchange_health):
     age=max(0,min(1,1-freshness/30));liq=max(0,min(1,liquidity/100000))
     return round(100*(.25*age+.20*liq+.20*price_consistency+.15*(1 if fees_known else .5)+.10*(1 if network_known else .5)+.10*exchange_health),1)
@@ -27,9 +29,22 @@ def transfer_compatibility(buy_info,sell_info):
 
 def pair_opportunity(buy,sell,buy_fee,sell_fee,withdrawal_cost_pct=None,max_age=10,transfer=None):
     if buy.exchange==sell.exchange or buy.symbol!=sell.symbol or buy.base!=sell.base or buy.quote!=sell.quote:return None
+
+    # If both exchanges expose an explicit token identity, it must match. If
+    # only one side exposes an identity, the route is not safe to compare.
+    buy_identity = getattr(buy, 'asset_identity', None)
+    sell_identity = getattr(sell, 'asset_identity', None)
+    if buy_identity or sell_identity:
+        if not buy_identity or not sell_identity or buy_identity != sell_identity:
+            return None
+
     if buy.ask<=0 or sell.bid<=0 or not isfinite(buy.ask) or not isfinite(sell.bid):return None
     gap=(sell.bid-buy.ask)/buy.ask*100
     if gap<=0:return None
+    # A gigantic unverified spread is a safety stop for ticker collisions or
+    # stale/bad market data when neither side exposes a comparable identity.
+    if not buy_identity and not sell_identity and gap > MAX_UNVERIFIED_GAP_PERCENT:
+        return None
     age=max(0,(datetime.now(timezone.utc)-min(buy.timestamp,sell.timestamp)).total_seconds())
     if age>max_age*3:return None
     fees_known=buy_fee is not None and sell_fee is not None
@@ -38,5 +53,5 @@ def pair_opportunity(buy,sell,buy_fee,sell_fee,withdrawal_cost_pct=None,max_age=
     liq=min(buy.quote_volume,sell.quote_volume);pc=max(0,min(1,1-abs(gap)/10))
     network_known=bool(transfer and transfer.get('network_available'));contract_match=bool(transfer and transfer.get('contract_match'))
     score=confidence(freshness=age,liquidity=liq,price_consistency=pc,fees_known=fees_known,network_known=network_known,exchange_health=1)
-    meta={'network_available':network_known,'contract_match':contract_match,'compatible_networks':(transfer or {}).get('networks',[]),'fee_data_available':fees_known,'deterministic':True,'transfer_verified':network_known and contract_match}
+    meta={'network_available':network_known,'contract_match':contract_match,'compatible_networks':(transfer or {}).get('networks',[]),'fee_data_available':fees_known,'deterministic':True,'transfer_verified':network_known and contract_match,'asset_identity_verified':bool(buy_identity and sell_identity)}
     return Opportunity(buy.symbol,buy.exchange,sell.exchange,buy.ask,sell.bid,gap,buy_fee,sell_fee,withdrawal_cost_pct,net,buy.quote_volume,sell.quote_volume,age,score,MarketType.SPOT,meta)
