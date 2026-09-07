@@ -30,16 +30,19 @@ class LBankAdapter(CcxtAdapter):
             except ValueError:
                 continue
             if normalized.upper() in wanted:
-                by_symbol[normalized] = (raw_symbol, base, quote)
+                # CCXT market keys are unified symbols, while LBank's implicit
+                # endpoint expects the exchange market id such as btc_usdt.
+                api_symbol = str(market.get('id') or raw_symbol).lower()
+                by_symbol[normalized] = (api_symbol, base, quote)
 
         semaphore = asyncio.Semaphore(12)
 
-        async def fetch_one(symbol, raw_symbol, base, quote):
+        async def fetch_one(symbol, api_symbol, base, quote):
             async with semaphore:
                 response = await self._call(
                     f"book_ticker:{symbol}",
                     self.client.spotPublicGetSupplementTickerBookTicker,
-                    {"symbol": raw_symbol},
+                    {"symbol": api_symbol},
                 )
             data = response.get("data") or {}
             try:
