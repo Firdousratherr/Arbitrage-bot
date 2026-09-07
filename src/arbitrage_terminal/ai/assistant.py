@@ -7,6 +7,11 @@ from arbitrage_terminal.domain.models import AIMode
 
 
 class AIAssistant:
+    ANALYSIS_PAYLOAD_LIMIT = 24000
+    MAX_OPPORTUNITIES = 12
+    MAX_DIAGNOSTICS = 20
+    MAX_MESSAGES = 20
+
     def __init__(self, url, key, model, timeout=30):
         self.url = url.rstrip('/')
         self.key = key
@@ -44,6 +49,84 @@ class AIAssistant:
                 'response': 'failed', 'status': e.status, 'diagnosis': str(e),
             }
 
+    @classmethod
+    def _compact_analysis_payload(cls, payload):
+        """Keep AI analysis evidence useful while preventing oversized HTTP bodies."""
+        compact = dict(payload)
+
+        # Opportunities can contain verbose metadata such as transfer/network data.
+        opportunities = []
+        for item in (payload.get('opportunities') or [])[:cls.MAX_OPPORTUNITIES]:
+            if not isinstance(item, dict):
+                continue
+            opportunities.append({
+                key: item.get(key)
+                for key in (
+                    'symbol', 'buy_exchange', 'sell_exchange', 'buy_price', 'sell_price',
+                    'gap_percent', 'estimated_net_profit', 'volume', 'liquidity',
+                    'data_age_seconds', 'confidence',
+                )
+                if key in item
+            })
+        compact['opportunities'] = opportunities
+
+        # Diagnostics/errors are useful, but raw exchange exceptions can be verbose.
+        diagnostics = []
+        for item in (payload.get('diagnostics') or [])[:cls.MAX_DIAGNOSTICS]:
+            if isinstance(item, dict):
+                entry = {}
+                for key in ('exchange', 'status', 'latency_ms', 'error', 'message'):
+                    if key in item:
+                        value = item[key]
+                        entry[key] = str(value)[:300] if value is not None else value
+                diagnostics.append(entry)
+            else:
+                diagnostics.append(str(item)[:300])
+        compact['diagnostics'] = diagnostics
+        compact['warnings'] = [str(x)[:300] for x in (payload.get('warnings') or [])[:cls.MAX_MESSAGES]]
+        compact['errors'] = [str(x)[:300] for x in (payload.get('errors') or [])[:cls.MAX_MESSAGES]]
+        compact['selected_coins'] = list((payload.get('filters') or {}).get('selected_coins', []))[:50]
+
+        # Keep exchange coverage intact when the scanner provides it, but strip any
+        # unexpected verbose fields from future/extended coverage records.
+        coverage = payload.get('exchange_coverage')
+        if isinstance(coverage, dict):
+            compact['exchange_coverage'] = {
+                str(exchange): {
+                    key: value for key, value in record.items()
+                    if key in {
+                        'status', 'market_count', 'ticker_count', 'candidate_comparisons',
+                        'candidate_opportunities', 'final_opportunities',
+                        'network_rejections', 'filter_rejections', 'error',
+                    }
+                }
+                for exchange, record in coverage.items()
+                if isinstance(record, dict)
+            }
+
+        # Deterministically reduce the largest sections until the serialized body is
+        # comfortably below common reverse-proxy request limits.
+        while len(json.dumps(compact, default=str, separators=(',', ':'))) > cls.ANALYSIS_PAYLOAD_LIMIT:
+            if len(compact['opportunities']) > 3:
+                compact['opportunities'] = compact['opportunities'][: max(3, len(compact['opportunities']) // 2)]
+                continue
+            if len(compact['diagnostics']) > 5:
+                compact['diagnostics'] = compact['diagnostics'][: max(5, len(compact['diagnostics']) // 2)]
+                continue
+            if len(compact['warnings']) > 5:
+                compact['warnings'] = compact['warnings'][: max(5, len(compact['warnings']) // 2)]
+                continue
+            if len(compact['errors']) > 5:
+                compact['errors'] = compact['errors'][: max(5, len(compact['errors']) // 2)]
+                continue
+            # Last-resort bound for unusually large future fields while preserving
+            # the deterministic summary fields above.
+            for key in ('exchange_coverage', 'filters'):
+                if isinstance(compact.get(key), dict):
+                    compact[key] = dict(list(compact[key].items())[:15])
+            break
+        return compact
+
     async def analyze(self, mode, system, payload):
         if mode == AIMode.OFF or not self.configured:
             return None
@@ -61,7 +144,10 @@ class AIAssistant:
                 " when supplied to explain why candidates were rejected."
                 " Recommendations must be clearly labeled as recommendations and must not be presented"
                 " as observed scan facts. Keep the response concise and Telegram-friendly."
+                " The supplied scan JSON is intentionally compact; do not assume omitted records are absent."
             )
+            compact_payload = self._compact_analysis_payload(payload)
+            encoded_payload = json.dumps(compact_payload, default=str, separators=(',', ':'))
             r, _, _ = await self.http.request(
                 'POST',
                 self.url + '/chat/completions',
@@ -79,7 +165,7 @@ class AIAssistant:
                             'content': (
                                 'Analyze this deterministic scan snapshot. Treat every field as authoritative; '
                                 'do not fill missing fields from general crypto knowledge.\n\n'
-                                + json.dumps(payload, default=str)
+                                + encoded_payload
                             ),
                         },
                     ],
