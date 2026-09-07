@@ -48,10 +48,12 @@ def _page_markup(scan_id, page, total, mode, items):
 
 def _empty_text(p, validation_mode):
     rejected = p.get('filter_rejections', [])
+    coverage = p.get('exchange_coverage') or {}
+    ticker_total = sum(int(v.get('ticker_count', 0)) for v in coverage.values() if isinstance(v, dict))
     txt = (
         '🔍 <b>NO OPPORTUNITIES FOUND</b>\n\n'
         f'🏦 {len(p.get("healthy_exchanges", []))} healthy · {len(p.get("failed_exchanges", []))} failed\n'
-        f'📊 Markets: <b>{p.get("markets_discovered", 0):,}</b>\n'
+        f'📊 Markets: <b>{p.get("markets_discovered", 0):,}</b> · Tickers: <b>{ticker_total:,}</b>\n'
         f'🔄 Comparisons: <b>{p.get("candidates_evaluated", 0):,}</b>\n'
         '🔥 Opportunities: <b>0</b>\n'
         f'🛡️ Validation: <b>{html.escape(str(validation_mode).upper())}</b>'
@@ -60,6 +62,8 @@ def _empty_text(p, validation_mode):
         txt += f'\n\n<b>Why candidates were rejected</b>\n{_rejection_summary(rejected)}'
     if p.get('warnings'):
         txt += '\n\n⚠️ ' + '\n⚠️ '.join(html.escape(str(x)) for x in p['warnings'][:3])
+    if coverage and p.get('candidates_evaluated', 0) == 0:
+        txt += '\n\n📡 <b>Exchange coverage:</b> open Diagnostics to see market/ticker overlap for every selected exchange.'
     return txt
 
 
@@ -159,13 +163,42 @@ async def results_detail_callback(update, context):
             await _safe_edit(q, _order_text(route), parse_mode='HTML', reply_markup=_detail_back(scan_id, page, mode))
             return
         if kind == 'rdiag':
-            lines = ['📡 <b>SCAN DIAGNOSTICS</b>', f'🆔 <code>{html.escape(scan_id)}</code>', '']
+            lines = [
+                '📡 <b>SCAN DIAGNOSTICS</b>',
+                f'🆔 <code>{html.escape(scan_id)}</code>',
+                f'📊 Markets: <b>{p.get("markets_discovered", 0):,}</b> · Validated: <b>{p.get("markets_validated", 0):,}</b>',
+                f'🔄 Comparisons: <b>{p.get("candidates_evaluated", 0):,}</b> · Final opportunities: <b>{p.get("opportunities_found", 0):,}</b>',
+                '',
+                '<b>Exchange coverage</b>',
+            ]
+            coverage = p.get('exchange_coverage') or {}
+            if coverage:
+                for name, c in coverage.items():
+                    status = str(c.get('status', '?'))
+                    icon = '🟢' if status == 'healthy' else '🟡' if status == 'degraded' else '🔴'
+                    lines.append(
+                        f"{icon} <b>{html.escape(str(name).title())}</b> · {status} · "
+                        f"M {int(c.get('market_count', 0)):,} · T {int(c.get('ticker_count', 0)):,} · "
+                        f"Shared {int(c.get('shared_symbols', 0)):,} · Cmp {int(c.get('candidate_comparisons', 0)):,} · "
+                        f"Final {int(c.get('final_opportunities', 0)):,}"
+                    )
+                    rejects = int(c.get('candidate_rejections', 0))
+                    if rejects:
+                        lines.append(f"   ↳ Rejected {rejects:,} · Network {int(c.get('network_rejections', 0)):,} · Filters {int(c.get('filter_rejections', 0)):,}")
+                    if c.get('error'):
+                        lines.append(f"   ↳ ⚠️ {html.escape(str(c['error'])[:220])}")
+            else:
+                lines.append('Coverage data is unavailable for this older scan.')
+            if p.get('warnings'):
+                lines += ['', '<b>Warnings</b>'] + [f'⚠️ {html.escape(str(x))}' for x in p['warnings'][:5]]
+            lines += ['', '<b>Raw exchange diagnostics</b>']
             for d in p.get('diagnostics', []):
-                icon = '🟢' if d.get('status') == 'ok' else '🔴'
+                icon = '🟢' if d.get('status') == 'ok' else '🔴' if d.get('status') == 'failed' else '🟡'
                 latency = d.get('latency_ms')
                 latency_text = f' · {float(latency):.0f}ms' if latency is not None else ''
-                lines.append(f"{icon} {html.escape(str(d.get('exchange', '?')))} · {html.escape(str(d.get('status', '?')))}{latency_text}")
-            await _safe_edit(q, '\n'.join(lines), parse_mode='HTML', reply_markup=_detail_back(scan_id, page, mode))
+                detail = f" · {html.escape(str(d.get('detail'))[:160])}" if d.get('detail') else ''
+                lines.append(f"{icon} {html.escape(str(d.get('exchange', '?')))} · {html.escape(str(d.get('status', '?')))}{latency_text}{detail}")
+            await _safe_edit(q, '\n'.join(lines)[:3900], parse_mode='HTML', reply_markup=_detail_back(scan_id, page, mode))
             return
         if kind == 'rdebug':
             items = _items_for_mode(p.get('opportunities', []), mode)
