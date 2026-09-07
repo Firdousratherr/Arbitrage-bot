@@ -18,6 +18,7 @@ def _menu():
     return kb([
         [('👥 Users', 'admin:users'), ('📊 Stats', 'admin:stats')],
         [('🕒 Recent Actions', 'admin:actions'), ('🔑 VIP Keys', 'admin:keys')],
+        [('🤖 AI Code Fixer', 'admin:aifix')],
         [('🔎 User Info Help', 'admin:userhelp')],
         [('🏠 Dashboard', 'home')],
     ])
@@ -227,5 +228,15 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         rows=await _actions(repo,None,20); lines=['🕒 <b>LAST 20 ACTIONS</b>','']+[f'• {_fmt_time(a["created_at"])} · <code>{a["user_id"]}</code> · {html.escape(a["action"])} · {html.escape(a["detail"] or "")}' for a in rows]; await q.edit_message_text('\n'.join(lines) if rows else 'No recorded actions.',parse_mode='HTML',reply_markup=_menu())
     elif data=='admin:keys':
         rows=await (await repo.db.execute('SELECT key,status,expiry_date,redeemed_by FROM vip_keys ORDER BY created_at DESC LIMIT 20')).fetchall(); lines=['🔑 <b>LAST 20 VIP KEYS</b>','']+[f'• <code>{html.escape(r["key"])}</code> · {r["status"]} · {"lifetime" if not r["expiry_date"] else _fmt_time(r["expiry_date"])} · {r["redeemed_by"] or "—"}' for r in rows]; await q.edit_message_text('\n'.join(lines) if rows else 'No VIP keys.',parse_mode='HTML',reply_markup=_menu())
+    elif data=='admin:aifix':
+        settings = context.application.bot_data['settings']
+        manager = context.application.bot_data.get('code_repair')
+        if not settings.ai_code_repair_enabled:
+            text = '🤖 <b>AI CODE FIXER</b>\n\n⚪ Feature is disabled. Set <code>AI_CODE_REPAIR_ENABLED=true</code> in the server environment and restart the bot.'
+        elif not manager or not manager.configured:
+            text = '🤖 <b>AI CODE FIXER</b>\n\n⚠️ Feature is enabled, but GitHub is not configured. Set <code>GITHUB_TOKEN</code> and <code>GITHUB_REPO</code> on the server. The token is never sent to the AI or Telegram.\n\nThen use <code>/aifix &lt;problem&gt;</code>.'
+        else:
+            text = '🤖 <b>AI CODE FIXER</b>\n\n✅ Configured and ready.\n\nUse <code>/aifix &lt;problem&gt;</code> to inspect the repository and generate a safe repair proposal.\n\nExample:\n<code>/aifix scan gets stuck during network validation</code>\n\nAfter a proposal you can review it before applying. Changes are written to an isolated <code>ai-fix/*</code> branch.'
+        await q.edit_message_text(text, parse_mode='HTML', reply_markup=_menu())
     elif data=='admin:userhelp':
         await q.edit_message_text('🔎 <b>USER MANAGEMENT</b>\n\n<code>/userinfo USER_ID</code>\n<code>/givevip USER_ID 30</code>\n<code>/givevip USER_ID lifetime</code>\n<code>/revokevip USER_ID</code>\n<code>/ban USER_ID</code>\n<code>/unban USER_ID</code>\n<code>/useractions USER_ID</code>\n\nUse <code>/users</code> for the latest 20 active users.',parse_mode='HTML',reply_markup=_menu())
