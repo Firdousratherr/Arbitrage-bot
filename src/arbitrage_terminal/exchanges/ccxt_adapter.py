@@ -12,6 +12,7 @@ class CcxtAdapter(ExchangeAdapter):
         self.exchange_id=exchange_id;self.name=public_name or exchange_id;klass=getattr(ccxt,exchange_id,None)
         if klass is None:raise ValueError(f'CCXT exchange not available: {exchange_id}')
         self.client=klass({'enableRateLimit':True,'timeout':15000,**(credentials or {})});self._markets={};self._currencies=None;self._currencies_task=None;self.last_diagnostics={}
+        self.last_market_symbols=set();self.last_ticker_symbols=set();self.last_ticker_count=0
     async def _call(self,op,fn,*args,**kwargs):
         started=time.perf_counter()
         try:return await fn(*args,**kwargs)
@@ -31,10 +32,8 @@ class CcxtAdapter(ExchangeAdapter):
             try:sym,base,quote,_=normalize_symbol(raw)
             except ValueError:continue
             out.append(Market(self.name,sym,base,quote,MarketType.SPOT,True))
-        # CCXT load_markets() normally populates the cached currencies property too.
-        # Keep that metadata available for fast, non-blocking transfer validation.
-        if isinstance(getattr(self.client,'currencies',None),dict):
-            self._currencies=self.client.currencies
+        self.last_market_symbols={m.symbol for m in out}
+        if isinstance(getattr(self.client,'currencies',None),dict):self._currencies=self.client.currencies
         return out
     async def get_tickers(self,symbols=None):
         if not self._markets:await self.get_markets()
@@ -44,6 +43,7 @@ class CcxtAdapter(ExchangeAdapter):
             except (ValueError,TypeError):continue
             if wanted and sym.upper() not in wanted or bid<=0 or ask<=0:continue
             ts=t.get('timestamp');stamp=datetime.fromtimestamp(ts/1000,timezone.utc) if ts else datetime.now(timezone.utc);out.append(Ticker(self.name,sym,base,quote,bid,ask,max(0,vol),stamp))
+        self.last_ticker_symbols={t.symbol for t in out};self.last_ticker_count=len(out)
         return out
     async def get_orderbook(self,symbol,limit=10):return await self._call('orderbook',self.client.fetch_order_book,symbol,limit)
     async def get_trading_fees(self,symbols=None):
@@ -60,10 +60,6 @@ class CcxtAdapter(ExchangeAdapter):
                 except (TypeError,ValueError):pass
         return result
     async def _get_currencies(self):
-        # Never make an unbounded fetchCurrencies call from the scan path.  CCXT's
-        # load_markets() already populates client.currencies on supported exchanges.
-        # If an exchange does not expose cached currency metadata, report it as
-        # unavailable and let strict validation reject those routes quickly.
         if self._currencies is not None:return self._currencies
         cached=getattr(self.client,'currencies',None)
         if isinstance(cached,dict) and cached:
