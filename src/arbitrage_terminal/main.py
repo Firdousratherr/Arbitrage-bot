@@ -12,7 +12,7 @@ from .ai import AIAssistant
 from .arbitrage import ArbitrageScanner
 from .bot import build_handlers
 from .bot.commands import (
-    dashboard_cmd, diagnostics_cmd, filters_cmd, filter_settings_callback,
+    dashboard_cmd, diagnostics_cmd, filters_callback, filters_cmd, filter_settings_callback,
     help_cmd, resetfilters_cmd, setfilter_cmd, settings_cmd, status_cmd,
 )
 from .bot.exchange_selection import dashboard_exchanges_callback, exchange_selection_callback
@@ -86,6 +86,7 @@ async def _run():
     app.add_handler(CallbackQueryHandler(live_scan_callback, pattern=r'^scan$'))
     app.add_handler(CallbackQueryHandler(results_page_callback, pattern=r'^page:'))
     app.add_handler(CallbackQueryHandler(results_detail_callback, pattern=r'^r(?:diag|debug|aian|order):'))
+    app.add_handler(CallbackQueryHandler(filters_callback, pattern=r'^filters$'))
     app.add_handler(CallbackQueryHandler(filter_settings_callback, pattern=r'^filter:'))
 
     # Real command sections. These intentionally precede legacy aliases in build_handlers().
