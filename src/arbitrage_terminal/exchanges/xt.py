@@ -38,7 +38,10 @@ class XTAdapter(CcxtAdapter):
                 continue
             ts = ticker.get('timestamp')
             stamp = datetime.fromtimestamp(float(ts) / 1000, timezone.utc) if ts else datetime.now(timezone.utc)
-            out.append(Ticker(self.name, symbol, base, quote, bid, ask, max(0.0, volume), stamp))
+            out.append(Ticker(
+                self.name, symbol, base, quote, bid, ask, max(0.0, volume), stamp,
+                self.last_market_asset_identities.get(symbol),
+            ))
 
         self.last_ticker_symbols = {t.symbol for t in out}
         self.last_ticker_count = len(out)
