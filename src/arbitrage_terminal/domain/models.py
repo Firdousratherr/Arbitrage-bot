@@ -1,4 +1,4 @@
-from __future__ import annotations
+from __future__
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -12,9 +12,11 @@ class AIMode(str, Enum): OFF='off'; ASSIST='assist'; ENHANCED='enhanced'
 @dataclass(frozen=True, slots=True)
 class Market:
     exchange:str; symbol:str; base:str; quote:str; market_type:MarketType; active:bool=True
+    asset_identity:str|None=None
 @dataclass(frozen=True, slots=True)
 class Ticker:
     exchange:str; symbol:str; base:str; quote:str; bid:float; ask:float; quote_volume:float; timestamp:datetime
+    asset_identity:str|None=None
 @dataclass(frozen=True, slots=True)
 class Opportunity:
     symbol:str; buy_exchange:str; sell_exchange:str; buy_price:float; sell_price:float
