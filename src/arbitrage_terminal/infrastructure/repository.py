@@ -10,8 +10,8 @@ from arbitrage_terminal.domain.filters import ScanFilters
 from arbitrage_terminal.domain.models import ScanSnapshot
 
 DEFAULT_FILTERS = {
-    'min_gap': .50, 'min_net_profit': .20, 'min_volume': 10000., 'min_liquidity': 1000.,
-    'max_data_age': 10., 'require_network': False, 'require_fees': False,
+    'min_gap': .50, 'min_net_profit': 2.00, 'min_volume': 10000., 'min_liquidity': 1000.,
+    'max_data_age': 10., 'trade_size': 1000., 'require_network': False, 'require_fees': False,
     'selected_coins': [], 'quote_currency': 'USDT', 'validation_mode': 'strict'
 }
 
@@ -26,9 +26,8 @@ class Repository:
         pathlib.Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         self.db = await aiosqlite.connect(self.path)
         self.db.row_factory = aiosqlite.Row
-        await self.db.executescript('''PRAGMA journal_mode=WAL;PRAGMA foreign_keys=ON;CREATE TABLE IF NOT EXISTS schema_version(version INTEGER NOT NULL);CREATE TABLE IF NOT EXISTS users(telegram_id INTEGER PRIMARY KEY,username TEXT,email TEXT,vip_status TEXT NOT NULL DEFAULT 'pending',vip_expiry TEXT,banned INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL,last_active TEXT NOT NULL);CREATE TABLE IF NOT EXISTS user_exchange_config(user_id INTEGER PRIMARY KEY REFERENCES users(telegram_id) ON DELETE CASCADE,exchanges TEXT NOT NULL DEFAULT '[]');CREATE TABLE IF NOT EXISTS user_scanner_config(user_id INTEGER PRIMARY KEY REFERENCES users(telegram_id) ON DELETE CASCADE,filters TEXT NOT NULL DEFAULT '{}');CREATE TABLE IF NOT EXISTS user_ai_config(user_id INTEGER PRIMARY KEY REFERENCES users(telegram_id) ON DELETE CASCADE,result_mode TEXT NOT NULL DEFAULT 'off',preferences TEXT NOT NULL DEFAULT '{}',maintenance_preferences TEXT NOT NULL DEFAULT '{}');CREATE TABLE IF NOT EXISTS scan_snapshots(scan_id TEXT PRIMARY KEY,user_id INTEGER NOT NULL,started_at TEXT NOT NULL,completed_at TEXT,selected_exchanges TEXT NOT NULL,healthy_exchanges TEXT NOT NULL,degraded_exchanges TEXT NOT NULL,failed_exchanges TEXT NOT NULL,state TEXT NOT NULL,markets_discovered INTEGER NOT NULL,markets_validated INTEGER NOT NULL,candidates_evaluated INTEGER NOT NULL,opportunities_found INTEGER NOT NULL,payload TEXT NOT NULL);CREATE INDEX IF NOT EXISTS idx_scan_user_time ON scan_snapshots(user_id,started_at DESC);CREATE TABLE IF NOT EXISTS vip_keys(key TEXT PRIMARY KEY,created_by INTEGER,created_at TEXT NOT NULL,redeemed_by INTEGER,redeemed_at TEXT,expiry_date TEXT,status TEXT NOT NULL DEFAULT 'unused');CREATE TABLE IF NOT EXISTS ai_analyses(id TEXT PRIMARY KEY,user_id INTEGER NOT NULL,scan_id TEXT,kind TEXT NOT NULL,payload TEXT NOT NULL,created_at TEXT NOT NULL);''')
+        await self.db.executescript('''PRAGMA journal_mode=WAL;PRAGMA foreign_keys=ON;CREATE TABLE IF NOT EXISTS schema_version(version INTEGER NOT NULL);CREATE TABLE IF NOT EXISTS users(telegram_id INTEGER PRIMARY KEY,username TEXT,email TEXT,vip_status TEXT NOT NULL DEFAULT 'pending',vip_expiry TEXT,banned INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL,last_active TEXT NOT NULL);CREATE TABLE IF NOT EXISTS user_exchange_config(user_id INTEGER PRIMARY KEY REFERENCES users(telegram_id) ON DELETE CASCADE,exchanges TEXT NOT NULL DEFAULT '[]');CREATE TABLE IF NOT EXISTS user_scanner_config(user_id INTEGER PRIMARY KEY REFERENCES users(telegram_id) ON DELETE CASCADE,filters TEXT NOT NULL DEFAULT '{}');CREATE TABLE IF NOT EXISTS user_ai_config(user_id INTEGER PRIMARY KEY REFERENCES users(telegram_id) ON DELETE CASCADE,result_mode TEXT NOT NULL DEFAULT 'off',preferences TEXT NOT NULL DEFAULT '{}',maintenance_preferences TEXT NOT NULL DEFAULT '{}');CREATE TABLE IF NOT EXISTS scan_snapshots(scan_id TEXT PRIMARY KEY,user_id INTEGER NOT NULL,started_at TEXT NOT NULL,completed_at TEXT,selected_exchanges TEXT NOT NULL,healthy_exchanges TEXT NOT NULL,degraded_exchanges TEXT NOT NULL,failed_exchanges TEXT NOT NULL,state TEXT NOT NULL,markets_discovered INTEGER NOT NULL,candidates_evaluated INTEGER NOT NULL,opportunities_found INTEGER NOT NULL,payload TEXT NOT NULL);CREATE INDEX IF NOT EXISTS idx_scan_user_time ON scan_snapshots(user_id,started_at DESC);CREATE TABLE IF NOT EXISTS vip_keys(key TEXT PRIMARY KEY,created_by INTEGER,created_at TEXT NOT NULL,redeemed_by INTEGER,redeemed_at TEXT,expiry_date TEXT,status TEXT NOT NULL DEFAULT 'unused');CREATE TABLE IF NOT EXISTS ai_analyses(id TEXT PRIMARY KEY,user_id INTEGER NOT NULL,scan_id TEXT,kind TEXT NOT NULL,payload TEXT NOT NULL,created_at TEXT NOT NULL);''')
         cols = {r['name'] for r in await (await self.db.execute('PRAGMA table_info(users)')).fetchall()}
-        # Preserve the legacy column name used by the original schema.
         if 'banned' not in cols:
             await self.db.execute("ALTER TABLE users ADD COLUMN banned INTEGER NOT NULL DEFAULT 0")
         if 'selected_exchanges' in cols:
@@ -118,25 +117,18 @@ class Repository:
     async def redeem_vip_key(self, user_id, key):
         key = key.strip().upper()
         now = datetime.now(timezone.utc).isoformat()
-        r = await (await self.db.execute('SELECT * FROM vip_keys WHERE key=? AND status=?', (key,'unused'))).fetchone()
-        if not r:
-            return False, 'That VIP key is invalid, already used, or revoked.'
-        if r['expiry_date'] and r['expiry_date'] <= now:
-            return False, 'That VIP key has expired.'
-        cur = await self.db.execute("UPDATE vip_keys SET status='active',redeemed_by=?,redeemed_at=? WHERE key=? AND status='unused'", (user_id,now,key))
-        if cur.rowcount != 1:
-            await self.db.rollback()
-            return False, 'That VIP key was just redeemed. Please use another key.'
-        await self.db.execute("UPDATE users SET vip_status='active',vip_expiry=? WHERE telegram_id=?", (r['expiry_date'],user_id))
-        await self.db.commit()
+        r = await (await self.db.execute('SELECT * FROM vip_keys WHERE key=?', (key,))).fetchone()
+        if not r or r['status'] != 'unused':
+            return False, 'Invalid or already used VIP key.'
+        expiry = None if not r['expiry_date'] else r['expiry_date']
+        if expiry and expiry <= now:
+            await self.db.execute("UPDATE vip_keys SET status='expired' WHERE key=?", (key,)); await self.db.commit(); return False, 'VIP key has expired.'
+        await self.db.execute("UPDATE vip_keys SET status='redeemed',redeemed_by=?,redeemed_at=? WHERE key=?", (user_id,now,key))
+        await self.db.execute("UPDATE users SET vip_status='active',vip_expiry=? WHERE telegram_id=?", (expiry,user_id)); await self.db.commit()
         return True, 'VIP access activated.'
 
-    async def create_vip_key(self, admin_id, key, days):
-        expiry = None if str(days).lower() in ('lifetime','0') else (datetime.now(timezone.utc)+timedelta(days=int(days))).isoformat()
-        await self.db.execute('INSERT INTO vip_keys(key,created_by,created_at,expiry_date) VALUES(?,?,?,?)', (key.strip().upper(),admin_id,datetime.now(timezone.utc).isoformat(),expiry))
-        await self.db.commit()
-        return key.strip().upper()
-
-    async def save_ai(self, user_id, scan_id, kind, payload):
-        await self.db.execute('INSERT INTO ai_analyses VALUES(?,?,?,?,?,?)', (uuid.uuid4().hex,user_id,scan_id,kind,json.dumps(payload),datetime.now(timezone.utc).isoformat()))
-        await self.db.commit()
+    async def create_vip_key(self, created_by, key, days):
+        key = key.strip().upper()
+        expiry = None if str(days).lower() == 'lifetime' else (datetime.now(timezone.utc)+timedelta(days=int(days))).isoformat()
+        await self.db.execute('INSERT INTO vip_keys(key,created_by,created_at,expiry_date,status) VALUES(?,?,?,?,?)', (key,created_by,datetime.now(timezone.utc).isoformat(),expiry,'unused'))
+        await self.db.commit(); return key
