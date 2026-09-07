@@ -11,7 +11,10 @@ from .application.service import TerminalService
 from .ai import AIAssistant
 from .arbitrage import ArbitrageScanner
 from .bot import build_handlers
-from .bot.commands import dashboard_cmd, diagnostics_cmd, filters_cmd, help_cmd, settings_cmd, status_cmd
+from .bot.commands import (
+    dashboard_cmd, diagnostics_cmd, filters_cmd, filter_settings_callback,
+    help_cmd, resetfilters_cmd, setfilter_cmd, settings_cmd, status_cmd,
+)
 from .bot.exchange_selection import dashboard_exchanges_callback, exchange_selection_callback
 from .bot.live_scan import live_scan_callback
 from .bot.results import results_page_callback, results_detail_callback
@@ -83,12 +86,15 @@ async def _run():
     app.add_handler(CallbackQueryHandler(live_scan_callback, pattern=r'^scan$'))
     app.add_handler(CallbackQueryHandler(results_page_callback, pattern=r'^page:'))
     app.add_handler(CallbackQueryHandler(results_detail_callback, pattern=r'^r(?:diag|debug|aian|order):'))
+    app.add_handler(CallbackQueryHandler(filter_settings_callback, pattern=r'^filter:'))
 
     # Real command sections. These intentionally precede legacy aliases in build_handlers().
     app.add_handler(CommandHandler('dashboard', dashboard_cmd))
     app.add_handler(CommandHandler('status', status_cmd))
     app.add_handler(CommandHandler('diagnostics', diagnostics_cmd))
     app.add_handler(CommandHandler('filters', filters_cmd))
+    app.add_handler(CommandHandler('setfilter', setfilter_cmd))
+    app.add_handler(CommandHandler('resetfilters', resetfilters_cmd))
     app.add_handler(CommandHandler('settings', settings_cmd))
     app.add_handler(CommandHandler('help', help_cmd))
 
