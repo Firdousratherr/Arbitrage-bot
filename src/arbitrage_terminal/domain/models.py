@@ -35,4 +35,5 @@ class ScanSnapshot:
     state:ScanState; opportunities:list[Opportunity]=field(default_factory=list)
     diagnostics:list[Diagnostic]=field(default_factory=list); warnings:list[str]=field(default_factory=list); errors:list[str]=field(default_factory=list)
     filter_rejections:list[dict[str,Any]]=field(default_factory=list)
+    exchange_coverage:dict[str,dict[str,Any]]=field(default_factory=dict)
     def to_dict(self): return {**asdict(self),'state':self.state.value,'opportunities':[x.to_dict() for x in self.opportunities]}
