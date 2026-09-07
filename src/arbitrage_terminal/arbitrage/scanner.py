@@ -183,9 +183,7 @@ class ArbitrageScanner:
                         detail=str(e)[:500],
                     )
                 )
-                warnings.append(
-                    f'{n}: trading fee data unavailable; affected opportunities have unknown net profit.'
-                )
+                warnings.append(f'{n}: trading fee data unavailable; affected opportunities have unknown net profit.')
         await emit('fees', completed=len(healthy), degraded=len(degraded))
 
         transfer_cache = {}
@@ -198,13 +196,26 @@ class ArbitrageScanner:
             if key not in transfer_tasks:
                 async def load():
                     try:
-                        return await asyncio.wait_for(
-                            adapters[exchange].get_transfer_info(asset), self.timeout
-                        )
+                        return await adapters[exchange].get_transfer_info(asset)
                     except Exception as e:
                         return e
                 transfer_tasks[key] = asyncio.create_task(load())
-            result = await transfer_tasks[key]
+            task = transfer_tasks[key]
+            remaining_scan = self.scan_deadline - (time.monotonic() - started_mono)
+            if remaining_scan <= 0:
+                task.cancel()
+                transfer_tasks.pop(key, None)
+                transfer_cache[key] = {}
+                return transfer_cache[key]
+            try:
+                result = await asyncio.wait_for(task, timeout=min(self.timeout, remaining_scan))
+            except asyncio.TimeoutError:
+                task.cancel()
+                transfer_tasks.pop(key, None)
+                result = TimeoutError(f'Transfer information deadline reached for {asset}.')
+            except asyncio.CancelledError:
+                transfer_tasks.pop(key, None)
+                result = TimeoutError(f'Transfer information cancelled for {asset}.')
             if isinstance(result, Exception):
                 diagnostics.append(
                     Diagnostic(
@@ -215,9 +226,7 @@ class ArbitrageScanner:
                         detail=f'{asset}: {str(result)[:350]}',
                     )
                 )
-                warnings.append(
-                    f'{exchange}: transfer information unavailable for {asset}; strict validation rejected affected routes.'
-                )
+                warnings.append(f'{exchange}: transfer information unavailable for {asset}; strict validation rejected affected routes.')
                 transfer_cache[key] = {}
             else:
                 transfer_cache[key] = result or {}
@@ -229,10 +238,7 @@ class ArbitrageScanner:
             if time.monotonic() - started_mono >= self.scan_deadline:
                 timed_out = True
                 break
-            valid = [
-                t for t in tickers
-                if t.bid > 0 and t.ask > 0 and t.bid == t.bid and t.ask == t.ask
-            ]
+            valid = [t for t in tickers if t.bid > 0 and t.ask > 0 and t.bid == t.bid and t.ask == t.ask]
             for buy in valid:
                 for sell in valid:
                     if buy.exchange == sell.exchange:
@@ -255,7 +261,7 @@ class ArbitrageScanner:
                         if comparisons % 500 == 0:
                             await emit('candidates', comparisons=comparisons, opportunities=len(opportunities), message='Still evaluating candidates…')
                         continue
-                    if filters.validation_mode.lower() != 'loose':
+                    if filters.validation_mode != 'loose':
                         bn = await get_transfer(buy.exchange, buy.base)
                         sn = await get_transfer(sell.exchange, sell.base)
                         network, contract, networks = transfer_compatibility(bn, sn)
@@ -269,11 +275,7 @@ class ArbitrageScanner:
                             continue
                     opportunities.append(o)
                     if len(opportunities) % 5 == 0:
-                        await emit(
-                            'opportunity', count=len(opportunities), symbol=o.symbol,
-                            buy=o.buy_exchange, sell=o.sell_exchange, gap=o.raw_gap,
-                            comparisons=comparisons,
-                        )
+                        await emit('opportunity', count=len(opportunities), symbol=o.symbol, buy=o.buy_exchange, sell=o.sell_exchange, gap=o.raw_gap, comparisons=comparisons)
                     elif comparisons % 500 == 0:
                         await emit('candidates', comparisons=comparisons, opportunities=len(opportunities), message='Still evaluating candidates…')
                 if timed_out:
