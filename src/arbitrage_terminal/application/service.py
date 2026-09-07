@@ -9,8 +9,8 @@ class TerminalService:
     async def set_ai_mode(self,user_id,mode):await self.repo.set_ai_mode(user_id,mode)
     async def set_validation_mode(self,user_id,mode):
         row=await self.repo.user(user_id);filters=self.repo.filters_from_row(row);data=json.loads(row['filters'] or '{}');data['validation_mode']=mode;await self.repo.set_filters(user_id,data)
-    async def run_scan(self,user_id):
-        row=await self.repo.user(user_id);selected=json.loads(row['exchanges'] or '[]');snap=await self.scanner.scan(user_id,selected,self.repo.filters_from_row(row));await self.repo.save_scan(snap);return snap
+    async def run_scan(self,user_id,progress=None):
+        row=await self.repo.user(user_id);selected=json.loads(row['exchanges'] or '[]');snap=await self.scanner.scan(user_id,selected,self.repo.filters_from_row(row),progress=progress);await self.repo.save_scan(snap);return snap
     async def history(self,user_id):return await self.repo.history(user_id)
     async def scan(self,user_id,scan_id):return await self.repo.get_scan(user_id,scan_id)
     async def ai_scan_analysis(self,user_id,snap):
