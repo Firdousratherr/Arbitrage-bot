@@ -12,7 +12,7 @@ from .ai import AIAssistant
 from .arbitrage import ArbitrageScanner
 from .bot import build_handlers
 from .bot.admin import admin_callback, admin_cmd, adminstats_cmd, ban_cmd, givevip_cmd, init_admin_storage, revokevip_cmd, unban_cmd, useractions_cmd, userinfo_cmd, users_cmd, vipkeys_cmd
-from .bot.ai_fixer import aifix_callback, aifix_cmd, aifixstatus_cmd
+from .bot.code_repair import CodeRepairManager, aifix_callback, aifix_cancel_cmd, aifix_cmd, aifix_history_cmd, aifix_status_cmd
 from .bot.commands import (
     dashboard_cmd, diagnostics_cmd, filters_callback, filters_cmd, filter_settings_callback,
     help_cmd, resetfilters_cmd, setfilter_cmd, settings_cmd, status_cmd,
@@ -48,7 +48,8 @@ async def build_runtime():
     scanner = ArbitrageScanner(exchanges, settings.exchange_concurrency, settings.scan_timeout_seconds)
     ai = AIAssistant(settings.ai_api_url, settings.ai_api_key, settings.ai_model, settings.ai_timeout_seconds)
     await ai.start()
-    return settings, repo, exchanges, scanner, ai, TerminalService(repo, scanner, ai, settings), exchange_diagnostics
+    code_repair = CodeRepairManager(ai, settings)
+    return settings, repo, exchanges, scanner, ai, code_repair, TerminalService(repo, scanner, ai, settings), exchange_diagnostics
 
 
 def run():
@@ -70,7 +71,7 @@ async def _error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def _run():
-    settings, repo, exchanges, scanner, ai, service, exchange_diagnostics = await build_runtime()
+    settings, repo, exchanges, scanner, ai, code_repair, service, exchange_diagnostics = await build_runtime()
     app = Application.builder().token(settings.telegram_bot_token).build()
     app.bot_data.update({
         'settings': settings,
@@ -79,6 +80,7 @@ async def _run():
         'exchange_names': [n for n in settings.exchanges if n in exchanges],
         'scanner': scanner,
         'ai': ai,
+        'code_repair': code_repair,
         'service': service,
         'exchange_diagnostics': exchange_diagnostics,
     })
@@ -91,7 +93,8 @@ async def _run():
     app.add_handler(CallbackQueryHandler(filters_callback, pattern=r'^filters$'))
     app.add_handler(CallbackQueryHandler(filter_settings_callback, pattern=r'^filter:'))
     app.add_handler(CallbackQueryHandler(admin_callback, pattern=r'^admin:'))
-    app.add_handler(CallbackQueryHandler(aifix_callback, pattern=r'^aifix:'))
+    if settings.ai_code_repair_enabled:
+        app.add_handler(CallbackQueryHandler(aifix_callback, pattern=r'^aifix:'))
 
     app.add_handler(CommandHandler('dashboard', dashboard_cmd))
     app.add_handler(CommandHandler('status', status_cmd))
@@ -102,6 +105,11 @@ async def _run():
     app.add_handler(CommandHandler('settings', settings_cmd))
     app.add_handler(CommandHandler('help', help_cmd))
     app.add_handler(CommandHandler('admin', admin_cmd))
+    if settings.ai_code_repair_enabled:
+        app.add_handler(CommandHandler('aifix', aifix_cmd))
+        app.add_handler(CommandHandler('aifixstatus', aifix_status_cmd))
+        app.add_handler(CommandHandler('aifixhistory', aifix_history_cmd))
+        app.add_handler(CommandHandler('aifixcancel', aifix_cancel_cmd))
     app.add_handler(CommandHandler('users', users_cmd))
     app.add_handler(CommandHandler('userinfo', userinfo_cmd))
     app.add_handler(CommandHandler('givevip', givevip_cmd))
@@ -111,8 +119,6 @@ async def _run():
     app.add_handler(CommandHandler('useractions', useractions_cmd))
     app.add_handler(CommandHandler('vipkeys', vipkeys_cmd))
     app.add_handler(CommandHandler('adminstats', adminstats_cmd))
-    app.add_handler(CommandHandler('aifix', aifix_cmd))
-    app.add_handler(CommandHandler('aifixstatus', aifixstatus_cmd))
 
     [app.add_handler(h) for h in build_handlers()]
     app.add_error_handler(_error_handler)
