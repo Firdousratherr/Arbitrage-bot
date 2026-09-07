@@ -26,34 +26,22 @@ class Repository:
         pathlib.Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         self.db = await aiosqlite.connect(self.path)
         self.db.row_factory = aiosqlite.Row
-        await self.db.executescript('''PRAGMA journal_mode=WAL;PRAGMA foreign_keys=ON;CREATE TABLE IF NOT EXISTS schema_version(version INTEGER NOT NULL);CREATE TABLE IF NOT EXISTS users(telegram_id INTEGER PRIMARY KEY,username TEXT,email TEXT,vip_status TEXT NOT NULL DEFAULT 'pending',vip_expiry TEXT,ban INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL,last_active TEXT NOT NULL);CREATE TABLE IF NOT EXISTS user_exchange_config(user_id INTEGER PRIMARY KEY REFERENCES users(telegram_id) ON DELETE CASCADE,exchanges TEXT NOT NULL DEFAULT '[]');CREATE TABLE IF NOT EXISTS user_scanner_config(user_id INTEGER PRIMARY KEY REFERENCES users(telegram_id) ON DELETE CASCADE,filters TEXT NOT NULL DEFAULT '{}');CREATE TABLE IF NOT EXISTS user_ai_config(user_id INTEGER PRIMARY KEY REFERENCES users(telegram_id) ON DELETE CASCADE,result_mode TEXT NOT NULL DEFAULT 'off',preferences TEXT NOT NULL DEFAULT '{}',maintenance_preferences TEXT NOT NULL DEFAULT '{}');CREATE TABLE IF NOT EXISTS scan_snapshots(scan_id TEXT PRIMARY KEY,user_id INTEGER NOT NULL,started_at TEXT NOT NULL,completed_at TEXT,selected_exchanges TEXT NOT NULL,healthy_exchanges TEXT NOT NULL,degraded_exchanges TEXT NOT NULL,failed_exchanges TEXT NOT NULL,state TEXT NOT NULL,markets_discovered INTEGER NOT NULL,markets_validated INTEGER NOT NULL,candidates_evaluated INTEGER NOT NULL,opportunities_found INTEGER NOT NULL,payload TEXT NOT NULL);CREATE INDEX IF NOT EXISTS idx_scan_user_time ON scan_snapshots(user_id,started_at DESC);CREATE TABLE IF NOT EXISTS vip_keys(key TEXT PRIMARY KEY,created_by INTEGER,created_at TEXT NOT NULL,redeemed_by INTEGER,redeemed_at TEXT,expiry_date TEXT,status TEXT NOT NULL DEFAULT 'unused');CREATE TABLE IF NOT EXISTS ai_analyses(id TEXT PRIMARY KEY,user_id INTEGER NOT NULL,scan_id TEXT,kind TEXT NOT NULL,payload TEXT NOT NULL,created_at TEXT NOT NULL);''')
+        await self.db.executescript('''PRAGMA journal_mode=WAL;PRAGMA foreign_keys=ON;CREATE TABLE IF NOT EXISTS schema_version(version INTEGER NOT NULL);CREATE TABLE IF NOT EXISTS users(telegram_id INTEGER PRIMARY KEY,username TEXT,email TEXT,vip_status TEXT NOT NULL DEFAULT 'pending',vip_expiry TEXT,banned INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL,last_active TEXT NOT NULL);CREATE TABLE IF NOT EXISTS user_exchange_config(user_id INTEGER PRIMARY KEY REFERENCES users(telegram_id) ON DELETE CASCADE,exchanges TEXT NOT NULL DEFAULT '[]');CREATE TABLE IF NOT EXISTS user_scanner_config(user_id INTEGER PRIMARY KEY REFERENCES users(telegram_id) ON DELETE CASCADE,filters TEXT NOT NULL DEFAULT '{}');CREATE TABLE IF NOT EXISTS user_ai_config(user_id INTEGER PRIMARY KEY REFERENCES users(telegram_id) ON DELETE CASCADE,result_mode TEXT NOT NULL DEFAULT 'off',preferences TEXT NOT NULL DEFAULT '{}',maintenance_preferences TEXT NOT NULL DEFAULT '{}');CREATE TABLE IF NOT EXISTS scan_snapshots(scan_id TEXT PRIMARY KEY,user_id INTEGER NOT NULL,started_at TEXT NOT NULL,completed_at TEXT,selected_exchanges TEXT NOT NULL,healthy_exchanges TEXT NOT NULL,degraded_exchanges TEXT NOT NULL,failed_exchanges TEXT NOT NULL,state TEXT NOT NULL,markets_discovered INTEGER NOT NULL,markets_validated INTEGER NOT NULL,candidates_evaluated INTEGER NOT NULL,opportunities_found INTEGER NOT NULL,payload TEXT NOT NULL);CREATE INDEX IF NOT EXISTS idx_scan_user_time ON scan_snapshots(user_id,started_at DESC);CREATE TABLE IF NOT EXISTS vip_keys(key TEXT PRIMARY KEY,created_by INTEGER,created_at TEXT NOT NULL,redeemed_by INTEGER,redeemed_at TEXT,expiry_date TEXT,status TEXT NOT NULL DEFAULT 'unused');CREATE TABLE IF NOT EXISTS ai_analyses(id TEXT PRIMARY KEY,user_id INTEGER NOT NULL,scan_id TEXT,kind TEXT NOT NULL,payload TEXT NOT NULL,created_at TEXT NOT NULL);''')
         cols = {r['name'] for r in await (await self.db.execute('PRAGMA table_info(users)')).fetchall()}
-        if 'ban' not in cols:
-            await self.db.execute("ALTER TABLE users ADD COLUMN ban INTEGER NOT NULL DEFAULT 0")
-        # Migrate the older schema's selected_exchanges/filters into normalized tables when present.
+        # Preserve the legacy column name used by the original schema.
+        if 'banned' not in cols:
+            await self.db.execute("ALTER TABLE users ADD COLUMN banned INTEGER NOT NULL DEFAULT 0")
         if 'selected_exchanges' in cols:
             rows = await (await self.db.execute('SELECT telegram_id,selected_exchanges,filters FROM users')).fetchall()
             for r in rows:
-                await self.db.execute(
-                    'INSERT OR IGNORE INTO user_exchange_config(user_id,exchanges) VALUES (?,?)',
-                    (r['telegram_id'], r['selected_exchanges'] or '[]'),
-                )
-                await self.db.execute(
-                    'INSERT OR IGNORE INTO user_scanner_config(user_id,filters) VALUES (?,?)',
-                    (r['telegram_id'], r['filters'] or json.dumps(DEFAULT_FILTERS)),
-                )
+                await self.db.execute('INSERT OR IGNORE INTO user_exchange_config(user_id,exchanges) VALUES (?,?)', (r['telegram_id'], r['selected_exchanges'] or '[]'))
+                await self.db.execute('INSERT OR IGNORE INTO user_scanner_config(user_id,filters) VALUES (?,?)', (r['telegram_id'], r['filters'] or json.dumps(DEFAULT_FILTERS)))
         for col in ('created_at', 'last_active'):
             if col not in cols:
                 await self.db.execute(f'ALTER TABLE users ADD COLUMN {col} TEXT')
         if 'registration_date' in cols:
-            await self.db.execute(
-                'UPDATE users SET created_at=COALESCE(created_at,registration_date,?)',
-                (datetime.now(timezone.utc).isoformat(),),
-            )
-        await self.db.execute(
-            'UPDATE users SET last_active=COALESCE(last_active,created_at,?)',
-            (datetime.now(timezone.utc).isoformat(),),
-        )
+            await self.db.execute('UPDATE users SET created_at=COALESCE(created_at,registration_date,?)', (datetime.now(timezone.utc).isoformat(),))
+        await self.db.execute('UPDATE users SET last_active=COALESCE(last_active,created_at,?)', (datetime.now(timezone.utc).isoformat(),))
         row = await (await self.db.execute('SELECT COUNT(*) c FROM schema_version')).fetchone()
         if row['c'] == 0:
             await self.db.execute('INSERT INTO schema_version VALUES (1)')
@@ -65,42 +53,22 @@ class Repository:
 
     async def ensure_user(self, user_id, username, email=None):
         now = datetime.now(timezone.utc).isoformat()
-        await self.db.execute(
-            'INSERT INTO users(telegram_id,username,email,created_at,last_active) VALUES(?,?,?,?,?) '
-            'ON CONFLICT(telegram_id) DO UPDATE SET username=excluded.username,'
-            'email=COALESCE(excluded.email,users.email),last_active=excluded.last_active',
-            (user_id, username, email, now, now),
-        )
+        await self.db.execute('INSERT INTO users(telegram_id,username,email,created_at,last_active) VALUES(?,?,?,?,?) ON CONFLICT(telegram_id) DO UPDATE SET username=excluded.username,email=COALESCE(excluded.email,users.email),last_active=excluded.last_active', (user_id, username, email, now, now))
         await self.db.execute('INSERT OR IGNORE INTO user_exchange_config(user_id) VALUES (?)', (user_id,))
-        await self.db.execute(
-            'INSERT OR IGNORE INTO user_scanner_config(user_id,filters) VALUES (?,?)',
-            (user_id, json.dumps(DEFAULT_FILTERS)),
-        )
+        await self.db.execute('INSERT OR IGNORE INTO user_scanner_config(user_id,filters) VALUES (?,?)', (user_id, json.dumps(DEFAULT_FILTERS)))
         await self.db.execute('INSERT OR IGNORE INTO user_ai_config(user_id) VALUES (?)', (user_id,))
         await self.db.commit()
 
     async def user(self, user_id):
-        return await (await self.db.execute(
-            'SELECT u.*,e.exchanges,c.filters,a.result_mode,a.preferences,a.maintenance_preferences '
-            'FROM users u LEFT JOIN user_exchange_config e ON e.user_id=u.telegram_id '
-            'LEFT JOIN user_scanner_config c ON c.user_id=u.telegram_id '
-            'LEFT JOIN user_ai_config a ON a.user_id=u.telegram_id WHERE u.telegram_id=?',
-            (user_id,),
-        )).fetchone()
+        return await (await self.db.execute('SELECT u.*,e.exchanges,c.filters,a.result_mode,a.preferences,a.maintenance_preferences FROM users u LEFT JOIN user_exchange_config e ON e.user_id=u.telegram_id LEFT JOIN user_scanner_config c ON c.user_id=u.telegram_id LEFT JOIN user_ai_config a ON a.user_id=u.telegram_id WHERE u.telegram_id=?', (user_id,))).fetchone()
 
     async def set_exchanges(self, user_id, exchanges):
         clean = list(dict.fromkeys(str(x).strip().lower() for x in exchanges if str(x).strip()))
-        await self.db.execute(
-            'UPDATE user_exchange_config SET exchanges=? WHERE user_id=?',
-            (json.dumps(clean), user_id),
-        )
+        await self.db.execute('UPDATE user_exchange_config SET exchanges=? WHERE user_id=?', (json.dumps(clean), user_id))
         await self.db.commit()
 
     async def set_filters(self, user_id, filters):
-        await self.db.execute(
-            'UPDATE user_scanner_config SET filters=? WHERE user_id=?',
-            (json.dumps(filters), user_id),
-        )
+        await self.db.execute('UPDATE user_scanner_config SET filters=? WHERE user_id=?', (json.dumps(filters), user_id))
         await self.db.commit()
 
     async def set_ai_mode(self, user_id, mode):
@@ -119,35 +87,18 @@ class Repository:
         return ScanFilters(**merged)
 
     async def save_scan(self, s: ScanSnapshot):
-        await self.db.execute(
-            'INSERT OR REPLACE INTO scan_snapshots VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-            (
-                s.scan_id, s.user_id, s.started_at, s.completed_at,
-                json.dumps(s.selected_exchanges), json.dumps(s.healthy_exchanges),
-                json.dumps(s.degraded_exchanges), json.dumps(s.failed_exchanges),
-                s.state.value, s.markets_discovered, s.markets_validated,
-                s.candidates_evaluated, s.opportunities_found, json.dumps(s.to_dict()),
-            ),
-        )
+        await self.db.execute('INSERT OR REPLACE INTO scan_snapshots VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)', (s.scan_id,s.user_id,s.started_at,s.completed_at,json.dumps(s.selected_exchanges),json.dumps(s.healthy_exchanges),json.dumps(s.degraded_exchanges),json.dumps(s.failed_exchanges),s.state.value,s.markets_discovered,s.markets_validated,s.candidates_evaluated,s.opportunities_found,json.dumps(s.to_dict())))
         await self.db.commit()
 
     async def get_scan(self, user_id, scan_id):
-        r = await (await self.db.execute(
-            'SELECT payload FROM scan_snapshots WHERE scan_id=? AND user_id=?',
-            (scan_id, user_id),
-        )).fetchone()
+        r = await (await self.db.execute('SELECT payload FROM scan_snapshots WHERE scan_id=? AND user_id=?', (scan_id, user_id))).fetchone()
         return json.loads(r['payload']) if r else None
 
     async def history(self, user_id, limit=20):
-        return await (await self.db.execute(
-            'SELECT scan_id,started_at,state,opportunities_found FROM scan_snapshots '
-            'WHERE user_id=? ORDER BY started_at DESC LIMIT ?', (user_id, limit),
-        )).fetchall()
+        return await (await self.db.execute('SELECT scan_id,started_at,state,opportunities_found FROM scan_snapshots WHERE user_id=? ORDER BY started_at DESC LIMIT ?', (user_id,limit))).fetchall()
 
     async def vip_active(self, user_id):
-        r = await (await self.db.execute(
-            'SELECT vip_status,vip_expiry FROM users WHERE telegram_id=?', (user_id,)
-        )).fetchone()
+        r = await (await self.db.execute('SELECT vip_status,vip_expiry FROM users WHERE telegram_id=?', (user_id,))).fetchone()
         if not r or r['vip_status'] != 'active':
             return False
         if r['vip_expiry'] and r['vip_expiry'] <= datetime.now(timezone.utc).isoformat():
@@ -157,56 +108,35 @@ class Repository:
         return True
 
     async def is_banned(self, user_id):
-        r = await (await self.db.execute(
-            'SELECT ban FROM users WHERE telegram_id=?', (user_id,)
-        )).fetchone()
-        return bool(r and r['ban'])
+        r = await (await self.db.execute('SELECT banned FROM users WHERE telegram_id=?', (user_id,))).fetchone()
+        return bool(r and r['banned'])
 
     async def set_banned(self, user_id, banned=True):
-        await self.db.execute('UPDATE users SET ban=? WHERE telegram_id=?', (1 if banned else 0, user_id))
+        await self.db.execute('UPDATE users SET banned=? WHERE telegram_id=?', (1 if banned else 0, user_id))
         await self.db.commit()
 
     async def redeem_vip_key(self, user_id, key):
         key = key.strip().upper()
         now = datetime.now(timezone.utc).isoformat()
-        async with self.db.execute(
-            'SELECT * FROM vip_keys WHERE key=? AND status=?', (key, 'unused')
-        ) as cursor:
-            r = await cursor.fetchone()
+        r = await (await self.db.execute('SELECT * FROM vip_keys WHERE key=? AND status=?', (key,'unused'))).fetchone()
         if not r:
             return False, 'That VIP key is invalid, already used, or revoked.'
         if r['expiry_date'] and r['expiry_date'] <= now:
             return False, 'That VIP key has expired.'
-        # Conditional UPDATE makes redemption atomic against double-click/concurrent redemption.
-        cur = await self.db.execute(
-            "UPDATE vip_keys SET status='active',redeemed_by=?,redeemed_at=? "
-            "WHERE key=? AND status='unused'",
-            (user_id, now, key),
-        )
+        cur = await self.db.execute("UPDATE vip_keys SET status='active',redeemed_by=?,redeemed_at=? WHERE key=? AND status='unused'", (user_id,now,key))
         if cur.rowcount != 1:
             await self.db.rollback()
             return False, 'That VIP key was just redeemed. Please use another key.'
-        await self.db.execute(
-            'UPDATE users SET vip_status=\'active\',vip_expiry=? WHERE telegram_id=?',
-            (r['expiry_date'], user_id),
-        )
+        await self.db.execute("UPDATE users SET vip_status='active',vip_expiry=? WHERE telegram_id=?", (r['expiry_date'],user_id))
         await self.db.commit()
         return True, 'VIP access activated.'
 
     async def create_vip_key(self, admin_id, key, days):
-        expiry = None if str(days).lower() in ('lifetime', '0') else (
-            datetime.now(timezone.utc) + timedelta(days=int(days))
-        ).isoformat()
-        await self.db.execute(
-            'INSERT INTO vip_keys(key,created_by,created_at,expiry_date) VALUES(?,?,?,?)',
-            (key.strip().upper(), admin_id, datetime.now(timezone.utc).isoformat(), expiry),
-        )
+        expiry = None if str(days).lower() in ('lifetime','0') else (datetime.now(timezone.utc)+timedelta(days=int(days))).isoformat()
+        await self.db.execute('INSERT INTO vip_keys(key,created_by,created_at,expiry_date) VALUES(?,?,?,?)', (key.strip().upper(),admin_id,datetime.now(timezone.utc).isoformat(),expiry))
         await self.db.commit()
         return key.strip().upper()
 
     async def save_ai(self, user_id, scan_id, kind, payload):
-        await self.db.execute(
-            'INSERT INTO ai_analyses VALUES(?,?,?,?,?,?)',
-            (uuid.uuid4().hex, user_id, scan_id, kind, json.dumps(payload), datetime.now(timezone.utc).isoformat()),
-        )
+        await self.db.execute('INSERT INTO ai_analyses VALUES(?,?,?,?,?,?)', (uuid.uuid4().hex,user_id,scan_id,kind,json.dumps(payload),datetime.now(timezone.utc).isoformat()))
         await self.db.commit()
