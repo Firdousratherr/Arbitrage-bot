@@ -1,15 +1,17 @@
 from __future__ import annotations
+import asyncio
 import time
 import ccxt.async_support as ccxt
 from datetime import datetime,timezone
 from arbitrage_terminal.domain.models import Market,MarketType,Ticker
 from arbitrage_terminal.domain.normalization import normalize_symbol
 from .base import ExchangeAdapter,ExchangeError
+
 class CcxtAdapter(ExchangeAdapter):
     def __init__(self,exchange_id,public_name=None,credentials=None):
         self.exchange_id=exchange_id;self.name=public_name or exchange_id;klass=getattr(ccxt,exchange_id,None)
         if klass is None:raise ValueError(f'CCXT exchange not available: {exchange_id}')
-        self.client=klass({'enableRateLimit':True,'timeout':15000,**(credentials or {})});self._markets={};self.last_diagnostics={}
+        self.client=klass({'enableRateLimit':True,'timeout':15000,**(credentials or {})});self._markets={};self._currencies=None;self._currencies_task=None;self.last_diagnostics={}
     async def _call(self,op,fn,*args,**kwargs):
         started=time.perf_counter()
         try:return await fn(*args,**kwargs)
@@ -53,8 +55,17 @@ class CcxtAdapter(ExchangeAdapter):
                 try:result[sym]=float(fee)*100
                 except (TypeError,ValueError):pass
         return result
+    async def _get_currencies(self):
+        if self._currencies is not None:return self._currencies
+        if self._currencies_task is None:
+            self._currencies_task=asyncio.create_task(self._call('currencies',self.client.fetch_currencies))
+        try:
+            self._currencies=await self._currencies_task
+            return self._currencies or {}
+        finally:
+            self._currencies_task=None
     async def get_transfer_info(self,asset):
-        currencies=await self._call('currencies',self.client.fetch_currencies);info=(currencies or {}).get(asset.upper(),{});networks=[]
+        currencies=await self._get_currencies();info=(currencies or {}).get(asset.upper(),{});networks=[]
         for key,n in (info.get('networks') or {}).items():
             n=n or {};address=n.get('contractAddress') or n.get('contract_address') or n.get('address');networks.append({'network':key,'deposit':n.get('deposit') is not False,'withdraw':n.get('withdraw') is not False,'fee':n.get('fee'),'contract_address':address})
         return {'available':bool(networks),'asset':asset.upper(),'networks':networks}
