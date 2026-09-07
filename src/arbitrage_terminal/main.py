@@ -7,6 +7,7 @@ from .ai import AIAssistant
 from .arbitrage import ArbitrageScanner
 from .bot import build_handlers
 from .bot.exchange_selection import exchange_selection_callback
+from .bot.live_scan import live_scan_callback
 from .exchanges.registry import build_exchanges
 from .infrastructure.config import get_settings
 from .infrastructure.logging import configure
@@ -27,20 +28,17 @@ def run():asyncio.run(_run())
 async def _error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     logging.getLogger(__name__).exception('telegram handler failed', exc_info=context.error)
     if isinstance(update, Update) and update.callback_query:
-        try:
-            await update.callback_query.answer('Something went wrong. Please try again.', show_alert=True)
-        except Exception:
-            pass
+        try: await update.callback_query.answer('Something went wrong. Please try again.', show_alert=True)
+        except Exception: pass
     elif isinstance(update, Update) and update.effective_message:
-        try:
-            await update.effective_message.reply_text('⚠️ Something went wrong. Please try again.')
-        except Exception:
-            pass
+        try: await update.effective_message.reply_text('⚠️ Something went wrong. Please try again.')
+        except Exception: pass
 
 async def _run():
     settings,repo,exchanges,scanner,ai,service,exchange_diagnostics=await build_runtime();app=Application.builder().token(settings.telegram_bot_token).build()
     app.bot_data.update({'settings':settings,'repo':repo,'exchanges':exchanges,'exchange_names':[n for n in settings.exchanges if n in exchanges],'scanner':scanner,'ai':ai,'service':service,'exchange_diagnostics':exchange_diagnostics})
     app.add_handler(CallbackQueryHandler(exchange_selection_callback,pattern=r'^ex:'))
+    app.add_handler(CallbackQueryHandler(live_scan_callback,pattern=r'^scan$'))
     [app.add_handler(h) for h in build_handlers()]
     app.add_error_handler(_error_handler)
     await app.initialize();await app.start();await app.updater.start_polling()
