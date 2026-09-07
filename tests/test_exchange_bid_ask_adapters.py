@@ -20,11 +20,15 @@ def _base_adapter_state(adapter, name, markets):
 
 
 @pytest.mark.asyncio
-async def test_lbank_uses_book_ticker_for_requested_symbols():
+async def test_lbank_uses_exchange_market_id_for_book_ticker():
     adapter = object.__new__(LBankAdapter)
     _base_adapter_state(adapter, 'lbank', {
-        'btc_usdt': {'active': True, 'spot': True, 'type': 'spot'},
-        'eth_usdt': {'active': True, 'spot': True, 'type': 'spot'},
+        'BTC/USDT': {
+            'id': 'btc_usdt', 'active': True, 'spot': True, 'type': 'spot'
+        },
+        'ETH/USDT': {
+            'id': 'eth_usdt', 'active': True, 'spot': True, 'type': 'spot'
+        },
     })
     calls = []
 
