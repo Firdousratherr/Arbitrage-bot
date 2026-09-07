@@ -11,6 +11,7 @@ from .application.service import TerminalService
 from .ai import AIAssistant
 from .arbitrage import ArbitrageScanner
 from .bot import build_handlers
+from .bot.admin import admin_callback, admin_cmd, adminstats_cmd, ban_cmd, givevip_cmd, init_admin_storage, revokevip_cmd, unban_cmd, useractions_cmd, userinfo_cmd, users_cmd, vipkeys_cmd
 from .bot.commands import (
     dashboard_cmd, diagnostics_cmd, filters_callback, filters_cmd, filter_settings_callback,
     help_cmd, resetfilters_cmd, setfilter_cmd, settings_cmd, status_cmd,
@@ -29,6 +30,7 @@ async def build_runtime():
     configure(settings.log_level)
     repo = Repository(settings.database_path)
     await repo.connect()
+    await init_admin_storage(repo)
 
     def creds(name):
         p = name.upper()
@@ -80,7 +82,6 @@ async def _run():
         'exchange_diagnostics': exchange_diagnostics,
     })
 
-    # Dedicated dashboard/result callbacks must be registered before the generic callback router.
     app.add_handler(CallbackQueryHandler(dashboard_exchanges_callback, pattern=r'^exchanges$'))
     app.add_handler(CallbackQueryHandler(exchange_selection_callback, pattern=r'^ex:'))
     app.add_handler(CallbackQueryHandler(live_scan_callback, pattern=r'^scan$'))
@@ -88,8 +89,8 @@ async def _run():
     app.add_handler(CallbackQueryHandler(results_detail_callback, pattern=r'^r(?:diag|debug|aian|order):'))
     app.add_handler(CallbackQueryHandler(filters_callback, pattern=r'^filters$'))
     app.add_handler(CallbackQueryHandler(filter_settings_callback, pattern=r'^filter:'))
+    app.add_handler(CallbackQueryHandler(admin_callback, pattern=r'^admin:'))
 
-    # Real command sections. These intentionally precede legacy aliases in build_handlers().
     app.add_handler(CommandHandler('dashboard', dashboard_cmd))
     app.add_handler(CommandHandler('status', status_cmd))
     app.add_handler(CommandHandler('diagnostics', diagnostics_cmd))
@@ -98,6 +99,16 @@ async def _run():
     app.add_handler(CommandHandler('resetfilters', resetfilters_cmd))
     app.add_handler(CommandHandler('settings', settings_cmd))
     app.add_handler(CommandHandler('help', help_cmd))
+    app.add_handler(CommandHandler('admin', admin_cmd))
+    app.add_handler(CommandHandler('users', users_cmd))
+    app.add_handler(CommandHandler('userinfo', userinfo_cmd))
+    app.add_handler(CommandHandler('givevip', givevip_cmd))
+    app.add_handler(CommandHandler('revokevip', revokevip_cmd))
+    app.add_handler(CommandHandler('ban', ban_cmd))
+    app.add_handler(CommandHandler('unban', unban_cmd))
+    app.add_handler(CommandHandler('useractions', useractions_cmd))
+    app.add_handler(CommandHandler('vipkeys', vipkeys_cmd))
+    app.add_handler(CommandHandler('adminstats', adminstats_cmd))
 
     [app.add_handler(h) for h in build_handlers()]
     app.add_error_handler(_error_handler)
