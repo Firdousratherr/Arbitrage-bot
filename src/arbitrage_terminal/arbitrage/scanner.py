@@ -46,7 +46,6 @@ class ArbitrageScanner:
 
     async def _one(self, name, adapter, exchange_budget):
         started = time.perf_counter()
-        deadline = time.monotonic() + exchange_budget
         diag = Diagnostic(name, 'market_data', '', 0, '')
         breaker = self.breakers.setdefault(name, CircuitBreaker())
         if not breaker.available:
@@ -58,6 +57,10 @@ class ArbitrageScanner:
             return name, set(), [], diag, e
         try:
             async with self.semaphore:
+                # Start the per-exchange budget when the exchange actually gets
+                # a concurrency slot, not while it is waiting behind another
+                # exchange. This keeps later concurrency waves useful.
+                deadline = time.monotonic() + exchange_budget
                 markets, r1 = await self._call(adapter.get_markets, deadline)
                 symbols = {m.symbol for m in markets}
                 tickers, r2 = await self._call(lambda: adapter.get_tickers(symbols), deadline)
