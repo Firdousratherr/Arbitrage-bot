@@ -8,8 +8,12 @@ from .handlers import kb, card
 PAGE_SIZE = 5
 
 
+def _rejection_key(reason):
+    return str(reason or 'unknown').split(' ')[0]
+
+
 def _rejection_summary(items):
-    counts = Counter(str(x.get('reason', 'unknown')).split(' ')[0] for x in items)
+    counts = Counter(_rejection_key(x.get('reason', 'unknown')) for x in items)
     labels = {
         'gap': 'Gap', 'net': 'Net profit', 'volume': 'Volume', 'liquidity': 'Liquidity',
         'data': 'Data age', 'coin': 'Coin', 'quote': 'Quote', 'deposit/withdrawal': 'Network',
@@ -19,6 +23,20 @@ def _rejection_summary(items):
         f'• {html.escape(labels.get(key, key.title()))}: <b>{count:,}</b>'
         for key, count in counts.most_common(8)
     )
+
+
+def _rejection_breakdown(items):
+    """Return deterministic filter/network rejection counts for diagnostics."""
+    filter_counts = Counter()
+    network_counts = Counter()
+    for item in items:
+        reason = str(item.get('reason', 'unknown'))
+        key = _rejection_key(reason)
+        if key in {'deposit/withdrawal', 'contract/address'}:
+            network_counts[reason] += 1
+        else:
+            filter_counts[reason] += 1
+    return filter_counts, network_counts
 
 
 def _items_for_mode(items, mode):
@@ -169,8 +187,26 @@ async def results_detail_callback(update, context):
                 f'📊 Markets: <b>{p.get("markets_discovered", 0):,}</b> · Validated: <b>{p.get("markets_validated", 0):,}</b>',
                 f'🔄 Comparisons: <b>{p.get("candidates_evaluated", 0):,}</b> · Final opportunities: <b>{p.get("opportunities_found", 0):,}</b>',
                 '',
-                '<b>Exchange coverage</b>',
+                '<b>Rejection breakdown</b>',
             ]
+            rejections = p.get('filter_rejections', []) or []
+            filter_counts, network_counts = _rejection_breakdown(rejections)
+            lines.append(f'🧮 Total recorded rejections: <b>{len(rejections):,}</b>')
+            if filter_counts:
+                lines.append('')
+                lines.append('<b>Candidate/filter rejections</b>')
+                for reason, count in filter_counts.most_common(8):
+                    lines.append(f'• {html.escape(reason)}: <b>{count:,}</b>')
+            else:
+                lines.append('• Candidate/filter rejections: <b>0</b>')
+            if network_counts:
+                lines.append('')
+                lines.append('<b>Strict network/contract rejections</b>')
+                for reason, count in network_counts.most_common(8):
+                    lines.append(f'• {html.escape(reason)}: <b>{count:,}</b>')
+            else:
+                lines.append('• Strict network/contract rejections: <b>0</b>')
+            lines += ['', '<b>Exchange coverage</b>']
             coverage = p.get('exchange_coverage') or {}
             if coverage:
                 for name, c in coverage.items():
