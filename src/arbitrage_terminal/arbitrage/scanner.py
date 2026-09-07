@@ -19,6 +19,8 @@ class ArbitrageScanner:
         self.concurrency = max(1, concurrency)
         self.timeout = timeout
         self.scan_deadline = min(max(timeout * 4, 60), 120)
+        self.network_validation_concurrency = min(8, max(2, self.concurrency))
+        self.network_validation_budget = min(12.0, max(5.0, timeout * 0.6))
         self.breakers = {name: CircuitBreaker() for name in exchanges}
 
     async def _call(self, fn, deadline=None):
@@ -57,9 +59,6 @@ class ArbitrageScanner:
             return name, set(), [], diag, e
         try:
             async with self.semaphore:
-                # Start the per-exchange budget when the exchange actually gets
-                # a concurrency slot, not while it is waiting behind another
-                # exchange. This keeps later concurrency waves useful.
                 deadline = time.monotonic() + exchange_budget
                 markets, r1 = await self._call(adapter.get_markets, deadline)
                 symbols = {m.symbol for m in markets}
@@ -95,67 +94,29 @@ class ArbitrageScanner:
         missing = [n for n in selected if n not in self.exchanges]
         adapters = {n: self.exchanges[n] for n in selected if n in self.exchanges}
         if len(selected) < 2:
-            return ScanSnapshot(
-                scan_id, user_id, started, datetime.now(timezone.utc).isoformat(),
-                selected, [], [], selected, 0, 0, 0, 0, ScanState.FAILED,
-                errors=['At least two exchanges must be selected.']
-            )
+            return ScanSnapshot(scan_id, user_id, started, datetime.now(timezone.utc).isoformat(), selected, [], [], selected, 0, 0, 0, 0, ScanState.FAILED, errors=['At least two exchanges must be selected.'])
 
         await emit('start', selected=len(selected))
-
-        # Give each exchange a bounded share of the overall scan budget. This
-        # prevents a slow exchange from consuming all retries and blocking the
-        # next concurrency wave until the global deadline fires.
         waves = max(1, math.ceil(len(adapters) / self.concurrency))
         exchange_budget = max(5.0, min(self.timeout * 2.0, (self.scan_deadline - 2.0) / waves))
 
         async def one(name, adapter):
             await emit('exchange', exchange=name, status='loading', markets=0, tickers=0)
             r = await self._one(name, adapter, exchange_budget)
-            await emit(
-                'exchange',
-                exchange=name,
-                status='healthy' if r[4] is None else 'failed',
-                markets=len(r[1]),
-                tickers=len(r[2]),
-            )
+            await emit('exchange', exchange=name, status='healthy' if r[4] is None else 'failed', markets=len(r[1]), tickers=len(r[2]))
             return r
 
         try:
-            results = await asyncio.wait_for(
-                asyncio.gather(*(one(n, a) for n, a in adapters.items())),
-                timeout=self.scan_deadline,
-            )
+            results = await asyncio.wait_for(asyncio.gather(*(one(n, a) for n, a in adapters.items())), timeout=self.scan_deadline)
         except asyncio.TimeoutError:
             failed = selected
-            diagnostics = [
-                Diagnostic(
-                    n, 'market_data', 'failed', 0,
-                    datetime.now(timezone.utc).isoformat(),
-                    error_type='scan_timeout',
-                    detail=f'Exchange market scan exceeded {self.scan_deadline:.0f}s deadline.'
-                )
-                for n in selected
-            ]
+            diagnostics = [Diagnostic(n, 'market_data', 'failed', 0, datetime.now(timezone.utc).isoformat(), error_type='scan_timeout', detail=f'Exchange market scan exceeded {self.scan_deadline:.0f}s deadline.') for n in selected]
             await emit('complete', comparisons=0, opportunities=0, healthy=0, failed=len(failed))
-            return ScanSnapshot(
-                scan_id, user_id, started, datetime.now(timezone.utc).isoformat(),
-                selected, [], [], failed, 0, 0, 0, 0, ScanState.FAILED,
-                diagnostics=diagnostics,
-                warnings=[f'Scan stopped after the {self.scan_deadline:.0f}s safety deadline.'],
-                errors=['Scan timed out before market data collection completed.']
-            )
+            return ScanSnapshot(scan_id, user_id, started, datetime.now(timezone.utc).isoformat(), selected, [], [], failed, 0, 0, 0, 0, ScanState.FAILED, diagnostics=diagnostics, warnings=[f'Scan stopped after the {self.scan_deadline:.0f}s safety deadline.'], errors=['Scan timed out before market data collection completed.'])
 
         diagnostics = [r[3] for r in results]
         for n in missing:
-            diagnostics.append(
-                Diagnostic(
-                    n, 'adapter_init', 'failed', 0,
-                    datetime.now(timezone.utc).isoformat(),
-                    error_type='unavailable',
-                    detail='Selected exchange is not available in the exchange registry.'
-                )
-            )
+            diagnostics.append(Diagnostic(n, 'adapter_init', 'failed', 0, datetime.now(timezone.utc).isoformat(), error_type='unavailable', detail='Selected exchange is not available in the exchange registry.'))
         healthy = [r[0] for r in results if r[4] is None]
         failed = [r[0] for r in results if r[4] is not None] + missing
         market_sets = {r[0]: r[1] for r in results}
@@ -182,10 +143,7 @@ class ArbitrageScanner:
 
         if healthy and time.monotonic() - started_mono < self.scan_deadline:
             try:
-                fee_results = await asyncio.wait_for(
-                    asyncio.gather(*(fee_one(n, adapters[n]) for n in healthy)),
-                    timeout=min(remaining, self.scan_deadline - (time.monotonic() - started_mono))
-                )
+                fee_results = await asyncio.wait_for(asyncio.gather(*(fee_one(n, adapters[n]) for n in healthy)), timeout=min(remaining, self.scan_deadline - (time.monotonic() - started_mono)))
             except asyncio.TimeoutError:
                 fee_results = [(n, {}, TimeoutError('Fee collection exceeded scan deadline.')) for n in healthy]
         else:
@@ -195,20 +153,13 @@ class ArbitrageScanner:
             fee_maps[n] = data
             if e:
                 degraded.append(n)
-                diagnostics.append(
-                    Diagnostic(
-                        n, 'trading_fees', 'degraded', 0,
-                        datetime.now(timezone.utc).isoformat(),
-                        error_type=getattr(e, 'error_type', type(e).__name__),
-                        http_status=getattr(e, 'http_status', None),
-                        detail=str(e)[:500]
-                    )
-                )
+                diagnostics.append(Diagnostic(n, 'trading_fees', 'degraded', 0, datetime.now(timezone.utc).isoformat(), error_type=getattr(e, 'error_type', type(e).__name__), http_status=getattr(e, 'http_status', None), detail=str(e)[:500]))
                 warnings.append(f'{n}: trading fee data unavailable; affected opportunities have unknown net profit.')
         await emit('fees', completed=len(healthy), degraded=len(degraded))
 
         transfer_cache = {}
         transfer_tasks = {}
+        transfer_semaphore = asyncio.Semaphore(self.network_validation_concurrency)
 
         async def get_transfer(exchange, asset):
             key = (exchange, asset)
@@ -216,10 +167,11 @@ class ArbitrageScanner:
                 return transfer_cache[key]
             if key not in transfer_tasks:
                 async def load():
-                    try:
-                        return await adapters[exchange].get_transfer_info(asset)
-                    except Exception as e:
-                        return e
+                    async with transfer_semaphore:
+                        try:
+                            return await adapters[exchange].get_transfer_info(asset)
+                        except Exception as e:
+                            return e
                 transfer_tasks[key] = asyncio.create_task(load())
             task = transfer_tasks[key]
             remaining_scan = self.scan_deadline - (time.monotonic() - started_mono)
@@ -238,15 +190,7 @@ class ArbitrageScanner:
                 transfer_tasks.pop(key, None)
                 result = TimeoutError(f'Transfer information cancelled for {asset}.')
             if isinstance(result, Exception):
-                diagnostics.append(
-                    Diagnostic(
-                        exchange, 'transfer_info', 'degraded', 0,
-                        datetime.now(timezone.utc).isoformat(),
-                        error_type=getattr(result, 'error_type', type(result).__name__),
-                        http_status=getattr(result, 'http_status', None),
-                        detail=f'{asset}: {str(result)[:350]}'
-                    )
-                )
+                diagnostics.append(Diagnostic(exchange, 'transfer_info', 'degraded', 0, datetime.now(timezone.utc).isoformat(), error_type=getattr(result, 'error_type', type(result).__name__), http_status=getattr(result, 'http_status', None), detail=f'{asset}: {str(result)[:350]}'))
                 warnings.append(f'{exchange}: transfer information unavailable for {asset}; strict validation rejected affected routes.')
                 transfer_cache[key] = {}
             else:
@@ -270,10 +214,7 @@ class ArbitrageScanner:
                     comparisons += 1
                     buy_fee = fee_maps.get(buy.exchange, {}).get(symbol)
                     sell_fee = fee_maps.get(sell.exchange, {}).get(symbol)
-                    o = pair_opportunity(
-                        buy, sell, buy_fee, sell_fee, None, filters.max_data_age,
-                        {'network_available': False, 'contract_match': False, 'networks': []}
-                    )
+                    o = pair_opportunity(buy, sell, buy_fee, sell_fee, None, filters.max_data_age, {'network_available': False, 'contract_match': False, 'networks': []})
                     if not o:
                         continue
                     reason = filters.check(o, include_validation=False)
@@ -294,15 +235,20 @@ class ArbitrageScanner:
             await emit('network', comparisons=comparisons, opportunities=len(opportunities), message='Validating transfer networks for qualifying routes…')
             keys = {(o.buy_exchange, o.symbol.split('/')[0]) for o in opportunities} | {(o.sell_exchange, o.symbol.split('/')[0]) for o in opportunities}
             remaining_scan = self.scan_deadline - (time.monotonic() - started_mono)
-            if remaining_scan > 0 and keys:
+            validation_budget = min(remaining_scan, self.network_validation_budget)
+            if validation_budget > 0 and keys:
                 async def preload(key):
                     return key, await get_transfer(*key)
                 try:
-                    await asyncio.wait_for(asyncio.gather(*(preload(k) for k in keys)), timeout=remaining_scan)
+                    await asyncio.wait_for(asyncio.gather(*(preload(k) for k in keys)), timeout=validation_budget)
                 except asyncio.TimeoutError:
-                    warnings.append('Network validation reached the scan deadline; remaining routes were rejected as unverified.')
+                    warnings.append(f'Network validation was capped at {validation_budget:.0f}s; unfinished routes were rejected as unverified.')
+                    for task in transfer_tasks.values():
+                        if not task.done():
+                            task.cancel()
             validated = []
-            for o in opportunities:
+            total_to_validate = len(opportunities)
+            for index, o in enumerate(opportunities, 1):
                 if time.monotonic() - started_mono >= self.scan_deadline:
                     timed_out = True
                     break
@@ -312,38 +258,22 @@ class ArbitrageScanner:
                 sn = transfer_cache.get((o.sell_exchange, o.symbol.split('/')[0]), {})
                 network, contract, networks = transfer_compatibility(bn, sn)
                 transfer = {'network_available': network, 'contract_match': contract, 'networks': networks}
-                verified = pair_opportunity(
-                    buy, sell,
-                    fee_maps.get(buy.exchange, {}).get(o.symbol),
-                    fee_maps.get(sell.exchange, {}).get(o.symbol),
-                    None, filters.max_data_age, transfer
-                )
+                verified = pair_opportunity(buy, sell, fee_maps.get(buy.exchange, {}).get(o.symbol), fee_maps.get(sell.exchange, {}).get(o.symbol), None, filters.max_data_age, transfer)
                 reason = filters.check(verified, include_validation=True) if verified else 'invalid opportunity'
                 if reason:
                     rejected.append({'symbol': o.symbol, 'buy': o.buy_exchange, 'sell': o.sell_exchange, 'reason': reason})
                 else:
                     validated.append(verified)
+                if index % 50 == 0:
+                    await emit('network', comparisons=comparisons, opportunities=len(validated), validated=index, total=total_to_validate, message='Validating transfer networks…')
             opportunities = validated
 
         if timed_out:
             warnings.append(f'Scan stopped at the {self.scan_deadline:.0f}s safety deadline; results are partial.')
         await emit('complete', comparisons=comparisons, opportunities=len(opportunities), healthy=len(healthy), failed=len(failed))
-        opportunities.sort(
-            key=lambda o: (
-                o.estimated_net_profit is not None,
-                o.estimated_net_profit or float('-inf'),
-                o.confidence,
-                min(o.buy_volume, o.sell_volume)
-            ),
-            reverse=True
-        )
+        opportunities.sort(key=lambda o: (o.estimated_net_profit is not None, o.estimated_net_profit or float('-inf'), o.confidence, min(o.buy_volume, o.sell_volume)), reverse=True)
         state = ScanState.SUCCESS if not failed and not timed_out else ScanState.PARTIAL
         if not healthy:
             state = ScanState.FAILED
         errors = ['No trustworthy market data was returned from selected exchanges.'] if state == ScanState.FAILED else []
-        return ScanSnapshot(
-            scan_id, user_id, started, datetime.now(timezone.utc).isoformat(),
-            selected, healthy, degraded, failed, len(union),
-            sum(len(r[2]) for r in results), comparisons, len(opportunities), state,
-            opportunities, diagnostics, warnings, errors, rejected
-        )
+        return ScanSnapshot(scan_id, user_id, started, datetime.now(timezone.utc).isoformat(), selected, healthy, degraded, failed, len(union), sum(len(r[2]) for r in results), comparisons, len(opportunities), state, opportunities, diagnostics, warnings, errors, rejected)
