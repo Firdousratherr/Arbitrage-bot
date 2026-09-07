@@ -1,4 +1,4 @@
-import asyncio
+import pytest
 from types import SimpleNamespace
 
 from arbitrage_terminal.exchanges.ccxt_adapter import CcxtAdapter
@@ -6,7 +6,8 @@ from arbitrage_terminal.exchanges.lbank import LBankAdapter
 from arbitrage_terminal.exchanges.xt import XTAdapter
 
 
-def test_lbank_uses_book_ticker_for_requested_symbols():
+@pytest.mark.asyncio
+async def test_lbank_uses_book_ticker_for_requested_symbols():
     adapter = object.__new__(LBankAdapter)
     adapter.name = 'lbank'
     adapter._markets = {
@@ -32,7 +33,7 @@ def test_lbank_uses_book_ticker_for_requested_symbols():
     adapter._call = fake_call
     adapter.client = SimpleNamespace(spotPublicGetSupplementTickerBookTicker=lambda params: params)
 
-    result = asyncio.run(adapter.get_tickers({'BTC/USDT'}))
+    result = await adapter.get_tickers({'BTC/USDT'})
 
     assert [ticker.symbol for ticker in result] == ['BTC/USDT']
     assert result[0].bid == 100.0
@@ -40,7 +41,8 @@ def test_lbank_uses_book_ticker_for_requested_symbols():
     assert calls == [('book_ticker:BTC/USDT', 'btc_usdt')]
 
 
-def test_xt_uses_batch_best_bid_ask_endpoint():
+@pytest.mark.asyncio
+async def test_xt_uses_batch_best_bid_ask_endpoint():
     adapter = object.__new__(XTAdapter)
     adapter.name = 'xt'
     adapter._markets = {
@@ -66,7 +68,7 @@ def test_xt_uses_batch_best_bid_ask_endpoint():
     adapter._call = fake_call
     adapter.client = SimpleNamespace(fetch_bids_asks=lambda symbols: symbols)
 
-    result = asyncio.run(adapter.get_tickers({'BTC/USDT'}))
+    result = await adapter.get_tickers({'BTC/USDT'})
 
     assert [ticker.symbol for ticker in result] == ['BTC/USDT']
     assert result[0].bid == 100.0
@@ -75,7 +77,8 @@ def test_xt_uses_batch_best_bid_ask_endpoint():
     assert set(calls[0][1]) == {'BTC/USDT'}
 
 
-def test_generic_ccxt_uses_fetch_bids_asks_when_supported():
+@pytest.mark.asyncio
+async def test_generic_ccxt_uses_fetch_bids_asks_when_supported():
     adapter = object.__new__(CcxtAdapter)
     adapter.name = 'mexc'
     adapter._markets = {'BTC/USDT': {'active': True, 'spot': True, 'type': 'spot'}}
@@ -102,7 +105,7 @@ def test_generic_ccxt_uses_fetch_bids_asks_when_supported():
         fetch_bids_asks=lambda symbols: symbols,
     )
 
-    result = asyncio.run(adapter.get_tickers({'BTC/USDT'}))
+    result = await adapter.get_tickers({'BTC/USDT'})
 
     assert [ticker.symbol for ticker in result] == ['BTC/USDT']
     assert result[0].bid == 100.0
@@ -111,7 +114,8 @@ def test_generic_ccxt_uses_fetch_bids_asks_when_supported():
     assert calls == [('bids_asks', ['BTC/USDT'])]
 
 
-def test_generic_ccxt_falls_back_to_symbol_scoped_fetch_tickers():
+@pytest.mark.asyncio
+async def test_generic_ccxt_falls_back_to_symbol_scoped_fetch_tickers():
     adapter = object.__new__(CcxtAdapter)
     adapter.name = 'kraken'
     adapter._markets = {'BTC/USDT': {'active': True, 'spot': True, 'type': 'spot'}}
@@ -138,7 +142,7 @@ def test_generic_ccxt_falls_back_to_symbol_scoped_fetch_tickers():
         fetch_tickers=lambda symbols: symbols,
     )
 
-    result = asyncio.run(adapter.get_tickers({'BTC/USDT'}))
+    result = await adapter.get_tickers({'BTC/USDT'})
 
     assert [ticker.symbol for ticker in result] == ['BTC/USDT']
     assert result[0].bid == 100.0
