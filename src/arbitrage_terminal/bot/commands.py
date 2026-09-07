@@ -22,7 +22,7 @@ def _filter_text(f):
         f'💱 Quote: <b>{html.escape(f.quote_currency)}</b>\n'
         f'🪙 Coins: <b>{html.escape(coins)}</b>\n'
         f'🛡️ Validation: <b>{html.escape(f.validation_mode.upper())}</b>\n'
-        f'💸 Require fees: <b>{"YES" if f.require_fees else "NO"}'
+        f'💸 Require fees: <b>{"YES" if f.require_fees else "NO"}</b>'
     )
 
 
@@ -94,13 +94,22 @@ async def filters_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text(_filter_text(f), parse_mode='HTML', reply_markup=_filter_keyboard(f))
 
 
+async def filters_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    svc = context.application.bot_data['service']
+    uid = q.from_user.id
+    row = await svc.get_user(uid)
+    f = svc.repo.filters_from_row(row)
+    await q.edit_message_text(_filter_text(f), parse_mode='HTML', reply_markup=_filter_keyboard(f))
+
+
 async def _save_filter_patch(svc, uid, patch):
     row = await svc.get_user(uid)
     raw = json.loads(row['filters'] or '{}')
     if not isinstance(raw, dict):
         raw = {}
     raw.update(patch)
-    # Validate the merged configuration before persisting it.
     svc.repo.filters_from_row({**dict(row), 'filters': json.dumps(raw)})
     await svc.repo.set_filters(uid, raw)
 
@@ -124,59 +133,40 @@ async def setfilter_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             '<code>/setfilter coins BTC,ETH,SOL</code>\n'
             '<code>/setfilter fees on</code>\n'
             '<code>/setfilter validation strict</code>\n\n'
-            'Use <code>coins all</code> to remove the coin restriction.',
-            parse_mode='HTML'
-        )
+            'Use <code>coins all</code> to remove the coin restriction.', parse_mode='HTML')
         return
     key = context.args[0].lower().strip()
     value = ' '.join(context.args[1:]).strip()
-    aliases = {
-        'gap': 'min_gap', 'min_gap': 'min_gap',
-        'net': 'min_net_profit', 'min_net_profit': 'min_net_profit',
-        'volume': 'min_volume', 'min_volume': 'min_volume',
-        'liquidity': 'min_liquidity', 'min_liquidity': 'min_liquidity',
-        'age': 'max_data_age', 'max_data_age': 'max_data_age',
-        'quote': 'quote_currency', 'coins': 'selected_coins',
-        'fees': 'require_fees', 'require_fees': 'require_fees',
-        'validation': 'validation_mode', 'validation_mode': 'validation_mode',
-    }
+    aliases = {'gap':'min_gap','min_gap':'min_gap','net':'min_net_profit','min_net_profit':'min_net_profit','volume':'min_volume','min_volume':'min_volume','liquidity':'min_liquidity','min_liquidity':'min_liquidity','age':'max_data_age','max_data_age':'max_data_age','quote':'quote_currency','coins':'selected_coins','fees':'require_fees','require_fees':'require_fees','validation':'validation_mode','validation_mode':'validation_mode'}
     field = aliases.get(key)
     if not field:
         await update.effective_message.reply_text('⚠️ Unknown filter. Use /setfilter to see supported filters.')
         return
     try:
-        if field in {'min_gap', 'min_net_profit', 'min_volume', 'min_liquidity'}:
-            number = float(value)
-            if number < 0:
-                raise ValueError('must be non-negative')
-            parsed = number
+        if field in {'min_gap','min_net_profit','min_volume','min_liquidity'}:
+            parsed = float(value)
+            if parsed < 0: raise ValueError('must be non-negative')
         elif field == 'max_data_age':
             parsed = float(value)
-            if not 1 <= parsed <= 120:
-                raise ValueError('age must be between 1 and 120 seconds')
+            if not 1 <= parsed <= 120: raise ValueError('age must be between 1 and 120 seconds')
         elif field == 'quote_currency':
             parsed = value.upper()
-            if not 2 <= len(parsed) <= 10 or not parsed.isalnum():
-                raise ValueError('quote must be a 2-10 character currency code')
+            if not 2 <= len(parsed) <= 10 or not parsed.isalnum(): raise ValueError('quote must be a 2-10 character currency code')
         elif field == 'selected_coins':
-            if value.lower() == 'all':
-                parsed = []
+            if value.lower() == 'all': parsed = []
             else:
                 parsed = [x.strip().upper() for x in value.split(',') if x.strip()]
-                if not parsed or len(parsed) > 50 or any(not x.isalnum() for x in parsed):
-                    raise ValueError('use up to 50 comma-separated coin symbols')
+                if not parsed or len(parsed) > 50 or any(not x.isalnum() for x in parsed): raise ValueError('use up to 50 comma-separated coin symbols')
         elif field == 'require_fees':
-            parsed = {'on': True, 'true': True, 'yes': True, '1': True, 'off': False, 'false': False, 'no': False, '0': False}[value.lower()]
+            values = {'on':True,'true':True,'yes':True,'1':True,'off':False,'false':False,'no':False,'0':False}
+            if value.lower() not in values: raise ValueError('fees must be on or off')
+            parsed = values[value.lower()]
         else:
             parsed = value.lower()
-            if parsed not in {'strict', 'loose'}:
-                raise ValueError('validation must be strict or loose')
+            if parsed not in {'strict','loose'}: raise ValueError('validation must be strict or loose')
         await _save_filter_patch(svc, uid, {field: parsed})
         f = svc.repo.filters_from_row(await svc.get_user(uid))
-        await update.effective_message.reply_text(
-            f'✅ <b>{field}</b> set to <b>{html.escape(str(parsed))}</b>.\n\n{_filter_text(f)}',
-            parse_mode='HTML', reply_markup=_filter_keyboard(f)
-        )
+        await update.effective_message.reply_text(f'✅ <b>{field}</b> updated.\n\n' + _filter_text(f), parse_mode='HTML', reply_markup=_filter_keyboard(f))
     except (ValueError, KeyError, TypeError) as exc:
         await update.effective_message.reply_text(f'⚠️ Invalid value: {html.escape(str(exc))}')
 
@@ -202,20 +192,7 @@ async def filter_settings_callback(update: Update, context: ContextTypes.DEFAULT
         return
     data = q.data
     if data == 'filter:help':
-        await q.edit_message_text(
-            '✏️ <b>FILTER COMMANDS</b>\n\n'
-            '<code>/setfilter gap 1.0</code>\n'
-            '<code>/setfilter net 0.5</code>\n'
-            '<code>/setfilter volume 50000</code>\n'
-            '<code>/setfilter liquidity 5000</code>\n'
-            '<code>/setfilter age 10</code>\n'
-            '<code>/setfilter quote USDT</code>\n'
-            '<code>/setfilter coins BTC,ETH,SOL</code>\n'
-            '<code>/setfilter fees on</code>\n'
-            '<code>/setfilter validation strict</code>\n\n'
-            'Use <code>/setfilter coins all</code> to scan all coins.',
-            parse_mode='HTML', reply_markup=kb([[('⬅️ Filters', 'filter:back')]])
-        )
+        await q.edit_message_text('✏️ <b>FILTER COMMANDS</b>\n\n<code>/setfilter gap 1.0</code>\n<code>/setfilter net 0.5</code>\n<code>/setfilter volume 50000</code>\n<code>/setfilter liquidity 5000</code>\n<code>/setfilter age 10</code>\n<code>/setfilter quote USDT</code>\n<code>/setfilter coins BTC,ETH,SOL</code>\n<code>/setfilter fees on</code>\n<code>/setfilter validation strict</code>\n\nUse <code>/setfilter coins all</code> to scan all coins.', parse_mode='HTML', reply_markup=kb([[('⬅️ Filters','filter:back')]]))
     elif data == 'filter:back':
         f = svc.repo.filters_from_row(await svc.get_user(uid))
         await q.edit_message_text(_filter_text(f), parse_mode='HTML', reply_markup=_filter_keyboard(f))
@@ -223,7 +200,7 @@ async def filter_settings_callback(update: Update, context: ContextTypes.DEFAULT
         await svc.repo.set_filters(uid, dict(DEFAULT_FILTERS))
         f = svc.repo.filters_from_row(await svc.get_user(uid))
         await q.edit_message_text('🔄 <b>Filters reset to defaults.</b>\n\n' + _filter_text(f), parse_mode='HTML', reply_markup=_filter_keyboard(f))
-    elif data in {'filter:toggle_fees', 'filter:toggle_validation'}:
+    elif data in {'filter:toggle_fees','filter:toggle_validation'}:
         f = svc.repo.filters_from_row(await svc.get_user(uid))
         if data.endswith('fees'):
             await _save_filter_patch(svc, uid, {'require_fees': not f.require_fees})
@@ -237,35 +214,10 @@ async def settings_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     svc = context.application.bot_data['service']
     row = await svc.get_user(update.effective_user.id)
     f = svc.repo.filters_from_row(row)
-    text = (
-        '⚙️ <b>SETTINGS</b>\n\n'
-        f'🔐 Validation mode: <b>{html.escape(f.validation_mode.upper())}</b>\n'
-        f'🧠 AI mode: <b>{html.escape((row["result_mode"] or "off").upper())}</b>\n'
-        f'🧪 Simulation: <b>ON</b>\n\n'
-        'Strict validation requires compatible transfer networks and contract/address matching.\n'
-        'Loose validation bypasses those two checks and marks results as unverified.'
-    )
-    await update.effective_message.reply_text(text, parse_mode='HTML', reply_markup=kb([
-        [('🛡️ Strict', 'val:strict'), ('🔓 Loose', 'val:loose')],
-        [('🧠 AI Mode', 'ai'), ('🏠 Dashboard', 'home')],
-    ]))
+    text = ('⚙️ <b>SETTINGS</b>\n\n' f'🔐 Validation mode: <b>{html.escape(f.validation_mode.upper())}</b>\n' f'🧠 AI mode: <b>{html.escape((row["result_mode"] or "off").upper())}</b>\n' f'🧪 Simulation: <b>ON</b>\n\n' 'Strict validation requires compatible transfer networks and contract/address matching.\n' 'Loose validation bypasses those two checks and marks results as unverified.')
+    await update.effective_message.reply_text(text, parse_mode='HTML', reply_markup=kb([[('🛡️ Strict','val:strict'),('🔓 Loose','val:loose')],[('🧠 AI Mode','ai'),('🏠 Dashboard','home')]]))
 
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = (
-        '❓ <b>ARBITRAGE TERMINAL COMMANDS</b>\n\n'
-        '/dashboard — open dashboard\n'
-        '/scan — open scanner\n'
-        '/results — scan history/results\n'
-        '/exchanges — select exchanges\n'
-        '/filters — view and edit scan filters\n'
-        '/setfilter KEY VALUE — change a filter\n'
-        '/resetfilters — restore default filters\n'
-        '/settings — validation and AI settings\n'
-        '/status — exchange/runtime status\n'
-        '/diagnostics — latest scan diagnostics\n'
-        '/ai — AI result mode\n'
-        '/vipkey — activate VIP access\n\n'
-        'Admin: /genkey KEY DAYS|lifetime, /aiprobe'
-    )
-    await update.effective_message.reply_text(text, parse_mode='HTML', reply_markup=kb([[('📊 Filters', 'filters'), ('🏠 Dashboard', 'home')]]))
+    text = ('❓ <b>ARBITRAGE TERMINAL COMMANDS</b>\n\n' '/dashboard — open dashboard\n' '/scan — open scanner\n' '/results — scan history/results\n' '/exchanges — select exchanges\n' '/filters — view and edit scan filters\n' '/setfilter KEY VALUE — change a filter\n' '/resetfilters — restore default filters\n' '/settings — validation and AI settings\n' '/status — exchange/runtime status\n' '/diagnostics — latest scan diagnostics\n' '/ai — AI result mode\n' '/vipkey — activate VIP access\n\n' 'Admin: /genkey KEY DAYS|lifetime, /aiprobe')
+    await update.effective_message.reply_text(text, parse_mode='HTML', reply_markup=kb([[('📊 Filters','filters'),('🏠 Dashboard','home')]]))
