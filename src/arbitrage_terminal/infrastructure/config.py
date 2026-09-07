@@ -16,6 +16,11 @@ class Settings(BaseSettings):
     ai_api_key: str = ''
     ai_model: str = ''
     ai_timeout_seconds: float = Field(30., ge=3, le=120)
+    github_repo: str = 'Firdousratherr/Arbitrage-bot'
+    github_token: str = ''
+    github_base_branch: str = 'nextgen-rebuild'
+    ai_code_repair_enabled: bool = False
+    ai_code_repair_allow_workflows: bool = False
     dry_run: bool = True
     require_vip: bool = True
     log_level: str = 'INFO'
