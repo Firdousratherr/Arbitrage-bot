@@ -168,7 +168,7 @@ class ArbitrageScanner:
             for t in tickers:
                 ticker_map.setdefault(t.symbol, []).append(t)
             for diag in diagnostics:
-                if diag.exchange == name and diag.stage == 'market_data':
+                if diag.exchange == name and diag.operation == 'market_data':
                     diag.retry_count += retries
                     diag.latency_ms += latency_ms
                     break
