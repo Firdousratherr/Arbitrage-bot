@@ -18,7 +18,8 @@ class Repository:
                 await self.db.execute('INSERT OR IGNORE INTO user_exchange_config(user_id,exchanges) VALUES (?,?)',(r['telegram_id'],r['selected_exchanges'] or '[]'));await self.db.execute('INSERT OR IGNORE INTO user_scanner_config(user_id,filters) VALUES (?,?)',(r['telegram_id'],r['filters'] or json.dumps(DEFAULT_FILTERS)))
         if 'registration_date' in cols:await self.db.execute('UPDATE users SET created_at=COALESCE(created_at,registration_date,?)',(datetime.now(timezone.utc).isoformat(),))
         await self.db.execute('UPDATE users SET last_active=COALESCE(last_active,created_at,?)',(datetime.now(timezone.utc).isoformat(),))
-        if not (await (await self.db.execute('SELECT COUNT(*) c FROM schema_version')).fetchone()):await self.db.execute('INSERT INTO schema_version VALUES (1)')
+        row=await (await self.db.execute('SELECT COUNT(*) c FROM schema_version')).fetchone()
+        if row['c']==0:await self.db.execute('INSERT INTO schema_version VALUES (1)')
         await self.db.commit()
     async def close(self):
         if self.db:await self.db.close()
@@ -35,6 +36,12 @@ class Repository:
     async def get_scan(self,user_id,scan_id):
         r=await (await self.db.execute('SELECT payload FROM scan_snapshots WHERE scan_id=? AND user_id=?',(scan_id,user_id))).fetchone();return json.loads(r['payload']) if r else None
     async def history(self,user_id,limit=20):return await (await self.db.execute('SELECT scan_id,started_at,state,opportunities_found FROM scan_snapshots WHERE user_id=? ORDER BY started_at DESC LIMIT ?',(user_id,limit))).fetchall()
+    async def vip_active(self,user_id):
+        r=await (await self.db.execute('SELECT vip_status,vip_expiry FROM users WHERE telegram_id=?',(user_id,))).fetchone()
+        if not r or r['vip_status']!='active':return False
+        if r['vip_expiry'] and r['vip_expiry']<=datetime.now(timezone.utc).isoformat():
+            await self.db.execute("UPDATE users SET vip_status='expired' WHERE telegram_id=?",(user_id,));await self.db.commit();return False
+        return True
     async def redeem_vip_key(self,user_id,key):
         key=key.strip().upper();r=await (await self.db.execute('SELECT * FROM vip_keys WHERE key=?',(key,))).fetchone()
         if not r or r['status']!='unused':return False,'That VIP key is invalid, already used, or revoked.'
