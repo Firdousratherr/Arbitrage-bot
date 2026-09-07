@@ -14,6 +14,8 @@ class TerminalService:
         self.ai = ai
         self.settings = settings
         self.exchanges = exchanges if exchanges is not None else getattr(scanner, 'exchanges', {})
+        self._scan_locks: dict[int, asyncio.Lock] = {}
+        self._scan_locks_guard = asyncio.Lock()
 
     async def ensure_user(self, user, email=None):
         await self.repo.ensure_user(user.id, user.username, email)
@@ -28,19 +30,30 @@ class TerminalService:
         await self.repo.set_ai_mode(user_id, mode)
 
     async def set_validation_mode(self, user_id, mode):
+        mode = str(mode).lower()
+        if mode not in {'strict', 'loose'}:
+            raise ValueError('Validation mode must be strict or loose.')
         row = await self.repo.user(user_id)
         data = json.loads(row['filters'] or '{}')
         data['validation_mode'] = mode
         await self.repo.set_filters(user_id, data)
 
+    async def _scan_lock(self, user_id):
+        async with self._scan_locks_guard:
+            return self._scan_locks.setdefault(user_id, asyncio.Lock())
+
     async def run_scan(self, user_id, progress=None):
-        row = await self.repo.user(user_id)
-        selected = json.loads(row['exchanges'] or '[]')
-        snap = await self.scanner.scan(
-            user_id, selected, self.repo.filters_from_row(row), progress=progress
-        )
-        await self.repo.save_scan(snap)
-        return snap
+        lock = await self._scan_lock(user_id)
+        if lock.locked():
+            raise RuntimeError('A scan is already running for this user. Please wait for it to finish.')
+        async with lock:
+            row = await self.repo.user(user_id)
+            selected = json.loads(row['exchanges'] or '[]')
+            snap = await self.scanner.scan(
+                user_id, selected, self.repo.filters_from_row(row), progress=progress
+            )
+            await self.repo.save_scan(snap)
+            return snap
 
     async def history(self, user_id):
         return await self.repo.history(user_id)
@@ -94,6 +107,8 @@ class TerminalService:
 
     async def order_route(self, user_id, scan_id, index):
         snap = await self.repo.get_scan(user_id, scan_id)
+        if not snap:
+            raise ValueError('Scan snapshot not found')
         opportunities = snap.get('opportunities', [])
         if index < 0 or index >= len(opportunities):
             raise ValueError('Invalid opportunity')
@@ -102,10 +117,14 @@ class TerminalService:
         sell = self.exchanges.get(str(o['sell_exchange']).lower())
         if not buy or not sell:
             raise RuntimeError('Required exchange adapter is unavailable')
-        buy_book, sell_book = await asyncio.gather(
-            buy.get_orderbook(o['symbol'], limit=10),
-            sell.get_orderbook(o['symbol'], limit=10),
-            return_exceptions=True,
+        timeout = max(3.0, min(float(self.settings.scan_timeout_seconds), 30.0))
+        buy_book, sell_book = await asyncio.wait_for(
+            asyncio.gather(
+                buy.get_orderbook(o['symbol'], limit=10),
+                sell.get_orderbook(o['symbol'], limit=10),
+                return_exceptions=True,
+            ),
+            timeout=timeout,
         )
         return {
             'symbol': o['symbol'],
