@@ -1,11 +1,16 @@
 from __future__ import annotations
+
 import logging
+
 from .ccxt_adapter import CcxtAdapter
 from .lbank import LBankAdapter
 from .xt import XTAdapter
 
 logger = logging.getLogger(__name__)
 SPECIAL = {'lbank': LBankAdapter, 'xt': XTAdapter}
+# CCXT currently exposes Gate.io as `gate`; keep `gateio` as the
+# user-facing/configuration name for backwards compatibility.
+CCXT_IDS = {'gateio': 'gate'}
 
 
 def build_exchanges(names, credentials_provider, diagnostics=None):
@@ -14,7 +19,8 @@ def build_exchanges(names, credentials_provider, diagnostics=None):
     for name in dict.fromkeys(str(n).strip().lower() for n in names if str(n).strip()):
         try:
             adapter = SPECIAL.get(name, CcxtAdapter)
-            result[name] = adapter(name, public_name=name, credentials=credentials_provider(name))
+            exchange_id = CCXT_IDS.get(name, name)
+            result[name] = adapter(exchange_id, public_name=name, credentials=credentials_provider(name))
         except Exception as exc:
             detail = str(exc)[:500]
             logger.exception("exchange adapter initialization failed", extra={"exchange": name})
