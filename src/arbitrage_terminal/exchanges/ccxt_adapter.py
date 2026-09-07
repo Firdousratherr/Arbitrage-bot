@@ -5,6 +5,7 @@ import time
 from datetime import datetime, timezone
 
 import ccxt.async_support as ccxt
+from ccxt.base.errors import InvalidRequest
 
 from arbitrage_terminal.domain.models import Market, MarketType, Ticker
 from arbitrage_terminal.domain.normalization import normalize_symbol
@@ -24,6 +25,7 @@ class CcxtAdapter(ExchangeAdapter):
         self._currencies_task = None
         self.last_diagnostics = {}
         self.last_market_symbols = set()
+        self.last_market_asset_identities = {}
         self.last_ticker_symbols = set()
         self.last_ticker_count = 0
         self.last_ticker_source = ''
@@ -36,7 +38,7 @@ class CcxtAdapter(ExchangeAdapter):
             raise ExchangeError(str(e), 'rate_limit', 429) from e
         except ccxt.AuthenticationError as e:
             raise ExchangeError(str(e), 'authentication', 401) from e
-        except ccxt.InvalidRequest as e:
+        except InvalidRequest as e:
             raise ExchangeError(str(e), 'invalid_request', 400) from e
         except ccxt.NetworkError as e:
             raise ExchangeError(str(e), 'network') from e
@@ -56,14 +58,51 @@ class CcxtAdapter(ExchangeAdapter):
             and not any(m.get(k) is True for k in ('contract', 'swap', 'future', 'option'))
         )
 
+    @staticmethod
+    def _asset_identity(base, market, currency):
+        """Return a chain/contract identity when the exchange exposes one.
+
+        Base/quote symbols are not sufficient to prove that two exchange tickers
+        represent the same token. Prefer explicit contract addresses from the
+        currency/network metadata; return None when the exchange exposes no
+        globally comparable identity so legacy symbol matching can still work.
+        """
+        addresses = set()
+
+        def add(value):
+            if value is not None and str(value).strip():
+                addresses.add(str(value).strip().lower())
+
+        for source in (currency or {}, market or {}, (currency or {}).get('info') or {}, (market or {}).get('info') or {}):
+            if isinstance(source, dict):
+                for key in ('contractAddress', 'contract_address', 'tokenAddress', 'token_address', 'address'):
+                    add(source.get(key))
+
+        networks = (currency or {}).get('networks') or {}
+        entries = networks.items() if isinstance(networks, dict) else enumerate(networks)
+        for key, network in entries:
+            network = network or {}
+            if not isinstance(network, dict):
+                continue
+            for field in ('contractAddress', 'contract_address', 'tokenAddress', 'token_address', 'address'):
+                add(network.get(field))
+
+        if not addresses:
+            return None
+        return f"{base.upper()}|contract:{'|'.join(sorted(addresses))}"
+
     async def get_markets(self):
         self.last_market_symbols = set()
+        self.last_market_asset_identities = {}
         self.last_ticker_symbols = set()
         self.last_ticker_count = 0
         self.last_ticker_source = ''
         data = await self._call('markets', self.client.load_markets)
         self._markets = data or {}
         out = []
+        currencies = getattr(self.client, 'currencies', None)
+        if isinstance(currencies, dict):
+            self._currencies = currencies
         for raw, m in self._markets.items():
             if not self._spot(m):
                 continue
@@ -71,15 +110,17 @@ class CcxtAdapter(ExchangeAdapter):
                 sym, base, quote, _ = normalize_symbol(raw)
             except ValueError:
                 continue
-            out.append(Market(self.name, sym, base, quote, MarketType.SPOT, True))
+            currency = (self._currencies or {}).get(base) or (self._currencies or {}).get(str(m.get('baseId') or '').upper())
+            identity = self._asset_identity(base, m, currency)
+            out.append(Market(self.name, sym, base, quote, MarketType.SPOT, True, identity))
+            if identity:
+                self.last_market_asset_identities[sym] = identity
         self.last_market_symbols = {m.symbol for m in out}
-        if isinstance(getattr(self.client, 'currencies', None), dict):
-            self._currencies = self.client.currencies
         return out
 
-    @staticmethod
-    def _parse_tickers(name, raw, wanted):
+    def _parse_tickers(self, name, raw, wanted):
         out = []
+        identities = self.last_market_asset_identities
         for raw_symbol, t in (raw or {}).items():
             try:
                 sym, base, quote, _ = normalize_symbol(raw_symbol)
@@ -94,7 +135,7 @@ class CcxtAdapter(ExchangeAdapter):
                 continue
             ts = t.get('timestamp')
             stamp = datetime.fromtimestamp(float(ts) / 1000, timezone.utc) if ts else datetime.now(timezone.utc)
-            out.append(Ticker(name, sym, base, quote, bid, ask, max(0.0, vol), stamp))
+            out.append(Ticker(name, sym, base, quote, bid, ask, max(0.0, vol), stamp, identities.get(sym)))
         return out
 
     async def _fetch_best_quotes(self, wanted):
@@ -107,8 +148,6 @@ class CcxtAdapter(ExchangeAdapter):
         try:
             return await self._call('tickers', self.client.fetch_tickers, sorted(wanted))
         except ExchangeError as exc:
-            # Some CCXT exchanges expose fetch_tickers but reject a symbol list.
-            # Retry the endpoint without symbols rather than dropping the exchange.
             if getattr(exc, 'error_type', None) not in {'invalid_request', 'exchange_api'}:
                 raise
             self.last_ticker_source = 'fetch_tickers_all'
