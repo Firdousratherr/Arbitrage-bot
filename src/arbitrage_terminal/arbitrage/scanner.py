@@ -46,7 +46,7 @@ class ArbitrageScanner:
                 await asyncio.sleep(sleep_for)
         raise last
 
-    async def _one(self, name, adapter, exchange_budget):
+    async def _load_markets_one(self, name, adapter, exchange_budget):
         started = time.perf_counter()
         diag = Diagnostic(name, 'market_data', '', 0, '')
         breaker = self.breakers.setdefault(name, CircuitBreaker())
@@ -56,19 +56,18 @@ class ArbitrageScanner:
             diag.error_type = e.error_type
             diag.detail = str(e)
             diag.timestamp = datetime.now(timezone.utc).isoformat()
-            return name, set(), [], diag, e
+            return name, set(), diag, e
         try:
             async with self.semaphore:
                 deadline = time.monotonic() + exchange_budget
-                markets, r1 = await self._call(adapter.get_markets, deadline)
-                symbols = {m.symbol for m in markets}
-                tickers, r2 = await self._call(lambda: adapter.get_tickers(symbols), deadline)
+                markets, retries = await self._call(adapter.get_markets, deadline)
+            symbols = {m.symbol for m in markets}
             diag.status = 'ok'
-            diag.retry_count = r1 + r2
+            diag.retry_count = retries
             diag.latency_ms = (time.perf_counter() - started) * 1000
             diag.timestamp = datetime.now(timezone.utc).isoformat()
             breaker.success()
-            return name, symbols, tickers, diag, None
+            return name, symbols, diag, None
         except Exception as e:
             breaker.failure()
             diag.status = 'failed'
@@ -77,7 +76,17 @@ class ArbitrageScanner:
             diag.error_type = getattr(e, 'error_type', type(e).__name__)
             diag.http_status = getattr(e, 'http_status', None)
             diag.detail = str(e)[:500]
-            return name, set(), [], diag, e
+            return name, set(), diag, e
+
+    async def _load_tickers_one(self, name, adapter, symbols, exchange_budget):
+        started = time.perf_counter()
+        try:
+            async with self.semaphore:
+                deadline = time.monotonic() + exchange_budget
+                tickers, retries = await self._call(lambda: adapter.get_tickers(symbols), deadline)
+            return name, tickers, retries, (time.perf_counter() - started) * 1000, None
+        except Exception as e:
+            return name, [], 0, (time.perf_counter() - started) * 1000, e
 
     async def scan(self, user_id, selected, filters, progress=None):
         async def emit(stage, **data):
@@ -100,32 +109,71 @@ class ArbitrageScanner:
         waves = max(1, math.ceil(len(adapters) / self.concurrency))
         exchange_budget = max(5.0, min(self.timeout * 2.0, (self.scan_deadline - 2.0) / waves))
 
-        async def one(name, adapter):
+        async def load_market(name, adapter):
             await emit('exchange', exchange=name, status='loading', markets=0, tickers=0)
-            r = await self._one(name, adapter, exchange_budget)
-            await emit('exchange', exchange=name, status='healthy' if r[4] is None else 'failed', markets=len(r[1]), tickers=len(r[2]))
+            r = await self._load_markets_one(name, adapter, exchange_budget)
+            await emit('exchange', exchange=name, status='healthy' if r[3] is None else 'failed', markets=len(r[1]), tickers=0)
             return r
 
         try:
-            results = await asyncio.wait_for(asyncio.gather(*(one(n, a) for n, a in adapters.items())), timeout=self.scan_deadline)
+            market_results = await asyncio.wait_for(
+                asyncio.gather(*(load_market(n, a) for n, a in adapters.items())),
+                timeout=self.scan_deadline,
+            )
         except asyncio.TimeoutError:
             failed = selected
             diagnostics = [Diagnostic(n, 'market_data', 'failed', 0, datetime.now(timezone.utc).isoformat(), error_type='scan_timeout', detail=f'Exchange market scan exceeded {self.scan_deadline:.0f}s deadline.') for n in selected]
             await emit('complete', comparisons=0, opportunities=0, healthy=0, failed=len(failed))
             return ScanSnapshot(scan_id, user_id, started, datetime.now(timezone.utc).isoformat(), selected, [], [], failed, 0, 0, 0, 0, ScanState.FAILED, diagnostics=diagnostics, warnings=[f'Scan stopped after the {self.scan_deadline:.0f}s safety deadline.'], errors=['Scan timed out before market data collection completed.'])
 
-        diagnostics = [r[3] for r in results]
+        diagnostics = [r[2] for r in market_results]
         for n in missing:
             diagnostics.append(Diagnostic(n, 'adapter_init', 'failed', 0, datetime.now(timezone.utc).isoformat(), error_type='unavailable', detail='Selected exchange is not available in the exchange registry.'))
-        healthy = [r[0] for r in results if r[4] is None]
-        failed = [r[0] for r in results if r[4] is not None] + missing
-        market_sets = {r[0]: r[1] for r in results}
-        ticker_map = {}
-        for n in healthy:
-            for t in next(r[2] for r in results if r[0] == n):
-                ticker_map.setdefault(t.symbol, []).append(t)
-
+        healthy = [r[0] for r in market_results if r[3] is None]
+        failed = [r[0] for r in market_results if r[3] is not None] + missing
+        market_sets = {r[0]: r[1] for r in market_results}
         union = set().union(*(market_sets.values())) if market_sets else set()
+
+        symbol_counts = {}
+        for symbols in market_sets.values():
+            for symbol in symbols:
+                symbol_counts[symbol] = symbol_counts.get(symbol, 0) + 1
+        shared_symbols = {symbol for symbol, count in symbol_counts.items() if count >= 2}
+        symbols_by_exchange = {name: (market_sets.get(name, set()) & shared_symbols) for name in healthy}
+        await emit('markets', healthy=len(healthy), failed=len(failed), markets=len(union), symbols=len(shared_symbols))
+
+        ticker_results = []
+        if healthy and time.monotonic() - started_mono < self.scan_deadline:
+            try:
+                ticker_results = await asyncio.wait_for(
+                    asyncio.gather(*(
+                        self._load_tickers_one(name, adapters[name], symbols_by_exchange[name], exchange_budget)
+                        for name in healthy
+                    )),
+                    timeout=max(1.0, self.scan_deadline - (time.monotonic() - started_mono)),
+                )
+            except asyncio.TimeoutError:
+                ticker_results = [(name, [], 0, 0.0, asyncio.TimeoutError('Ticker collection exceeded scan deadline.')) for name in healthy]
+        else:
+            ticker_results = [(name, [], 0, 0.0, asyncio.TimeoutError('Scan deadline reached before ticker collection.')) for name in healthy]
+
+        ticker_map = {}
+        ticker_counts = {}
+        for name, tickers, retries, latency_ms, error in ticker_results:
+            ticker_counts[name] = len(tickers)
+            if error:
+                failed.append(name)
+                diagnostics.append(Diagnostic(name, 'ticker_data', 'failed', latency_ms, datetime.now(timezone.utc).isoformat(), error_type=getattr(error, 'error_type', type(error).__name__), http_status=getattr(error, 'http_status', None), detail=str(error)[:500]))
+                continue
+            for t in tickers:
+                ticker_map.setdefault(t.symbol, []).append(t)
+            for diag in diagnostics:
+                if diag.exchange == name and diag.stage == 'market_data':
+                    diag.retry_count += retries
+                    diag.latency_ms += latency_ms
+                    break
+            await emit('exchange', exchange=name, status='healthy', markets=len(market_sets.get(name, set())), tickers=len(tickers))
+
         warnings = ['One or more selected exchanges failed; results use only healthy exchanges.'] if failed else []
         rejected = []
         opportunities = []
@@ -133,7 +181,6 @@ class ArbitrageScanner:
         fee_maps = {}
         degraded = []
         remaining = max(1, self.scan_deadline - (time.monotonic() - started_mono))
-        await emit('markets', healthy=len(healthy), failed=len(failed), markets=len(union), symbols=len(ticker_map))
 
         async def fee_one(n, a):
             try:
@@ -141,13 +188,13 @@ class ArbitrageScanner:
             except Exception as e:
                 return n, {}, e
 
-        if healthy and time.monotonic() - started_mono < self.scan_deadline:
+        if healthy and ticker_map and time.monotonic() - started_mono < self.scan_deadline:
             try:
                 fee_results = await asyncio.wait_for(asyncio.gather(*(fee_one(n, adapters[n]) for n in healthy)), timeout=min(remaining, self.scan_deadline - (time.monotonic() - started_mono)))
             except asyncio.TimeoutError:
                 fee_results = [(n, {}, TimeoutError('Fee collection exceeded scan deadline.')) for n in healthy]
         else:
-            fee_results = [(n, {}, TimeoutError('Scan deadline reached before fee collection.')) for n in healthy]
+            fee_results = [(n, {}, TimeoutError('No usable ticker data before fee collection.')) for n in healthy]
 
         for n, data, e in fee_results:
             fee_maps[n] = data
@@ -276,4 +323,4 @@ class ArbitrageScanner:
         if not healthy:
             state = ScanState.FAILED
         errors = ['No trustworthy market data was returned from selected exchanges.'] if state == ScanState.FAILED else []
-        return ScanSnapshot(scan_id, user_id, started, datetime.now(timezone.utc).isoformat(), selected, healthy, degraded, failed, len(union), sum(len(r[2]) for r in results), comparisons, len(opportunities), state, opportunities, diagnostics, warnings, errors, rejected)
+        return ScanSnapshot(scan_id, user_id, started, datetime.now(timezone.utc).isoformat(), selected, healthy, degraded, failed, len(union), sum(ticker_counts.values()), comparisons, len(opportunities), state, opportunities, diagnostics, warnings, errors, rejected)
