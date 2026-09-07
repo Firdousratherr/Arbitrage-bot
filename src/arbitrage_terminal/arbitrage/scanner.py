@@ -159,7 +159,6 @@ class ArbitrageScanner:
             except Exception as e:
                 return n, {}, e
 
-        # Only query fees from exchanges that actually returned usable market data.
         if healthy and time.monotonic() - started_mono < self.scan_deadline:
             try:
                 fee_results = await asyncio.wait_for(
@@ -253,6 +252,8 @@ class ArbitrageScanner:
                     reason = filters.check(o, include_validation=False)
                     if reason:
                         rejected.append({'symbol': symbol, 'buy': buy.exchange, 'sell': sell.exchange, 'reason': reason})
+                        if comparisons % 500 == 0:
+                            await emit('candidates', comparisons=comparisons, opportunities=len(opportunities), message='Still evaluating candidates…')
                         continue
                     if filters.validation_mode.lower() != 'loose':
                         bn = await get_transfer(buy.exchange, buy.base)
@@ -263,13 +264,18 @@ class ArbitrageScanner:
                         reason = filters.check(o, include_validation=True)
                         if reason:
                             rejected.append({'symbol': symbol, 'buy': buy.exchange, 'sell': sell.exchange, 'reason': reason})
+                            if comparisons % 500 == 0:
+                                await emit('candidates', comparisons=comparisons, opportunities=len(opportunities), message='Still validating candidates…')
                             continue
                     opportunities.append(o)
                     if len(opportunities) % 5 == 0:
                         await emit(
                             'opportunity', count=len(opportunities), symbol=o.symbol,
                             buy=o.buy_exchange, sell=o.sell_exchange, gap=o.raw_gap,
+                            comparisons=comparisons,
                         )
+                    elif comparisons % 500 == 0:
+                        await emit('candidates', comparisons=comparisons, opportunities=len(opportunities), message='Still evaluating candidates…')
                 if timed_out:
                     break
             if timed_out:
@@ -277,9 +283,7 @@ class ArbitrageScanner:
 
         if timed_out:
             warnings.append(f'Scan stopped at the {self.scan_deadline:.0f}s safety deadline; results are partial.')
-            await emit('complete', comparisons=comparisons, opportunities=len(opportunities), healthy=len(healthy), failed=len(failed))
-        else:
-            await emit('complete', comparisons=comparisons, opportunities=len(opportunities), healthy=len(healthy), failed=len(failed))
+        await emit('complete', comparisons=comparisons, opportunities=len(opportunities), healthy=len(healthy), failed=len(failed))
 
         opportunities.sort(
             key=lambda o: (
