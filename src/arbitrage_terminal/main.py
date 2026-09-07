@@ -93,7 +93,8 @@ async def _run():
     app.add_handler(CallbackQueryHandler(filters_callback, pattern=r'^filters$'))
     app.add_handler(CallbackQueryHandler(filter_settings_callback, pattern=r'^filter:'))
     app.add_handler(CallbackQueryHandler(admin_callback, pattern=r'^admin:'))
-    app.add_handler(CallbackQueryHandler(aifix_callback, pattern=r'^aifix:'))
+    if settings.ai_code_repair_enabled:
+        app.add_handler(CallbackQueryHandler(aifix_callback, pattern=r'^aifix:'))
 
     app.add_handler(CommandHandler('dashboard', dashboard_cmd))
     app.add_handler(CommandHandler('status', status_cmd))
@@ -104,10 +105,11 @@ async def _run():
     app.add_handler(CommandHandler('settings', settings_cmd))
     app.add_handler(CommandHandler('help', help_cmd))
     app.add_handler(CommandHandler('admin', admin_cmd))
-    app.add_handler(CommandHandler('aifix', aifix_cmd))
-    app.add_handler(CommandHandler('aifixstatus', aifix_status_cmd))
-    app.add_handler(CommandHandler('aifixhistory', aifix_history_cmd))
-    app.add_handler(CommandHandler('aifixcancel', aifix_cancel_cmd))
+    if settings.ai_code_repair_enabled:
+        app.add_handler(CommandHandler('aifix', aifix_cmd))
+        app.add_handler(CommandHandler('aifixstatus', aifix_status_cmd))
+        app.add_handler(CommandHandler('aifixhistory', aifix_history_cmd))
+        app.add_handler(CommandHandler('aifixcancel', aifix_cancel_cmd))
     app.add_handler(CommandHandler('users', users_cmd))
     app.add_handler(CommandHandler('userinfo', userinfo_cmd))
     app.add_handler(CommandHandler('givevip', givevip_cmd))
