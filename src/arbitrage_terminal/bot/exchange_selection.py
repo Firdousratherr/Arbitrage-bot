@@ -20,7 +20,6 @@ def _markup(names, selected):
 async def exchange_selection_callback(update, context):
     q = update.callback_query
     try:
-        await q.answer()
         svc = context.application.bot_data['service']
         uid = q.from_user.id
         row = await svc.get_user(uid)
@@ -36,7 +35,7 @@ async def exchange_selection_callback(update, context):
                 await q.answer('Select at least two exchanges.', show_alert=True)
                 return
             await svc.set_exchanges(uid, list(selected))
-            row = await svc.get_user(uid)
+            await q.answer('Selection saved.')
             await q.edit_message_text(
                 '✅ <b>Exchange selection saved.</b>\n\n'
                 f'🏦 {len(selected)} exchanges selected.\n\n'
@@ -58,6 +57,7 @@ async def exchange_selection_callback(update, context):
             else:
                 selected.add(action)
         await svc.set_exchanges(uid, list(selected))
+        await q.answer('Updated.')
         await q.edit_message_text(
             '🏦 <b>SELECT EXCHANGES</b>\n\n'
             'All selected exchanges are equal. No priority.\n\n'
@@ -66,12 +66,16 @@ async def exchange_selection_callback(update, context):
             reply_markup=_markup(names, selected),
         )
     except Exception as exc:
+        context.application.logger.exception('exchange selection callback failed')
         try:
             await q.answer('Exchange selection failed. Please try again.', show_alert=True)
+        except Exception:
+            pass
+        try:
             await q.edit_message_text(
                 f'⚠️ <b>Exchange selection error</b>\n\n{type(exc).__name__}: {str(exc)[:180]}',
                 parse_mode='HTML',
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('🔄 Try Again', callback_data='exchanges')]])
             )
         except Exception:
-            context.application.logger.exception('exchange selection callback failed')
+            pass
