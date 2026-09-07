@@ -26,6 +26,7 @@ class CcxtAdapter(ExchangeAdapter):
     @staticmethod
     def _spot(m):return m.get('active') is not False and (m.get('spot') is True or m.get('type')=='spot') and not any(m.get(k) is True for k in ('contract','swap','future','option'))
     async def get_markets(self):
+        self.last_market_symbols=set();self.last_ticker_symbols=set();self.last_ticker_count=0
         data=await self._call('markets',self.client.load_markets);self._markets=data or {};out=[]
         for raw,m in self._markets.items():
             if not self._spot(m):continue
@@ -36,6 +37,7 @@ class CcxtAdapter(ExchangeAdapter):
         if isinstance(getattr(self.client,'currencies',None),dict):self._currencies=self.client.currencies
         return out
     async def get_tickers(self,symbols=None):
+        self.last_ticker_symbols=set();self.last_ticker_count=0
         if not self._markets:await self.get_markets()
         raw=await self._call('tickers',self.client.fetch_tickers);wanted={s.upper() for s in symbols} if symbols else None;out=[]
         for raw_symbol,t in (raw or {}).items():
