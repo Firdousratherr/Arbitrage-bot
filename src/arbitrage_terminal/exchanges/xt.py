@@ -25,6 +25,7 @@ class XTAdapter(CcxtAdapter):
             self.client.fetch_bids_asks,
             list(wanted),
         )
+        identities = getattr(self, 'last_market_asset_identities', {})
         out = []
         for raw_symbol, ticker in (response or {}).items():
             try:
@@ -40,7 +41,7 @@ class XTAdapter(CcxtAdapter):
             stamp = datetime.fromtimestamp(float(ts) / 1000, timezone.utc) if ts else datetime.now(timezone.utc)
             out.append(Ticker(
                 self.name, symbol, base, quote, bid, ask, max(0.0, volume), stamp,
-                self.last_market_asset_identities.get(symbol),
+                identities.get(symbol),
             ))
 
         self.last_ticker_symbols = {t.symbol for t in out}
