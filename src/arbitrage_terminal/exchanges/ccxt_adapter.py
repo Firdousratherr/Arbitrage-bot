@@ -31,6 +31,10 @@ class CcxtAdapter(ExchangeAdapter):
             try:sym,base,quote,_=normalize_symbol(raw)
             except ValueError:continue
             out.append(Market(self.name,sym,base,quote,MarketType.SPOT,True))
+        # CCXT load_markets() normally populates the cached currencies property too.
+        # Keep that metadata available for fast, non-blocking transfer validation.
+        if isinstance(getattr(self.client,'currencies',None),dict):
+            self._currencies=self.client.currencies
         return out
     async def get_tickers(self,symbols=None):
         if not self._markets:await self.get_markets()
@@ -56,14 +60,16 @@ class CcxtAdapter(ExchangeAdapter):
                 except (TypeError,ValueError):pass
         return result
     async def _get_currencies(self):
+        # Never make an unbounded fetchCurrencies call from the scan path.  CCXT's
+        # load_markets() already populates client.currencies on supported exchanges.
+        # If an exchange does not expose cached currency metadata, report it as
+        # unavailable and let strict validation reject those routes quickly.
         if self._currencies is not None:return self._currencies
-        if self._currencies_task is None:
-            self._currencies_task=asyncio.create_task(self._call('currencies',self.client.fetch_currencies))
-        try:
-            self._currencies=await self._currencies_task
-            return self._currencies or {}
-        finally:
-            self._currencies_task=None
+        cached=getattr(self.client,'currencies',None)
+        if isinstance(cached,dict) and cached:
+            self._currencies=cached
+            return cached
+        return {}
     async def get_transfer_info(self,asset):
         currencies=await self._get_currencies();info=(currencies or {}).get(asset.upper(),{});networks=[]
         for key,n in (info.get('networks') or {}).items():
