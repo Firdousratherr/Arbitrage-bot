@@ -8,10 +8,11 @@ from .models import Opportunity
 @dataclass(slots=True)
 class ScanFilters:
     min_gap: float = .50
-    min_net_profit: float = .20
+    min_net_profit: float = 2.00
     min_volume: float = 10000.
     min_liquidity: float = 1000.
     max_data_age: float = 10.
+    trade_size: float = 1000.
     require_network: bool = True
     require_fees: bool = False
     selected_coins: set[str] = field(default_factory=set)
@@ -22,14 +23,32 @@ class ScanFilters:
         self.selected_coins = {str(x).strip().upper() for x in self.selected_coins if str(x).strip()}
         self.quote_currency = str(self.quote_currency or 'USDT').strip().upper()
         self.validation_mode = str(self.validation_mode or 'strict').strip().lower()
+        self.trade_size = float(self.trade_size or 0)
+        if self.trade_size <= 0:
+            self.trade_size = 1000.0
+
+    def net_profit_amount(self, o: Opportunity) -> float | None:
+        if o.estimated_net_profit is None:
+            return None
+        return float(o.estimated_net_profit) * self.trade_size / 100.0
+
+    def _annotate_profit(self, o: Opportunity):
+        amount = self.net_profit_amount(o)
+        if amount is not None:
+            o.metadata['trade_size'] = self.trade_size
+            o.metadata['net_profit_quote'] = self.quote_currency
+            o.metadata['net_profit_amount'] = amount
+            o.metadata['net_profit_roi'] = float(o.estimated_net_profit)
+        return amount
 
     def check(self, o: Opportunity, include_validation: bool = True):
         if o.raw_gap < self.min_gap:
             return f'gap {o.raw_gap:.3f}% below {self.min_gap:.3f}%'
-        if o.estimated_net_profit is None:
+        amount = self._annotate_profit(o)
+        if amount is None:
             return 'net profit unavailable because required fee data is missing'
-        if o.estimated_net_profit < self.min_net_profit:
-            return f'net profit {o.estimated_net_profit:.3f}% below {self.min_net_profit:.3f}%'
+        if amount < self.min_net_profit:
+            return f'net profit {amount:.3f} {self.quote_currency} below {self.min_net_profit:.3f} {self.quote_currency}'
         if min(o.buy_volume, o.sell_volume) < self.min_volume:
             return 'volume below minimum'
         if min(o.buy_volume, o.sell_volume) < self.min_liquidity:
