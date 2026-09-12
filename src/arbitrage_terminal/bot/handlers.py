@@ -36,7 +36,10 @@ async def text(update, context):
         key = update.effective_message.text.strip(); ok, msg = await context.application.bot_data['repo'].redeem_vip_key(update.effective_user.id, key)
         if not ok:
             context.user_data['await_vip_key'] = True; await update.effective_message.reply_text('⚠️ ' + msg); return
-        row = await context.application.bot_data['service'].get_user(update.effective_user.id); await update.effective_message.reply_text('🔐 ' + msg + '\n\nChoose your exchanges.', reply_markup=await exchange_markup(context, row))
+        row = await context.application.bot_data['service'].get_user(update.effective_user.id); await update.effective_message.reply_text('🔐 ' + msg + '\n\nChoose your exchanges.', reply_markup=await exchange_markup(context, row)); return
+    if context.application.bot_data['settings'].ai_code_repair_enabled:
+        from .ai_workbench import aichat_text
+        await aichat_text(update, context)
 
 
 async def exchange_markup(context, row):
@@ -62,7 +65,7 @@ async def genkey(update, context):
     except Exception as e: await update.effective_message.reply_text(f'⚠️ Could not create key: {type(e).__name__}')
 
 
-async def scan(update, context): await update.effective_message.reply_text('Use the dashboard Scan button.', reply_markup=kb([[('🔎 Scan Arbitrage','scan')]]))
+async def scan(update, context): await update.effective_message.reply_text('Use the dashboard Scan button.', reply_markup=kb([[('🔎 Scan Arbitrage','scan')]))
 
 
 async def results_cmd(update, context):
