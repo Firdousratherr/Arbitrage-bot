@@ -18,7 +18,7 @@ class Fake(ExchangeAdapter):
         return [Ticker(self.name,'BTC/USDT','BTC','USDT',self.price-1,self.price,100000,datetime.now(timezone.utc))]
     async def get_orderbook(self,symbol,limit=10):return {'bids':[[self.price-1,1]],'asks':[[self.price,1]]}
     async def get_trading_fees(self,symbols=None):return {'BTC/USDT':.1}
-    async def get_transfer_info(self,asset):return {'available':True,'networks':[{'network':'ERC20','deposit':True,'withdraw':True,'contract_address':'0xabc'}]}
+    async def get_transfer_info(self,asset):return {'available':True,'networks':[{'network':'ERC20','deposit':True,'withdraw':True,'fee':0.0,'contract_address':'0xabc'}]}
     async def close(self):pass
 
 
@@ -52,7 +52,20 @@ async def test_orderbook_validation_preserves_ticker_liquidity_and_reprices_net_
     assert o.buy_volume == 100000
     assert o.sell_volume == 100000
     assert o.estimated_net_profit is not None
+    assert o.metadata['withdrawal_fee_available'] is True
     assert o.estimated_net_profit == pytest.approx(o.metadata['executable_gap_pct'] - .2)
+
+
+@pytest.mark.asyncio
+async def test_unknown_withdrawal_fee_is_rejected_in_strict_mode():
+    class UnknownWithdrawal(Fake):
+        async def get_transfer_info(self,asset):
+            return {'available':True,'networks':[{'network':'ERC20','deposit':True,'withdraw':True,'fee':None,'contract_address':'0xabc'}]}
+
+    s=ArbitrageScanner({'a':UnknownWithdrawal('a',100),'b':Fake('b',102)})
+    x=await s.scan(1,['a','b'],ScanFilters(min_gap=0,min_net_profit=0,min_volume=0,min_liquidity=0))
+    assert x.opportunities_found == 0
+    assert any('withdrawal fee unavailable' in r['reason'] for r in x.filter_rejections)
 
 
 @pytest.mark.asyncio
