@@ -71,7 +71,7 @@ async def _error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
 
 async def _run():
     settings,repo,exchanges,scanner,ai,code_repair,service,exchange_diagnostics,recovery_advisor,recovery_memory=await build_runtime()
-    app=Application.builder().token(settings.telegram_concurrent_updates and settings.telegram_bot_token or settings.telegram_bot_token).concurrent_updates(settings.telegram_concurrent_updates).build()
+    app=Application.builder().token(settings.telegram_bot_token).concurrent_updates(settings.telegram_concurrent_updates).build()
     app.bot_data.update({'settings':settings,'repo':repo,'exchanges':exchanges,'exchange_names':[n for n in settings.exchanges if n in exchanges],'scanner':scanner,'ai':ai,'code_repair':code_repair,'service':service,'exchange_diagnostics':exchange_diagnostics,'recovery_advisor':recovery_advisor,'recovery_memory':recovery_memory})
     app.add_handler(CallbackQueryHandler(help_callback,pattern=r'^help:')); app.add_handler(CallbackQueryHandler(contact_callback,pattern=r'^contact:'))
     app.add_handler(CallbackQueryHandler(dashboard_exchanges_callback,pattern=r'^exchanges$')); app.add_handler(CallbackQueryHandler(exchange_selection_callback,pattern=r'^ex:'))
