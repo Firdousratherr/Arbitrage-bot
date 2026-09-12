@@ -66,12 +66,20 @@ class CcxtAdapter(ExchangeAdapter):
         self.last_ticker_symbols = set()
         self.last_ticker_count = 0
         self.last_ticker_source = ''
-        self.client = self._new_client()
+        new_client = self._new_client()
         try:
-            await old.close()
+            try:
+                await old.close()
+            except Exception:
+                pass
+            await new_client.load_markets()
         except Exception:
-            pass
-        await self.client.load_markets()
+            try:
+                await new_client.close()
+            except Exception:
+                pass
+            raise
+        self.client = new_client
 
     @staticmethod
     def _spot(m):
@@ -150,7 +158,10 @@ class CcxtAdapter(ExchangeAdapter):
 
     async def get_trading_fees(self, symbols=None):
         if not self._markets: await self.get_markets()
-        wanted = set(symbols or []); default = self.client.fees.get('trading', {}).get('taker'); result = {}
+        wanted = set(symbols or [])
+        fees = getattr(self.client, 'fees', {}) or {}
+        default = (fees.get('trading') or {}).get('taker') if isinstance(fees, dict) else None
+        result = {}
         for raw, m in self._markets.items():
             if not self._spot(m): continue
             try: sym, *_ = normalize_symbol(raw)
