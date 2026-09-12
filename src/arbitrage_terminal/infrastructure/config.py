@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     enabled_exchanges: str = 'xt,kucoin,gateio,mexc,okx,htx,kraken,bitget,bitrue,lbank,coinbase,bitfinex,phemex,cryptocom,poloniex'
     scan_timeout_seconds: float = Field(20., ge=3, le=120)
     exchange_concurrency: int = Field(6, ge=1, le=32)
+    telegram_concurrent_updates: int = Field(32, ge=1, le=256)
     max_data_age_seconds: float = Field(10., ge=1, le=120)
     ai_api_url: str = ''
     ai_api_key: str = ''
