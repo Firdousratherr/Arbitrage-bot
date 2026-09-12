@@ -29,7 +29,9 @@ def _buttons(branch: str | None = None):
     rows = []
     if branch:
         rows.append([('🔎 Check CI', 'aifix:ci'), ('🩹 Repair CI', 'aifix:repairci')])
+        rows.append([('📤 Create Pull Request', 'aiwb:pr')])
     rows.append([('✅ Apply Fix', 'aifix:apply'), ('❌ Cancel', 'aifix:cancel')])
+    rows.append([('⬅️ Fixer Workbench', 'aiwb:menu')])
     return kb(rows)
 
 
@@ -122,7 +124,7 @@ class CodeRepairManager:
             raise RuntimeError('AI Code Fixer is not configured. Set GITHUB_TOKEN, GITHUB_REPO and a working AI configuration.')
         branch = branch or self.settings.github_base_branch
         source = await self._context(problem, branch)
-        system = '''You are the code-repair engine for a production crypto arbitrage Telegram bot.\n\nReturn ONLY valid JSON with this exact shape:\n{"summary":"...","root_cause":"...","risk":"low|medium|high","tests":["..."],"files":[{"path":"src/...py","content":"complete replacement file content"}]}\n\nRules:\n- Use only facts supported by the supplied problem and source.\n- Make the smallest safe fix that addresses the reported problem.\n- Every changed file must contain its COMPLETE resulting content, not a diff.\n- Only modify files under src/ or tests/. Never modify .env, credentials, secrets, Docker, CI workflows, or dependency manifests.\n- Do not add telemetry, remote code execution, shell execution, credential collection, trading execution, or hidden network calls.\n- Preserve existing architecture and public behavior unless required for the fix.\n- Include a focused regression test when practical.\n- If the evidence is insufficient, return an empty files list and explain what is missing.''' 
+        system = '''You are the code-repair engine for a production crypto arbitrage Telegram bot.\n\nReturn ONLY valid JSON with this exact shape:\n{"summary":"...","root_cause":"...","risk":"low|medium|high","tests":["..."],"files":[{"path":"src/...py","content":"complete replacement file content"}]}\n\nRules:\n- Use only facts supported by the supplied problem and source.\n- Make the smallest safe fix that addresses the reported problem.\n- Every changed file must contain its COMPLETE resulting content, not a diff.\n- Only modify files under src/ or tests/. Never modify .env, credentials, secrets, Docker, CI workflows, or dependency manifests.\n- Do not add telemetry, remote code execution, shell execution, credential collection, trading execution, or hidden network calls.\n- Preserve existing architecture and public behavior unless required for the fix.\n- Include a focused regression test when practical.\n- If the evidence is insufficient, return an empty files list and explain what is missing.'''
         user = f'REPORTED PROBLEM:\n{problem}\n\nTARGET BRANCH:\n{branch}\n\nSOURCE CONTEXT:\n{source}'
         r, _, _ = await self.ai.http.request(
             'POST', self.ai.url + '/chat/completions',
@@ -308,7 +310,7 @@ async def aifix_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             item = await manager.apply(item)
             context.user_data['aifix'] = item
             await q.edit_message_text(
-                f'✅ <b>FIX APPLIED</b>\n\nBranch: <code>{item["branch"]}</code>\nCommits: <b>{len(item.get("commits", []))}</b>\n\nProduction/main was not modified. Check CI before merging/deploying.',
+                f'✅ <b>FIX APPLIED</b>\n\nBranch: <code>{item["branch"]}</code>\nCommits: <b>{len(item.get("commits", []))}</b>\n\nA separate branch now contains the patch. Create a PR for review, then merge only after CI succeeds.',
                 parse_mode='HTML', reply_markup=_buttons(item['branch'])
             )
         elif action == 'ci':
