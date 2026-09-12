@@ -147,8 +147,6 @@ async def _run():
     app.add_handler(CommandHandler('vipkeys', vipkeys_cmd))
     app.add_handler(CommandHandler('adminstats', adminstats_cmd))
 
-    # This handler is intentionally registered before the generic text handler so
-    # admin AI-chat messages are consumed by the Fixer Workbench session.
     if settings.ai_code_repair_enabled:
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, aichat_text))
 
@@ -169,6 +167,7 @@ async def _run():
         await app.updater.stop()
         await app.stop()
         await app.shutdown()
+        await service.close()
         await asyncio.gather(*(x.close() for x in exchanges.values()), return_exceptions=True)
         await ai.close()
         await repo.close()
