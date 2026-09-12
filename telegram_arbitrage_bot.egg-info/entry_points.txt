@@ -1,2 +1,0 @@
-[console_scripts]
-arbitrage-bot = app.main:run
