@@ -18,7 +18,11 @@ class ArbitrageScanner:
         self.semaphore = asyncio.Semaphore(concurrency)
         self.concurrency = max(1, concurrency)
         self.timeout = timeout
-        self.scan_deadline = min(max(timeout * 4, 60), 120)
+        # LBank's best-bid/ask endpoint is symbol-scoped, so a large shared-symbol
+        # set can legitimately take longer than the generic 4x request timeout.
+        # Keep the hard safety cap at 120s while giving ticker collection enough
+        # time to finish instead of incorrectly failing at the old 40s budget.
+        self.scan_deadline = min(max(timeout * 6, 90), 120)
         self.network_validation_concurrency = min(8, max(2, self.concurrency))
         self.network_validation_budget = min(12.0, max(5.0, timeout * 0.6))
         self.breakers = {name: CircuitBreaker() for name in exchanges}
@@ -142,12 +146,26 @@ class ArbitrageScanner:
         symbols_by_exchange = {name: (market_sets.get(name, set()) & shared_symbols) for name in healthy}
         await emit('markets', healthy=len(healthy), failed=len(failed), markets=len(union), symbols=len(shared_symbols))
 
+        # LBank's bookTicker endpoint is symbol-scoped and rate-limited. Give it
+        # a larger per-exchange budget when many shared symbols must be queried,
+        # while keeping the global scan deadline as the final safety boundary.
+        ticker_budgets = {}
+        elapsed = time.monotonic() - started_mono
+        remaining_scan = max(1.0, self.scan_deadline - elapsed)
+        for name in healthy:
+            symbol_count = len(symbols_by_exchange.get(name, set()))
+            if name == 'lbank' and symbol_count:
+                estimated = symbol_count / 7.0 + 8.0
+                ticker_budgets[name] = min(remaining_scan, max(exchange_budget, min(90.0, estimated)))
+            else:
+                ticker_budgets[name] = min(remaining_scan, exchange_budget)
+
         ticker_results = []
         if healthy and time.monotonic() - started_mono < self.scan_deadline:
             try:
                 ticker_results = await asyncio.wait_for(
                     asyncio.gather(*(
-                        self._load_tickers_one(name, adapters[name], symbols_by_exchange[name], exchange_budget)
+                        self._load_tickers_one(name, adapters[name], symbols_by_exchange[name], ticker_budgets[name])
                         for name in healthy
                     )),
                     timeout=max(1.0, self.scan_deadline - (time.monotonic() - started_mono)),
@@ -162,7 +180,13 @@ class ArbitrageScanner:
         for name, tickers, retries, latency_ms, error in ticker_results:
             ticker_counts[name] = len(tickers)
             if error:
-                failed.append(name)
+                # An exchange that discovers markets successfully but cannot
+                # provide tickers is not healthy for this scan. Keep it out of
+                # healthy so coverage, AI, and final state agree.
+                if name in healthy:
+                    healthy.remove(name)
+                if name not in failed:
+                    failed.append(name)
                 diagnostics.append(Diagnostic(name, 'ticker_data', 'failed', latency_ms, datetime.now(timezone.utc).isoformat(), error_type=getattr(error, 'error_type', type(error).__name__), http_status=getattr(error, 'http_status', None), detail=str(error)[:500]))
                 continue
             for t in tickers:
@@ -174,6 +198,7 @@ class ArbitrageScanner:
                     break
             await emit('exchange', exchange=name, status='healthy', markets=len(market_sets.get(name, set())), tickers=len(tickers))
 
+        failed = list(dict.fromkeys(failed))
         warnings = ['One or more selected exchanges failed; results use only healthy exchanges.'] if failed else []
         rejected = []
         opportunities = []
