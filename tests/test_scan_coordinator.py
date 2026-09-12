@@ -31,7 +31,7 @@ async def test_identical_concurrent_scans_run_once_for_many_users():
             coordinator.run('same-scan', producer, progress=progress)
             for progress in progress_callbacks
         ))
-        await asyncio.sleep(0)
+        await asyncio.sleep(0.05)
     finally:
         await coordinator.close()
 
