@@ -183,8 +183,6 @@ class ArbitrageScanner:
                 warnings.append(f'{n}: trading fee data unavailable; affected opportunities have unknown net profit.')
         await emit('fees', completed=len(healthy), degraded=len(degraded))
 
-        # Order books are deliberately candidate-first: never request depth for every shared symbol.
-        # Results are cached per exchange/symbol so multiple routes do not multiply HTTP calls.
         orderbook_cache = {}; orderbook_tasks = {}; orderbook_semaphore = asyncio.Semaphore(self.orderbook_concurrency)
 
         async def get_orderbook(exchange, symbol):
@@ -207,8 +205,7 @@ class ArbitrageScanner:
             try: result = await asyncio.wait_for(task, timeout=min(self.timeout, remaining_scan))
             except asyncio.TimeoutError:
                 task.cancel(); orderbook_tasks.pop(key, None); result = TimeoutError(f'Order-book deadline reached for {exchange} {symbol}.')
-            if isinstance(result, Exception):
-                orderbook_cache[key] = result
+            if isinstance(result, Exception): orderbook_cache[key] = result
             else: orderbook_cache[key] = result or {}
             return orderbook_cache[key]
 
@@ -222,14 +219,19 @@ class ArbitrageScanner:
                 return None, 'insufficient executable order-book depth for configured trade size'
             gap = float(result.get('effective_gap_pct', 0.0))
             if gap <= 0: return None, f'executable spread {gap:.3f}% is non-positive'
+            net = None
+            if o.buy_fee is not None and o.sell_fee is not None:
+                net = gap - float(o.buy_fee) - float(o.sell_fee) - float(o.withdrawal_cost or 0.0)
             meta = dict(o.metadata)
             buy_avg = float(result['buy_average_price']); sell_avg = float(result['sell_average_price'])
             meta.update({'orderbook_validated': True, 'orderbook_depth_limit': 20, 'executable_gap_pct': gap, 'ticker_gap_pct': o.raw_gap, 'buy_average_price': buy_avg, 'sell_average_price': sell_avg, 'executable_quote_size': float(result['quote_spent']), 'executable_base_amount': float(result['base_acquired']), 'executable_quote_received': float(result['quote_received']), 'estimated_slippage_pct': o.raw_gap - gap})
-            # Re-price the opportunity at executable volume-weighted average prices.
-            return replace(o, buy_price=buy_avg, sell_price=sell_avg, raw_gap=gap, buy_volume=float(result['quote_spent']), sell_volume=float(result['quote_received']), metadata=meta), None
+            # Preserve ticker volume/liquidity for the volume filter; executable
+            # size is recorded separately because it is intentionally much smaller.
+            return replace(o, buy_price=buy_avg, sell_price=sell_avg, raw_gap=gap, estimated_net_profit=net, metadata=meta), None
 
         await emit('candidates', message='Evaluating price gaps before order-book/network validation')
         timed_out = False
+        network_validation_incomplete = False
         depth_validated = []
         depth_started = time.monotonic()
         for symbol, tickers in ticker_map.items():
@@ -265,7 +267,7 @@ class ArbitrageScanner:
             if timed_out: break
 
         opportunities = depth_validated
-        await emit('orderbook', comparisons=comparisons, opportunities=len(opportunities), validated=len(opportunities), message='Executable order-book validation complete')
+        await emit('orderbook', comparisons=comparisons, opportunities=len(opportunities), validated=len(opportunities) if filters.require_orderbook and filters.validation_mode != 'loose' else 0, message='Executable order-book validation complete' if filters.require_orderbook and filters.validation_mode != 'loose' else 'Candidate evaluation complete; order-book validation disabled')
 
         transfer_cache = {}; transfer_tasks = {}; transfer_semaphore = asyncio.Semaphore(self.network_validation_concurrency)
         async def get_transfer(exchange, asset):
@@ -282,17 +284,19 @@ class ArbitrageScanner:
                 task.cancel(); transfer_tasks.pop(key, None); return {}
             try: result = await asyncio.wait_for(task, timeout=min(self.timeout, remaining_scan))
             except asyncio.TimeoutError:
-                task.cancel(); transfer_tasks.pop(key, None); result = TimeoutError(f'Transfer information deadline reached for {asset}.')
+                transfer_tasks.pop(key, None); result = TimeoutError(f'Transfer information deadline reached for {asset}.')
             except asyncio.CancelledError:
                 transfer_tasks.pop(key, None); result = TimeoutError(f'Transfer information cancelled for {asset}.')
             if isinstance(result, Exception):
                 diagnostics.append(Diagnostic(exchange, 'transfer_info', 'degraded', 0, datetime.now(timezone.utc).isoformat(), error_type=getattr(result, 'error_type', type(result).__name__), http_status=getattr(result, 'http_status', None), detail=f'{asset}: {str(result)[:350]}'))
                 warnings.append(f'{exchange}: transfer information unavailable for {asset}; strict validation rejected affected routes.')
+                degraded.append(exchange)
                 transfer_cache[key] = {}
             else: transfer_cache[key] = result or {}
             return transfer_cache[key]
 
-        if timed_out: warnings.append(f'Scan stopped at the {self.scan_deadline:.0f}s safety deadline; results are partial.')
+        if timed_out:
+            warnings.append(f'Scan stopped at the {self.scan_deadline:.0f}s safety deadline; results are partial.')
         elif opportunities and filters.validation_mode != 'loose':
             await emit('network', comparisons=comparisons, opportunities=len(opportunities), message='Validating transfer networks for qualifying routes…')
             keys = {(o.buy_exchange, o.symbol.split('/')[0]) for o in opportunities} | {(o.sell_exchange, o.symbol.split('/')[0]) for o in opportunities}
@@ -301,14 +305,15 @@ class ArbitrageScanner:
                 async def preload(key): return key, await get_transfer(*key)
                 try: await asyncio.wait_for(asyncio.gather(*(preload(k) for k in keys)), timeout=validation_budget)
                 except asyncio.TimeoutError:
+                    network_validation_incomplete = True
                     warnings.append(f'Network validation was capped at {validation_budget:.0f}s; unfinished routes were rejected as unverified.')
                     for task in transfer_tasks.values():
                         if not task.done(): task.cancel()
+            else:
+                network_validation_incomplete = True
             validated = []; total_to_validate = len(opportunities)
             for index, o in enumerate(opportunities, 1):
                 if time.monotonic() - started_mono >= self.scan_deadline: timed_out = True; break
-                buy = next(t for t in ticker_map[o.symbol] if t.exchange == o.buy_exchange and t.ask == o.metadata.get('ticker_ask', t.ask)) if False else next(t for t in ticker_map[o.symbol] if t.exchange == o.buy_exchange and t.ask > 0)
-                sell = next(t for t in ticker_map[o.symbol] if t.exchange == o.sell_exchange and t.bid > 0)
                 bn = transfer_cache.get((o.buy_exchange, o.symbol.split('/')[0]), {}); sn = transfer_cache.get((o.sell_exchange, o.symbol.split('/')[0]), {})
                 network, contract, networks = transfer_compatibility(bn, sn)
                 transfer = {'network_available': network, 'contract_match': contract, 'networks': networks}
@@ -320,10 +325,11 @@ class ArbitrageScanner:
                 if index % 50 == 0: await emit('network', comparisons=comparisons, opportunities=len(validated), validated=index, total=total_to_validate, message='Validating transfer networks…')
             opportunities = validated
 
+        degraded = list(dict.fromkeys(degraded))
         if timed_out: warnings.append(f'Scan stopped at the {self.scan_deadline:.0f}s safety deadline; results are partial.')
         await emit('complete', comparisons=comparisons, opportunities=len(opportunities), healthy=len(healthy), failed=len(failed))
         opportunities.sort(key=lambda o: (o.estimated_net_profit is not None, o.estimated_net_profit or float('-inf'), o.confidence, min(o.buy_volume, o.sell_volume)), reverse=True)
-        state = ScanState.SUCCESS if not failed and not timed_out else ScanState.PARTIAL
+        state = ScanState.SUCCESS if not failed and not timed_out and not degraded and not network_validation_incomplete else ScanState.PARTIAL
         if not healthy: state = ScanState.FAILED
         errors = ['No trustworthy market data was returned from selected exchanges.'] if state == ScanState.FAILED else []
         return ScanSnapshot(scan_id, user_id, started, datetime.now(timezone.utc).isoformat(), selected, healthy, degraded, failed, len(union), sum(ticker_counts.values()), comparisons, len(opportunities), state, opportunities, diagnostics, warnings, errors, rejected)
