@@ -18,19 +18,20 @@ async def test_identical_concurrent_scans_run_once_for_many_users():
         await asyncio.sleep(0.03)
         return {'opportunities': 3}
 
-    async def make_progress():
+    def make_progress():
         async def progress(stage, data):
             nonlocal progress_calls
             progress_calls += 1
         return progress
 
-    progress_callbacks = await asyncio.gather(*(make_progress() for _ in range(20)))
+    progress_callbacks = [make_progress() for _ in range(20)]
 
     try:
         results = await asyncio.gather(*(
             coordinator.run('same-scan', producer, progress=progress)
             for progress in progress_callbacks
         ))
+        await asyncio.sleep(0)
     finally:
         await coordinator.close()
 
