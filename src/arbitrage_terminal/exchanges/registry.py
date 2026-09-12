@@ -13,7 +13,8 @@ SPECIAL = {'lbank': LBankAdapter, 'xt': XTAdapter}
 CCXT_IDS = {'gateio': 'gate'}
 
 
-def build_exchanges(names, credentials_provider, diagnostics=None, self_healing=True, concurrency=3):
+def build_exchanges(names, credentials_provider, diagnostics=None, self_healing=True,
+                    concurrency=3, recovery_advisor=None):
     result = {}
     diagnostics = diagnostics if diagnostics is not None else []
     for name in dict.fromkeys(str(n).strip().lower() for n in names if str(n).strip()):
@@ -22,10 +23,7 @@ def build_exchanges(names, credentials_provider, diagnostics=None, self_healing=
             exchange_id = CCXT_IDS.get(name, name)
             adapter = adapter_cls(exchange_id, public_name=name, credentials=credentials_provider(name))
             if self_healing:
-                adapter = SelfHealingAdapter(adapter)
-            # Keep rate limiting outside self-healing so recovery is still able
-            # to recreate the underlying client, while repaired clients also
-            # invalidate the outer market-data cache.
+                adapter = SelfHealingAdapter(adapter, recovery_advisor=recovery_advisor)
             result[name] = RateLimitedExchangeAdapter(adapter, concurrency=concurrency)
         except Exception as exc:
             detail = str(exc)[:500]
