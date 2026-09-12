@@ -14,7 +14,7 @@ from .arbitrage import ArbitrageScanner
 from .bot import build_handlers
 from .bot import code_repair as code_repair_module
 from .bot.admin import admin_callback, admin_cmd, adminstats_cmd, ban_cmd, givevip_cmd, init_admin_storage, revokevip_cmd, unban_cmd, useractions_cmd, userinfo_cmd, users_cmd, vipkeys_cmd
-from .bot.ai_workbench import ai_workbench_callback, ai_workbench_cmd, aichat_text
+from .bot.ai_workbench import ai_workbench_callback, ai_workbench_cmd
 from .bot.ai_recovery_settings import ai_recovery_callback, ai_recovery_cmd, settings_callback as ai_settings_callback, settings_command as ai_settings_cmd
 from .bot.code_repair import CodeRepairManager, aifix_callback, aifix_cancel_cmd, aifix_cmd, aifix_history_cmd, aifix_status_cmd
 from .bot.commands import dashboard_cmd, diagnostics_cmd, filters_callback, filters_cmd, filter_settings_callback, resetfilters_cmd, setfilter_cmd, settings_cmd, status_cmd
@@ -73,7 +73,6 @@ async def _run():
     app.add_handler(CommandHandler('contact',contact_open)); app.add_handler(CommandHandler('cancel',contact_cancel)); app.add_handler(CommandHandler('airecovery',ai_recovery_cmd))
     if settings.ai_code_repair_enabled:
         for command,handler in [('aifix',aifix_cmd),('aifixstatus',aifix_status_cmd),('aifixhistory',aifix_history_cmd),('aifixcancel',aifix_cancel_cmd),('aifixer',ai_workbench_cmd)]: app.add_handler(CommandHandler(command,handler))
-        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,aichat_text))
     [app.add_handler(h) for h in build_handlers()]
     app.add_error_handler(_error_handler); await app.initialize()
     try: await app.bot.set_my_commands(PUBLIC_COMMANDS)
