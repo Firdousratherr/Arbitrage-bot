@@ -43,7 +43,6 @@ async def build_runtime():
     ai = AIAssistant(settings.ai_api_url, settings.ai_api_key, settings.ai_model, settings.ai_timeout_seconds)
     await ai.start()
     recovery_advisor = ExchangeRecoveryAdvisor(ai, enabled=settings.ai_exchange_recovery_enabled, timeout_seconds=settings.ai_exchange_recovery_timeout_seconds, min_confidence=settings.ai_exchange_recovery_min_confidence)
-
     exchange_diagnostics = []
     exchanges = build_exchanges(settings.exchanges, creds, exchange_diagnostics, recovery_advisor=recovery_advisor, concurrency=settings.exchange_concurrency)
     scanner = ArbitrageScanner(exchanges, settings.exchange_concurrency, settings.scan_timeout_seconds)
@@ -69,7 +68,10 @@ async def _error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
 
 async def _run():
     settings, repo, exchanges, scanner, ai, code_repair, service, exchange_diagnostics, recovery_advisor = await build_runtime()
-    app = Application.builder().token(settings.telegram_bot_token).build()
+    # PTB otherwise processes updates sequentially. Explicit concurrency is
+    # required for multiple Telegram users to scan concurrently; the service
+    # and per-exchange coordinator/rate limits provide the actual backpressure.
+    app = Application.builder().token(settings.telegram_bot_token).concurrent_updates(settings.telegram_concurrent_updates).build()
     app.bot_data.update({'settings': settings, 'repo': repo, 'exchanges': exchanges, 'exchange_names': [n for n in settings.exchanges if n in exchanges], 'scanner': scanner, 'ai': ai, 'code_repair': code_repair, 'service': service, 'exchange_diagnostics': exchange_diagnostics, 'recovery_advisor': recovery_advisor})
     app.add_handler(CallbackQueryHandler(dashboard_exchanges_callback, pattern=r'^exchanges$'))
     app.add_handler(CallbackQueryHandler(exchange_selection_callback, pattern=r'^ex:'))
