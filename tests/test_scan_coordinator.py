@@ -18,14 +18,18 @@ async def test_identical_concurrent_scans_run_once_for_many_users():
         await asyncio.sleep(0.03)
         return {'opportunities': 3}
 
-    async def progress(stage, data):
-        nonlocal progress_calls
-        progress_calls += 1
+    async def make_progress():
+        async def progress(stage, data):
+            nonlocal progress_calls
+            progress_calls += 1
+        return progress
+
+    progress_callbacks = await asyncio.gather(*(make_progress() for _ in range(20)))
 
     try:
         results = await asyncio.gather(*(
             coordinator.run('same-scan', producer, progress=progress)
-            for _ in range(20)
+            for progress in progress_callbacks
         ))
     finally:
         await coordinator.close()
@@ -44,8 +48,9 @@ async def test_different_scan_keys_do_not_share_work():
     async def producer(progress):
         nonlocal producer_calls
         producer_calls += 1
+        call_number = producer_calls
         await asyncio.sleep(0.01)
-        return producer_calls
+        return call_number
 
     try:
         results = await asyncio.gather(
