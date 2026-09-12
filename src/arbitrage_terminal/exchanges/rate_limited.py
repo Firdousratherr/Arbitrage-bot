@@ -3,19 +3,11 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Awaitable, Callable
-from functools import wraps
 from typing import Any
 
 
 class RateLimitedExchangeAdapter:
-    """Bound exchange I/O and share very-fresh market data across scans.
-
-    This wrapper sits outside the existing exchange/self-healing adapter. It is
-    intentionally small: it never changes scanner decisions and only coalesces
-    identical market/ticker reads within a short TTL. Other calls are serialized
-    by the exchange-specific semaphore so one exchange cannot consume the
-    scanner's entire I/O budget.
-    """
+    """Bound exchange I/O and coalesce very-fresh read-only market data."""
 
     DEFAULT_CONCURRENCY = 3
     MARKET_TTL = 10.0
@@ -61,12 +53,18 @@ class RateLimitedExchangeAdapter:
         normalized = tuple(sorted(set(symbols)))
         return await self._cached_call(('tickers', normalized), self.TICKER_TTL, lambda: self._adapter.get_tickers(set(normalized)))
 
-    def invalidate_market_data_cache(self):
-        """Drop cached market/ticker data after an exchange repair."""
-        async def clear():
-            async with self._cache_lock:
-                self._cache.clear()
-        return clear()
+    async def repair(self):
+        repair = getattr(self._adapter, 'repair', None)
+        if repair is None:
+            raise AttributeError('Underlying exchange adapter does not support repair')
+        result = repair()
+        if asyncio.iscoroutine(result):
+            await result
+        await self.invalidate_market_data_cache()
+
+    async def invalidate_market_data_cache(self):
+        async with self._cache_lock:
+            self._cache.clear()
 
     async def close(self):
         close = getattr(self._adapter, 'close', None)

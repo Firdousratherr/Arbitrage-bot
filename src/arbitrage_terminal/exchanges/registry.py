@@ -4,6 +4,7 @@ import logging
 
 from .ccxt_adapter import CcxtAdapter
 from .lbank import LBankAdapter
+from .rate_limited import RateLimitedExchangeAdapter
 from .self_healing import SelfHealingAdapter
 from .xt import XTAdapter
 
@@ -12,7 +13,7 @@ SPECIAL = {'lbank': LBankAdapter, 'xt': XTAdapter}
 CCXT_IDS = {'gateio': 'gate'}
 
 
-def build_exchanges(names, credentials_provider, diagnostics=None, self_healing=True):
+def build_exchanges(names, credentials_provider, diagnostics=None, self_healing=True, concurrency=3):
     result = {}
     diagnostics = diagnostics if diagnostics is not None else []
     for name in dict.fromkeys(str(n).strip().lower() for n in names if str(n).strip()):
@@ -20,9 +21,14 @@ def build_exchanges(names, credentials_provider, diagnostics=None, self_healing=
             adapter_cls = SPECIAL.get(name, CcxtAdapter)
             exchange_id = CCXT_IDS.get(name, name)
             adapter = adapter_cls(exchange_id, public_name=name, credentials=credentials_provider(name))
-            result[name] = SelfHealingAdapter(adapter) if self_healing else adapter
+            if self_healing:
+                adapter = SelfHealingAdapter(adapter)
+            # Keep rate limiting outside self-healing so recovery is still able
+            # to recreate the underlying client, while repaired clients also
+            # invalidate the outer market-data cache.
+            result[name] = RateLimitedExchangeAdapter(adapter, concurrency=concurrency)
         except Exception as exc:
             detail = str(exc)[:500]
-            logger.exception("exchange adapter initialization failed", extra={"exchange": name})
-            diagnostics.append({"exchange": name, "operation": "adapter_init", "status": "failed", "error_type": type(exc).__name__, "detail": detail})
+            logger.exception('exchange adapter initialization failed', extra={'exchange': name})
+            diagnostics.append({'exchange': name, 'operation': 'adapter_init', 'status': 'failed', 'error_type': type(exc).__name__, 'detail': detail})
     return result
