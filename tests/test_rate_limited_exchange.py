@@ -11,6 +11,7 @@ class FakeAdapter:
         self.ticker_calls = 0
         self.active = 0
         self.max_active = 0
+        self.repairs = 0
 
     async def get_markets(self):
         self.market_calls += 1
@@ -18,7 +19,7 @@ class FakeAdapter:
         self.max_active = max(self.max_active, self.active)
         await asyncio.sleep(0.02)
         self.active -= 1
-        return []
+        return [self.market_calls]
 
     async def get_tickers(self, symbols):
         self.ticker_calls += 1
@@ -26,7 +27,10 @@ class FakeAdapter:
         self.max_active = max(self.max_active, self.active)
         await asyncio.sleep(0.02)
         self.active -= 1
-        return []
+        return [self.ticker_calls]
+
+    async def repair(self):
+        self.repairs += 1
 
     async def close(self):
         return None
@@ -63,3 +67,18 @@ async def test_different_requests_respect_exchange_concurrency_limit():
 
     assert raw.max_active <= 2
     assert raw.ticker_calls == 8
+
+
+@pytest.mark.asyncio
+async def test_repair_invalidates_market_data_cache():
+    raw = FakeAdapter()
+    adapter = RateLimitedExchangeAdapter(raw)
+
+    first = await adapter.get_markets()
+    await adapter.repair()
+    second = await adapter.get_markets()
+
+    assert first == [1]
+    assert second == [2]
+    assert raw.market_calls == 2
+    assert raw.repairs == 1
