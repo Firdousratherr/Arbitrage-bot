@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     ai_api_key: str = ''
     ai_model: str = ''
     ai_timeout_seconds: float = Field(30., ge=3, le=120)
+    ai_exchange_recovery_enabled: bool = False
+    ai_exchange_recovery_timeout_seconds: float = Field(5., ge=1, le=15)
+    ai_exchange_recovery_min_confidence: float = Field(.80, ge=0, le=1)
     github_repo: str = 'Firdousratherr/Arbitrage-bot'
     github_token: str = ''
     github_base_branch: str = 'nextgen-rebuild'
