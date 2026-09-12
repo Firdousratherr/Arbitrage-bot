@@ -38,79 +38,60 @@ class AIAssistant:
             return {'configuration': 'ok', 'network': 'failed' if e.status is None else 'ok', 'endpoint': 'failed' if e.status == 404 else 'ok', 'authentication': 'failed' if e.status in (401, 403) else 'unknown', 'response': 'failed', 'status': e.status, 'diagnosis': str(e)}
 
     async def advise_exchange_recovery(self, snapshot):
-        """Return strict JSON advice for a failed exchange; never receives credentials."""
+        """Return strict JSON advice from sanitized exchange failure evidence."""
         if not self.configured:
             return None
         system = '''You are a production exchange/CCXT reliability advisor. Return ONLY JSON.
 Schema: {"classification":"transient|rate_limit|ccxt_client|market_data|authentication|invalid_request|unknown","confidence":0.0,"recommended_action":"retry|repair|reload_markets|invalidate_cache|quarantine","safe_to_auto_repair":false,"reason":"short evidence-based reason","retry_delay_seconds":0}
-Rules: use ONLY supplied evidence; never invent exchange facts. Never request or expose API keys, secrets, passwords, headers, tokens, account data, balances, orders, or private endpoints. Authentication and invalid_request must never be marked safe_to_auto_repair. Only safe deterministic actions are allowed. Never recommend trading. Confidence must reflect evidence quality. Keep delay between 0 and 30 seconds.'''
+Rules: use ONLY supplied evidence; never invent exchange facts. Never request or expose API keys, secrets, passwords, headers, tokens, account data, balances, orders, or private endpoints. Authentication and invalid_request must never be safe to auto repair. Only listed deterministic actions are allowed. Never recommend trading. Confidence must reflect evidence quality. Delay must be 0-30 seconds.'''
         try:
-            r, _, _ = await self.http.request(
-                'POST', self.url + '/chat/completions',
-                headers={'Authorization': f'Bearer {self.key}', 'Content-Type': 'application/json'},
-                json={'model': self.model, 'temperature': 0.0, 'response_format': {'type': 'json_object'},
-                      'messages': [{'role': 'system', 'content': system},
-                                   {'role': 'user', 'content': 'Diagnose this sanitized deterministic exchange failure snapshot:\n' + json.dumps(snapshot, default=str, separators=(',', ':'))}]},
-            )
+            r, _, _ = await self.http.request('POST', self.url + '/chat/completions', headers={'Authorization': f'Bearer {self.key}', 'Content-Type': 'application/json'}, json={'model': self.model, 'temperature': 0.0, 'response_format': {'type': 'json_object'}, 'messages': [{'role': 'system', 'content': system}, {'role': 'user', 'content': 'Diagnose this sanitized deterministic exchange failure snapshot:\n' + json.dumps(snapshot, default=str, separators=(',', ':'))}]})
             return json.loads(r.json()['choices'][0]['message']['content'])
         except Exception:
             return None
 
     @classmethod
     def _compact_analysis_payload(cls, payload):
+        """Keep AI analysis evidence useful while preventing oversized HTTP bodies."""
         compact = dict(payload)
         opportunities = []
         for item in (payload.get('opportunities') or [])[:cls.MAX_OPPORTUNITIES]:
-            if isinstance(item, dict):
-                opportunities.append({key: item.get(key) for key in ('symbol', 'buy_exchange', 'sell_exchange', 'buy_price', 'sell_price', 'gap_percent', 'estimated_net_profit', 'volume', 'liquidity', 'data_age_seconds', 'confidence') if key in item})
+            if not isinstance(item, dict): continue
+            opportunities.append({key: item.get(key) for key in ('symbol', 'buy_exchange', 'sell_exchange', 'buy_price', 'sell_price', 'gap_percent', 'estimated_net_profit', 'volume', 'liquidity', 'data_age_seconds', 'confidence') if key in item})
         compact['opportunities'] = opportunities
         diagnostics = []
         for item in (payload.get('diagnostics') or [])[:cls.MAX_DIAGNOSTICS]:
             if isinstance(item, dict):
-                diagnostics.append({key: str(item[key])[:300] if item[key] is not None else None for key in ('exchange', 'operation', 'status', 'latency_ms', 'error', 'message') if key in item})
-            else:
-                diagnostics.append(str(item)[:300])
+                diagnostics.append({key: str(item[key])[:300] if item[key] is not None else item[key] for key in ('exchange', 'operation', 'status', 'latency_ms', 'error', 'message') if key in item})
+            else: diagnostics.append(str(item)[:300])
         compact['diagnostics'] = diagnostics
         compact['warnings'] = [str(x)[:300] for x in (payload.get('warnings') or [])[:cls.MAX_MESSAGES]]
         compact['errors'] = [str(x)[:300] for x in (payload.get('errors') or [])[:cls.MAX_MESSAGES]]
         compact['selected_coins'] = list((payload.get('filters') or {}).get('selected_coins', []))[:50]
         coverage = payload.get('exchange_coverage')
-        if isinstance(coverage, dict):
-            compact['exchange_coverage'] = {str(exchange): {key: value for key, value in record.items() if key in {'status', 'market_count', 'ticker_count', 'usable_symbols', 'shared_symbols', 'candidate_comparisons', 'candidate_rejections', 'candidate_opportunities', 'final_opportunities', 'network_rejections', 'filter_rejections', 'error'}} for exchange, record in coverage.items() if isinstance(record, dict)}
+        if isinstance(coverage, dict): compact['exchange_coverage'] = {str(exchange): {key: value for key, value in record.items() if key in {'status', 'market_count', 'ticker_count', 'usable_symbols', 'shared_symbols', 'candidate_comparisons', 'candidate_rejections', 'candidate_opportunities', 'final_opportunities', 'network_rejections', 'filter_rejections', 'error'}} for exchange, record in coverage.items() if isinstance(record, dict)}
         while len(json.dumps(compact, default=str, separators=(',', ':'))) > cls.ANALYSIS_PAYLOAD_LIMIT:
-            if len(compact['opportunities']) > 3:
-                compact['opportunities'] = compact['opportunities'][:max(3, len(compact['opportunities']) // 2)]
-                continue
-            if len(compact['diagnostics']) > 5:
-                compact['diagnostics'] = compact['diagnostics'][:max(5, len(compact['diagnostics']) // 2)]
-                continue
-            if len(compact['warnings']) > 5:
-                compact['warnings'] = compact['warnings'][:max(5, len(compact['warnings']) // 2)]
-                continue
-            if len(compact['errors']) > 5:
-                compact['errors'] = compact['errors'][:max(5, len(compact['errors']) // 2)]
-                continue
+            if len(compact['opportunities']) > 3: compact['opportunities'] = compact['opportunities'][:max(3, len(compact['opportunities']) // 2)]; continue
+            if len(compact['diagnostics']) > 5: compact['diagnostics'] = compact['diagnostics'][:max(5, len(compact['diagnostics']) // 2)]; continue
+            if len(compact['warnings']) > 5: compact['warnings'] = compact['warnings'][:max(5, len(compact['warnings']) // 2)]; continue
+            if len(compact['errors']) > 5: compact['errors'] = compact['errors'][:max(5, len(compact['errors']) // 2)]; continue
             break
         return compact
 
     async def analyze(self, mode, system, payload):
-        if mode == AIMode.OFF or not self.configured:
-            return None
+        if mode == AIMode.OFF or not self.configured: return None
         try:
-            strict_system = system + "\n\nSTRICT EVIDENCE RULES: Only state facts explicitly present in supplied JSON. Do not invent market facts. Never recommend executing a trade. If data is partial/failed, say scan is incomplete."
+            strict_system = system + "\n\nSTRICT EVIDENCE RULES: Only state facts explicitly present in supplied JSON. Do not infer or invent volatility, latency, liquidity, reliability, connectivity quality, price convergence, trading volume, or market conditions. If data is partial/failed, explicitly describe the scan as incomplete. Never recommend executing, placing, or committing a trade. Never treat a ticker symbol alone as proof that two exchange markets represent the same asset. Never recommend an opportunity unless the deterministic scanner marks the route as verified."
             encoded_payload = json.dumps(self._compact_analysis_payload(payload), default=str, separators=(',', ':'))
-            r, _, _ = await self.http.request('POST', self.url + '/chat/completions', headers={'Authorization': f'Bearer {self.key}', 'Content-Type': 'application/json'}, json={'model': self.model, 'temperature': .1, 'messages': [{'role': 'system', 'content': strict_system}, {'role': 'user', 'content': 'Analyze this deterministic scan snapshot.\n\n' + encoded_payload}]})
+            r, _, _ = await self.http.request('POST', self.url + '/chat/completions', headers={'Authorization': f'Bearer {self.key}', 'Content-Type': 'application/json'}, json={'model': self.model, 'temperature': .1, 'messages': [{'role': 'system', 'content': strict_system}, {'role': 'user', 'content': 'Analyze this deterministic scan snapshot. Treat every field as authoritative; do not fill missing fields from general crypto knowledge.\n\n' + encoded_payload}]})
             return {'text': r.json()['choices'][0]['message']['content'], 'model': self.model}
-        except Exception as e:
-            return {'error': f'AI analysis unavailable: {type(e).__name__}: {e}'}
+        except Exception as e: return {'error': f'AI analysis unavailable: {type(e).__name__}: {e}'}
 
     async def generate_code_fix(self, problem: str, source_files: dict[str, str], extra_context: str = ''):
-        if not self.configured:
-            return {'error': 'AI provider is not configured'}
-        system = '''You are a senior Python maintainer repairing a production crypto-arbitrage Telegram bot. Return ONLY valid JSON with this shape: {"summary":"...","root_cause":"...","risk":"low|medium|high","files":[{"path":"src/...","content":"COMPLETE FILE CONTENT"}],"tests":["pytest ..."]}. Rules: never output secrets; never modify .env, credentials, Docker deployment, GitHub workflows, or production configuration; keep the patch minimal; if evidence is insufficient, return an empty files list.'''
-        prompt = f'Problem:\n{problem}\n\nContext:\n{extra_context or "None"}\n\nSource files:\n' + '\n\n'.join(f'===== {path} =====\n{content}' for path, content in source_files.items())
+        if not self.configured: return {'error': 'AI provider is not configured'}
+        system = '''You are a senior Python maintainer repairing a production crypto-arbitrage Telegram bot. Return ONLY valid JSON with this shape: {"summary":"...","root_cause":"...","risk":"low|medium|high","files":[{"path":"src/...","content":"COMPLETE FILE CONTENT"}],"tests":["pytest ..."]}. Rules: modify only the supplied files unless a missing file is clearly required; never output secrets; never modify .env, credentials, Docker deployment, GitHub workflows, or production configuration; preserve public APIs unless the bug requires a change; keep the patch minimal; include complete replacement file contents, not diffs; tests must be safe pytest commands; if evidence is insufficient, return an empty files list and explain why.'''
+        prompt = f'Problem reported by the administrator:\n{problem}\n\nAdditional runtime/CI context:\n{extra_context or "None"}\n\nSource files available for inspection:\n' + '\n\n'.join(f'===== {path} =====\n{content}' for path, content in source_files.items())
         try:
             r, _, _ = await self.http.request('POST', self.url + '/chat/completions', headers={'Authorization': f'Bearer {self.key}', 'Content-Type': 'application/json'}, json={'model': self.model, 'temperature': .0, 'response_format': {'type': 'json_object'}, 'messages': [{'role': 'system', 'content': system}, {'role': 'user', 'content': prompt}]})
             return json.loads(r.json()['choices'][0]['message']['content'])
-        except Exception as e:
-            return {'error': f'AI code repair unavailable: {type(e).__name__}: {e}'}
+        except Exception as e: return {'error': f'AI code repair unavailable: {type(e).__name__}: {e}'}
