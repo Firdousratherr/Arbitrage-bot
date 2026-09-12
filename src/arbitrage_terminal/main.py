@@ -5,7 +5,7 @@ import logging
 import os
 
 from telegram import BotCommand, Update
-from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
 
 from .application.service import TerminalService
 from .ai import AIAssistant
@@ -30,7 +30,16 @@ from .infrastructure.logging import configure
 from .infrastructure.repository import Repository
 
 PUBLIC_COMMANDS = [
-    BotCommand('start','Start the Arbitrage Terminal'), BotCommand('dashboard','Open the main dashboard'), BotCommand('scan','Scan for arbitrage opportunities'), BotCommand('results','View scan history and results'), BotCommand('exchanges','Select exchanges'), BotCommand('filters','View and edit scan filters'), BotCommand('setfilter','Change a scan filter'), BotCommand('resetfilters','Reset filters to defaults'), BotCommand('settings','Validation and AI settings'), BotCommand('status','Exchange and runtime status'), BotCommand('diagnostics','View latest scan diagnostics'), BotCommand('ai','Configure AI result mode'), BotCommand('vipkey','Activate VIP access'), BotCommand('airecovery','Exchange recovery settings'), BotCommand('help','Help and full instructions'), BotCommand('contact','Contact developer privately')]
+    BotCommand('start', 'Start the Arbitrage Terminal'), BotCommand('dashboard', 'Open the main dashboard'),
+    BotCommand('scan', 'Scan for arbitrage opportunities'), BotCommand('results', 'View scan history and results'),
+    BotCommand('exchanges', 'Select exchanges'), BotCommand('filters', 'View and edit scan filters'),
+    BotCommand('setfilter', 'Change a scan filter'), BotCommand('resetfilters', 'Reset filters to defaults'),
+    BotCommand('settings', 'Validation and AI settings'), BotCommand('status', 'Exchange and runtime status'),
+    BotCommand('diagnostics', 'View latest scan diagnostics'), BotCommand('ai', 'Configure AI result mode'),
+    BotCommand('vipkey', 'Activate VIP access'), BotCommand('airecovery', 'Exchange recovery settings'),
+    BotCommand('help', 'Help and full instructions'), BotCommand('contact', 'Contact developer privately'),
+    BotCommand('cancel', 'Cancel the current form'),
+]
 
 
 async def build_runtime():
@@ -62,7 +71,7 @@ async def _error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
 
 async def _run():
     settings,repo,exchanges,scanner,ai,code_repair,service,exchange_diagnostics,recovery_advisor,recovery_memory=await build_runtime()
-    app=Application.builder().token(settings.telegram_bot_token).concurrent_updates(settings.telegram_concurrent_updates).build()
+    app=Application.builder().token(settings.telegram_concurrent_updates and settings.telegram_bot_token or settings.telegram_bot_token).concurrent_updates(settings.telegram_concurrent_updates).build()
     app.bot_data.update({'settings':settings,'repo':repo,'exchanges':exchanges,'exchange_names':[n for n in settings.exchanges if n in exchanges],'scanner':scanner,'ai':ai,'code_repair':code_repair,'service':service,'exchange_diagnostics':exchange_diagnostics,'recovery_advisor':recovery_advisor,'recovery_memory':recovery_memory})
     app.add_handler(CallbackQueryHandler(help_callback,pattern=r'^help:')); app.add_handler(CallbackQueryHandler(contact_callback,pattern=r'^contact:'))
     app.add_handler(CallbackQueryHandler(dashboard_exchanges_callback,pattern=r'^exchanges$')); app.add_handler(CallbackQueryHandler(exchange_selection_callback,pattern=r'^ex:'))
