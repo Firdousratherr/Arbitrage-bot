@@ -39,28 +39,6 @@ def _screen(context) -> tuple[str, object]:
     )
 
 
-def _settings_screen(context, user_id: int) -> tuple[str, object]:
-    svc = context.application.bot_data['service']
-    advisor = _advisor(context)
-    enabled = bool(advisor and advisor.enabled)
-    # This screen is intentionally compatible with the existing Settings UI.
-    # The recovery control is visible only to admins.
-    # The user's validation/AI mode values are read from the existing repository.
-    return _settings_screen_async_placeholder(svc, user_id, enabled, _is_admin(context, user_id))
-
-
-def _settings_screen_async_placeholder(svc, user_id, enabled, is_admin):
-    # The actual values are supplied asynchronously by settings_command/settings_callback.
-    rows = [[('🤖 Exchange AI Recovery', 'ai_recovery:open')]] if is_admin else []
-    rows.append([('🏠 Dashboard', 'home')])
-    return (
-        '⚙️ <b>ARBITRAGE TERMINAL SETTINGS</b>\n'
-        '━━━━━━━━━━━━━━━━━━━━\n\n'
-        f'🤖 Exchange AI Recovery: <b>{"ON" if enabled else "OFF"}</b>',
-        kb(rows),
-    )
-
-
 async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     svc = context.application.bot_data['service']
     uid = update.effective_user.id
@@ -77,7 +55,7 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f'🛡️ Validation: <b>{html.escape(f.validation_mode.upper())}</b>\n'
         f'🧠 AI mode: <b>{html.escape((row["result_mode"] or "off").upper())}</b>\n'
         f'🤖 Exchange AI Recovery: <b>{"ON" if enabled else "OFF"}</b>\n'
-        '🧪 Simulation: <b>ON</b>\n\n'
+        '📡 Operation: <b>READ-ONLY SCANNER</b>\n\n'
         'AI exchange recovery runs only after deterministic recovery fails.\n'
         'It cannot trade, change credentials, or modify production code.'
     )
@@ -102,7 +80,7 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f'🛡️ Validation: <b>{html.escape(f.validation_mode.upper())}</b>\n'
         f'🧠 AI mode: <b>{html.escape((row["result_mode"] or "off").upper())}</b>\n'
         f'🤖 Exchange AI Recovery: <b>{"ON" if enabled else "OFF"}</b>\n'
-        '🧪 Simulation: <b>ON</b>\n\n'
+        '📡 Operation: <b>READ-ONLY SCANNER</b>\n\n'
         'AI exchange recovery runs only after deterministic recovery fails.\n'
         'It cannot trade, change credentials, or modify production code.'
     )
