@@ -65,4 +65,6 @@ async def test_orderbook_validation_is_concurrent_and_reports_progress():
     assert a.max_active_orderbooks + b.max_active_orderbooks >= 2
     assert elapsed < 0.70
     assert any(stage == 'candidates' and data.get('comparisons') == 1 for stage, data in events)
-    assert any(stage == 'orderbook' and data.get('validated') == 2 for stage, data in events)
+    # One arbitrage candidate is validated using two exchange order-book
+    # requests; progress counts completed candidate validations.
+    assert any(stage == 'orderbook' and data.get('validated') == 1 and data.get('total') == 1 for stage, data in events)
