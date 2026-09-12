@@ -15,7 +15,9 @@ class ScanFilters:
     trade_size: float = 1000.
     require_network: bool = True
     require_fees: bool = False
-    require_orderbook: bool = True
+    # Keep this opt-in for compatibility with existing deployments. Strict scans
+    # can enable it to reject any route that cannot execute the configured size.
+    require_orderbook: bool = False
     selected_coins: set[str] = field(default_factory=set)
     quote_currency: str = 'USDT'
     validation_mode: str = 'strict'
