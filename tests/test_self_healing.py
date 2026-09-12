@@ -48,8 +48,9 @@ async def test_repeated_failures_trigger_repair_and_health_probe():
     adapter.failures_left = 10
     wrapped = SelfHealingAdapter(adapter, failure_threshold=1, quarantine_seconds=1)
 
-    with pytest.raises(ExchangeError):
-        await wrapped.get_markets()
+    # The adapter's repair resets its transient-failure state, so successful
+    # recovery should allow the original operation to complete on retry.
+    assert await wrapped.get_markets() == ['ok']
 
     assert adapter.repairs == 1
     assert adapter.probes == 1
