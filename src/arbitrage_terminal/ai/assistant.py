@@ -69,19 +69,58 @@ Rules: use ONLY supplied evidence; never invent exchange facts. Never request or
         compact['errors'] = [str(x)[:300] for x in (payload.get('errors') or [])[:cls.MAX_MESSAGES]]
         compact['selected_coins'] = list((payload.get('filters') or {}).get('selected_coins', []))[:50]
         coverage = payload.get('exchange_coverage')
-        if isinstance(coverage, dict): compact['exchange_coverage'] = {str(exchange): {key: value for key, value in record.items() if key in {'status', 'market_count', 'ticker_count', 'usable_symbols', 'shared_symbols', 'candidate_comparisons', 'candidate_rejections', 'candidate_opportunities', 'final_opportunities', 'network_rejections', 'filter_rejections', 'error'}} for exchange, record in coverage.items() if isinstance(record, dict)}
+        if isinstance(coverage, dict):
+            compact['exchange_coverage'] = {
+                str(exchange): {
+                    key: value for key, value in record.items()
+                    if key in {'status', 'market_count', 'ticker_count', 'usable_symbols', 'shared_symbols', 'candidate_comparisons', 'candidate_rejections', 'final_opportunities', 'network_rejections', 'filter_rejections', 'error'}
+                }
+                for exchange, record in list(coverage.items())[:20]
+                if isinstance(record, dict)
+            }
         while len(json.dumps(compact, default=str, separators=(',', ':'))) > cls.ANALYSIS_PAYLOAD_LIMIT:
-            if len(compact['opportunities']) > 3: compact['opportunities'] = compact['opportunities'][:max(3, len(compact['opportunities']) // 2)]; continue
-            if len(compact['diagnostics']) > 5: compact['diagnostics'] = compact['diagnostics'][:max(5, len(compact['diagnostics']) // 2)]; continue
-            if len(compact['warnings']) > 5: compact['warnings'] = compact['warnings'][:max(5, len(compact['warnings']) // 2)]; continue
-            if len(compact['errors']) > 5: compact['errors'] = compact['errors'][:max(5, len(compact['errors']) // 2)]; continue
+            if len(compact['opportunities']) > 3:
+                compact['opportunities'] = compact['opportunities'][:max(3, len(compact['opportunities']) // 2)]
+                continue
+            if len(compact['diagnostics']) > 5:
+                compact['diagnostics'] = compact['diagnostics'][:max(5, len(compact['diagnostics']) // 2)]
+                continue
+            if len(compact['warnings']) > 5:
+                compact['warnings'] = compact['warnings'][:max(5, len(compact['warnings']) // 2)]
+                continue
+            if len(compact['errors']) > 5:
+                compact['errors'] = compact['errors'][:max(5, len(compact['errors']) // 2)]
+                continue
+            if isinstance(compact.get('exchange_coverage'), dict) and len(compact['exchange_coverage']) > 5:
+                compact['exchange_coverage'] = dict(list(compact['exchange_coverage'].items())[:max(5, len(compact['exchange_coverage']) // 2)])
+                continue
+            if isinstance(compact.get('filters'), dict) and len(compact['filters']) > 5:
+                compact['filters'] = dict(list(compact['filters'].items())[:5])
+                continue
             break
         return compact
 
     async def analyze(self, mode, system, payload):
         if mode == AIMode.OFF or not self.configured: return None
         try:
-            strict_system = system + "\n\nSTRICT EVIDENCE RULES: Only state facts explicitly present in supplied JSON. Do not infer or invent volatility, latency, liquidity, reliability, connectivity quality, price convergence, trading volume, or market conditions. If data is partial/failed, explicitly describe the scan as incomplete. Never recommend executing, placing, or committing a trade. Never treat a ticker symbol alone as proof that two exchange markets represent the same asset. Never recommend an opportunity unless the deterministic scanner marks the route as verified."
+            strict_system = (
+                system
+                + "\n\nSTRICT EVIDENCE RULES:"
+                " Only state facts explicitly present in the supplied JSON."
+                " Do not infer or invent volatility, latency, liquidity, reliability, connectivity quality, price convergence, trading volume, or market conditions."
+                " Do not claim an exchange is healthy/reliable beyond the explicit healthy_exchanges field."
+                " If a requested fact is absent, say 'Not available in scan data'."
+                " If state is partial, failed, or any selected exchange failed/degraded, explicitly describe the scan as incomplete before discussing opportunities."
+                " If candidates_evaluated is zero because market/ticker data failed or comparisons are zero, do not say that no qualifying opportunities were found; say that no opportunity conclusion can be drawn because required comparison data was unavailable."
+                " When opportunities is empty and candidates_evaluated is greater than zero, clearly state that no qualifying opportunities were found and use rejection_summary/filter_rejection_count when supplied to explain why candidates were rejected."
+                " Recommendations must be clearly labeled as recommendations and must not be presented as observed scan facts."
+                " Never recommend executing, placing, or committing a trade."
+                " Never treat a ticker symbol alone as proof that two exchange markets represent the same asset."
+                " Never recommend an opportunity unless the deterministic scanner marks the route as verified."
+                " If asset identity, network, contract, fee, or depth evidence is missing, explicitly say so."
+                " The supplied scan JSON is intentionally compact; do not assume omitted records are absent."
+                " Keep the response concise and Telegram-friendly."
+            )
             encoded_payload = json.dumps(self._compact_analysis_payload(payload), default=str, separators=(',', ':'))
             r, _, _ = await self.http.request('POST', self.url + '/chat/completions', headers={'Authorization': f'Bearer {self.key}', 'Content-Type': 'application/json'}, json={'model': self.model, 'temperature': .1, 'messages': [{'role': 'system', 'content': strict_system}, {'role': 'user', 'content': 'Analyze this deterministic scan snapshot. Treat every field as authoritative; do not fill missing fields from general crypto knowledge.\n\n' + encoded_payload}]})
             return {'text': r.json()['choices'][0]['message']['content'], 'model': self.model}
