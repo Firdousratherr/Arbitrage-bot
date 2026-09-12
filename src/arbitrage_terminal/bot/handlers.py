@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
-from .ui import dashboard
+from .ui import dashboard, card
 
 
 def kb(rows):
