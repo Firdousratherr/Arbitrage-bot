@@ -19,7 +19,7 @@ async def start(update, context):
         context.user_data['await_email'] = True; await update.effective_message.reply_text('⚡ <b>Welcome to Arbitrage Terminal</b>\n\nSend your email to continue.', parse_mode='HTML'); return
     if svc.settings.require_vip and not await svc.repo.vip_active(update.effective_user.id):
         txt, markup = vip_prompt(); await update.effective_message.reply_text(txt, parse_mode='HTML', reply_markup=markup); return
-    await update.effective_message.reply_text(dashboard(row), parse_mode='HTML', reply_markup=kb([[('🔎 Scan Arbitrage','scan'),('🏦 Exchanges','exchanges')],[('📊 Filters','filters'),('🧠 AI','ai')],[('📡 Status','status'),('📋 History','history')],[('⚙️ Settings','settings'),('❓ Help','help')],[('👨‍💻 Contact Developer','contact:open')]]))
+    await update.effective_message.reply_text(dashboard(row), parse_mode='HTML', reply_markup=kb([[('🔎 Scan Arbitrage','scan'),('🏦 Exchanges','exchanges')],[('📊 Filters','filters'),('🧠 AI','ai')],[('📡 Status','status'),('📋 History','history')],[('⚙️ Settings','settings'),('❓ Help','help:main')],[('👨‍💻 Contact Developer','contact:open')]]))
 
 
 async def text(update, context):
@@ -87,7 +87,20 @@ async def callbacks(update, context):
     q = update.callback_query; await q.answer(); data = q.data
     if data == 'vip:enter': context.user_data['await_vip_key'] = True; await q.edit_message_text('🔐 <b>VIP KEY</b>\n\nSend your VIP key as a message.', parse_mode='HTML')
     elif data == 'home': await start(update, context)
-    elif data.startswith('aim:'): await context.application.bot_data['service'].set_ai_mode(q.from_user.id, data.split(':',1)[1]); await q.edit_message_text('✅ AI result mode saved.')
+    elif data == 'history':
+        rows = await context.application.bot_data['service'].history(q.from_user.id)
+        if not rows:
+            await q.edit_message_text('📋 <b>SCAN HISTORY</b>\n\nNo scans yet.', parse_mode='HTML', reply_markup=kb([[('🔎 Scan Arbitrage','scan'),('🏠 Dashboard','home')]])); return
+        await q.edit_message_text('📋 <b>SCAN HISTORY</b>\n\n' + '\n'.join(f"🕒 {r['started_at'][:16]} · 🔥 {r['opportunities_found']} opportunities · {r['state']}" for r in rows[:10]), parse_mode='HTML', reply_markup=kb([[('🔎 Scan Again','scan')],[('🏠 Dashboard','home')]]))
+    elif data == 'status':
+        row = await context.application.bot_data['service'].get_user(q.from_user.id); selected = json.loads(row['exchanges'] or '[]'); available = context.application.bot_data['exchanges']
+        lines = ['📡 <b>EXCHANGE STATUS</b>', '━━━━━━━━━━━━━━━━━━━━', '']
+        for name in selected: lines.append(f"{'🟢' if name in available else '🔴'} <b>{name.title()}</b> · {'ONLINE' if name in available else 'OFFLINE'}")
+        if not selected: lines.append('⚠️ No exchanges selected. Use Exchanges.')
+        await q.edit_message_text('\n'.join(lines), parse_mode='HTML', reply_markup=kb([[('🏠 Dashboard','home'),('🏦 Exchanges','exchanges')]]))
+    elif data == 'ai': await ai_cmd(update, context)
+    elif data.startswith('aim:'):
+        await context.application.bot_data['service'].set_ai_mode(q.from_user.id, data.split(':',1)[1]); await q.edit_message_text('✅ AI result mode saved.', reply_markup=kb([[('🧠 AI','ai'),('🏠 Dashboard','home')]]))
 
 
 def build_handlers():
