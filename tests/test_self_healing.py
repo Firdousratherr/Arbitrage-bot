@@ -13,6 +13,7 @@ class FakeAdapter:
         self.failures_left = 0
         self.repairs = 0
         self.probes = 0
+        self.closes = 0
 
     async def health_check(self):
         self.probes += 1
@@ -28,7 +29,7 @@ class FakeAdapter:
         return ['ok']
 
     async def close(self):
-        pass
+        self.closes += 1
 
 
 @pytest.mark.asyncio
@@ -57,6 +58,38 @@ async def test_repeated_failures_trigger_repair_and_health_probe():
     assert wrapped.health.total_repairs == 1
     assert wrapped.health.total_recoveries == 1
     assert wrapped.health.state == 'healthy'
+
+
+@pytest.mark.asyncio
+async def test_concurrent_failures_share_one_recovery():
+    class SlowRepair(FakeAdapter):
+        async def repair(self):
+            self.repairs += 1
+            await asyncio.sleep(0.03)
+            self.failures_left = 0
+
+    adapter = SlowRepair()
+    adapter.failures_left = 20
+    wrapped = SelfHealingAdapter(adapter, failure_threshold=1)
+
+    results = await asyncio.gather(*(wrapped.get_markets() for _ in range(10)))
+
+    assert results == [['ok']] * 10
+    assert adapter.repairs == 1
+    assert adapter.probes == 1
+    assert wrapped.health.total_recoveries == 1
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_close_bypasses_self_healing():
+    adapter = FakeAdapter()
+    wrapped = SelfHealingAdapter(adapter, failure_threshold=1)
+
+    await wrapped.close()
+
+    assert adapter.closes == 1
+    assert adapter.repairs == 0
+    assert adapter.probes == 0
 
 
 @pytest.mark.asyncio
