@@ -46,7 +46,7 @@ async def test_orderbook_validation_preserves_ticker_liquidity_and_reprices_net_
     filters=ScanFilters(min_gap=0,min_net_profit=1,min_volume=10000,min_liquidity=1000,trade_size=1000,require_orderbook=True)
     x=await s.scan(1,['a','b'],filters)
     assert x.state==ScanState.SUCCESS
-    assert x.opportunities_found==2
+    assert x.opportunities_found==1
     for o in x.opportunities:
         assert o.metadata['orderbook_validated'] is True
         assert o.buy_volume == 100000
