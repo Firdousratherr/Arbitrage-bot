@@ -24,8 +24,7 @@ class ScanFilters:
         self.selected_coins = {str(x).strip().upper() for x in self.selected_coins if str(x).strip()}
         self.quote_currency = str(self.quote_currency or 'USDT').strip().upper()
         self.validation_mode = str(self.validation_mode or 'strict').strip().lower()
-        if self.validation_mode not in {'strict', 'loose'}:
-            self.validation_mode = 'strict'
+        if self.validation_mode not in {'strict', 'loose'}: self.validation_mode = 'strict'
         self.trade_size = float(self.trade_size or 0)
         if self.trade_size <= 0: self.trade_size = 1000.0
 
@@ -42,7 +41,8 @@ class ScanFilters:
             o.metadata['net_profit_roi'] = float(o.estimated_net_profit)
         return amount
 
-    def check(self, o: Opportunity, include_validation: bool = True, include_orderbook: bool = True):
+    def check(self, o: Opportunity, include_validation: bool = True, include_orderbook: bool | None = None):
+        if include_orderbook is None: include_orderbook = include_validation
         if o.raw_gap < self.min_gap: return f'gap {o.raw_gap:.3f}% below {self.min_gap:.3f}%'
         amount = self._annotate_profit(o)
         if amount is None: return 'net profit unavailable because required fee data is missing'
