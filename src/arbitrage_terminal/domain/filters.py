@@ -57,4 +57,5 @@ class ScanFilters:
         if include_validation and self.validation_mode != 'loose':
             if self.require_network and not o.metadata.get('network_available', False): return 'deposit/withdrawal or network validation unavailable'
             if self.require_network and not o.metadata.get('contract_match', False): return 'contract/address matching unavailable or mismatched'
+            if self.require_network and not o.metadata.get('withdrawal_fee_available', False): return 'withdrawal fee unavailable; executable net profit cannot be verified'
         return None
