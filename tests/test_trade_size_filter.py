@@ -19,7 +19,7 @@ def make_opportunity(net_roi=1.2):
         data_age_seconds=1.0,
         confidence=90.0,
         market_type=MarketType.SPOT,
-        metadata={'fee_data_available': True, 'network_available': True, 'contract_match': True, 'withdrawal_fee_verified': True, 'withdrawal_fee_pct': 0.0},
+        metadata={'fee_data_available': True, 'network_available': True, 'contract_match': True, 'transfer_verified': True, 'withdrawal_fee_available': True, 'withdrawal_fee_verified': True, 'withdrawal_fee_pct': 0.0},
     )
 
 
