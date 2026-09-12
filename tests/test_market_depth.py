@@ -4,7 +4,7 @@ from arbitrage_terminal.arbitrage.market_depth import execute_buy, execute_sell,
 def test_execute_buy_consumes_multiple_ask_levels():
     result = execute_buy({'asks': [[10, 20], [11, 20]]}, 300)
     assert result.complete
-    assert result.base_amount == 28.181818181818183
+    assert result.base_amount == 29.090909090909093
     assert result.quote_amount == 300
     assert result.average_price > 10
 
