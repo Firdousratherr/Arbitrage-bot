@@ -71,16 +71,10 @@ def _clip(text, limit):
     return value[:limit] + '\n\n[context clipped to protect the AI request size]'
 
 
-def _request_error(exc):
-    status = getattr(exc, 'status', None)
-    return status
-
-
 async def _ask(manager, system, user, temperature=0.15):
     if not manager.configured:
         raise RuntimeError('AI Code Fixer is not configured.')
     from arbitrage_terminal.infrastructure.http import HttpError
-
     user = _clip(user, MAX_AI_USER_CHARS)
     payload = {'model': manager.ai.model, 'temperature': temperature, 'messages': [
         {'role': 'system', 'content': system},
@@ -95,8 +89,6 @@ async def _ask(manager, system, user, temperature=0.15):
     except HttpError as exc:
         if exc.status != 413:
             raise
-        # Retry once with a deliberately tiny context. A 413 is a request-size
-        # rejection, not a reason to make the user restart the conversation.
         payload['messages'][1]['content'] = _clip(user, MAX_AI_RETRY_CHARS)
         r, _, _ = await manager.ai.http.request(
             'POST', manager.ai.url + '/chat/completions',
@@ -306,14 +298,8 @@ async def _chat_reply(update, context, message):
     ]
     current = _clip(f'{message}\n\nCURRENT REPOSITORY CONTEXT:\n{context_text}', MAX_AI_USER_CHARS)
     messages = [{'role': 'system', 'content': system}, *bounded_history, {'role': 'user', 'content': current}]
-
     from arbitrage_terminal.infrastructure.http import HttpError
-
-    payload = {
-        'model': manager.ai.model,
-        'temperature': 0.2,
-        'messages': messages,
-    }
+    payload = {'model': manager.ai.model, 'temperature': 0.2, 'messages': messages}
     try:
         r, _, _ = await manager.ai.http.request(
             'POST', manager.ai.url + '/chat/completions',
@@ -322,8 +308,6 @@ async def _chat_reply(update, context, message):
         )
     except HttpError as exc:
         if exc.status == 413:
-            # Never make the admin retry manually. Keep the conversation but
-            # reduce the request to the current message plus a small code slice.
             retry_context = _clip(context_text, 6500)
             payload['messages'] = [
                 {'role': 'system', 'content': system},
@@ -476,9 +460,12 @@ async def _merge_pr(update, context):
                 parse_mode='HTML', reply_markup=_proposal_buttons(item))
             return
         head_sha = pr.get('head', {}).get('sha')
+        merge_payload = {'merge_method': 'squash'}
+        if head_sha:
+            merge_payload['sha'] = head_sha
         merged = await manager._github(
             'PUT', f'/repos/{manager.settings.github_repo}/pulls/{pr_number}/merge',
-            json={'merge_method': 'squash', 'expected_head_sha': head_sha},
+            json=merge_payload,
         )
         if not merged.get('merged'):
             raise RuntimeError(merged.get('message') or 'GitHub did not merge the pull request.')
