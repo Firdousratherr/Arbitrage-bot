@@ -65,7 +65,7 @@ async def genkey(update, context):
     except Exception as e: await update.effective_message.reply_text(f'⚠️ Could not create key: {type(e).__name__}')
 
 
-async def scan(update, context): await update.effective_message.reply_text('Use the dashboard Scan button.', reply_markup=kb([[('🔎 Scan Arbitrage','scan')]))
+async def scan(update, context): await update.effective_message.reply_text('Use the dashboard Scan button.', reply_markup=kb([[('🔎 Scan Arbitrage','scan')]]))
 
 
 async def results_cmd(update, context):
