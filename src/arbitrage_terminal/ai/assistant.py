@@ -71,7 +71,7 @@ class AIAssistant:
         for item in (payload.get('diagnostics') or [])[:cls.MAX_DIAGNOSTICS]:
             if isinstance(item, dict):
                 entry = {}
-                for key in ('exchange', 'status', 'latency_ms', 'error', 'message'):
+                for key in ('exchange', 'operation', 'status', 'latency_ms', 'error', 'message'):
                     if key in item:
                         value = item[key]
                         entry[key] = str(value)[:300] if value is not None else value
@@ -88,7 +88,8 @@ class AIAssistant:
                 str(exchange): {
                     key: value for key, value in record.items()
                     if key in {
-                        'status', 'market_count', 'ticker_count', 'candidate_comparisons',
+                        'status', 'market_count', 'ticker_count', 'usable_symbols',
+                        'shared_symbols', 'candidate_comparisons', 'candidate_rejections',
                         'candidate_opportunities', 'final_opportunities',
                         'network_rejections', 'filter_rejections', 'error',
                     }
@@ -127,11 +128,10 @@ class AIAssistant:
                 " connectivity quality, price convergence, trading volume, or market conditions."
                 " Do not claim an exchange is healthy/reliable beyond the explicit healthy_exchanges field."
                 " If a requested fact is absent, say 'Not available in scan data'."
-                " When opportunities is empty or the opportunity count is zero, clearly state that"
-                " no qualifying opportunities were found and use filter_rejections/rejection_summary"
-                " when supplied to explain why candidates were rejected."
-                " Recommendations must be clearly labeled as recommendations and must not be presented"
-                " as observed scan facts."
+                " If state is partial, failed, or any selected exchange failed/degraded, explicitly describe the scan as incomplete before discussing opportunities."
+                " If candidates_evaluated is zero because ticker/market data failed or comparisons are zero, do not say that no qualifying opportunities were found; say that no opportunity conclusion can be drawn because the required comparison data was unavailable."
+                " When opportunities is empty and candidates_evaluated is greater than zero, clearly state that no qualifying opportunities were found and use filter_rejections/rejection_summary when supplied to explain why candidates were rejected."
+                " Recommendations must be clearly labeled as recommendations and must not be presented as observed scan facts."
                 " Never recommend executing, placing, or committing a trade."
                 " Never treat a ticker symbol alone as proof that two exchange markets represent the same asset."
                 " Never recommend an opportunity unless the deterministic scanner marks the route as verified;"
