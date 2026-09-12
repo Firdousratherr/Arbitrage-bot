@@ -54,13 +54,12 @@ class ScanFilters:
         if self.quote_currency and o.symbol.split('/', 1)[1].upper() != self.quote_currency: return 'quote currency mismatch'
         if self.require_fees and not o.metadata.get('fee_data_available', False): return 'fee data unavailable'
         if include_orderbook and self.require_orderbook and self.validation_mode != 'loose' and not o.metadata.get('orderbook_validated', False): return 'order-book depth validation unavailable or insufficient'
-        # Once the scanner has positively verified a transfer route, a missing
-        # withdrawal fee must invalidate that candidate regardless of whether
-        # this invocation is the preliminary or final validation pass. This
-        # keeps executable net profit conservative when the scanner performs
-        # its final transfer validation with include_validation=False.
-        if self.require_network and self.validation_mode != 'loose' and o.metadata.get('transfer_verified', False) and not o.metadata.get('withdrawal_fee_available', False):
-            return 'withdrawal fee unavailable; executable net profit cannot be verified'
+        if self.require_network and self.validation_mode != 'loose':
+            network_verified = bool(o.metadata.get('transfer_verified', False))
+            if include_validation:
+                network_verified = network_verified or bool(o.metadata.get('network_available', False) and o.metadata.get('contract_match', False))
+            if network_verified and not o.metadata.get('withdrawal_fee_available', False):
+                return 'withdrawal fee unavailable; executable net profit cannot be verified'
         if include_validation and self.validation_mode != 'loose':
             if self.require_network and not o.metadata.get('network_available', False): return 'deposit/withdrawal or network validation unavailable'
             if self.require_network and not o.metadata.get('contract_match', False): return 'contract/address matching unavailable or mismatched'
