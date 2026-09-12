@@ -1,30 +1,34 @@
 from __future__ import annotations
 
 import html
+import time
 
 from .handlers import kb
 from .ui import DIVIDER, scan_status
 
 
 SPINNER = ('◐', '◓', '◑', '◒')
-STAGE_ICONS = {
-    'start': '🚀',
-    'exchange': '🔌',
-    'markets': '📊',
-    'fees': '💸',
-    'candidates': '🔎',
-    'opportunity': '💎',
-    'complete': '✅',
-}
-STAGE_PROGRESS = {
-    'start': 10,
-    'exchange': 25,
-    'markets': 45,
-    'fees': 60,
-    'candidates': 80,
-    'opportunity': 90,
-    'complete': 100,
-}
+
+
+def _progress_percent(stage, data, selected):
+    """Return a truthful progress value for both stage names and UI labels."""
+    if stage == 'start':
+        return 5
+    if stage == 'exchange':
+        total = max(1, int(data.get('total', selected) or selected or 1))
+        completed = max(0, min(total, int(data.get('completed', 0) or 0)))
+        return 10 + int(35 * completed / total)
+    if stage == 'markets':
+        return 50
+    if stage == 'fees':
+        return 65
+    if stage == 'candidates':
+        return 80
+    if stage == 'opportunity':
+        return 90
+    if stage == 'complete':
+        return 100
+    return 50
 
 
 def _progress_bar(percent):
@@ -32,16 +36,20 @@ def _progress_bar(percent):
     return '█' * filled + '░' * (10 - filled)
 
 
-def _window(stage, selected, states, comparisons=0, opportunities=0, best=None, detail='', frame=0):
-    icon = STAGE_ICONS.get(stage, '⚡')
-    percent = STAGE_PROGRESS.get(stage, 50)
+def _window(stage, selected, states, comparisons=0, opportunities=0, best=None, detail='', frame=0, percent=None, elapsed=None):
     spinner = SPINNER[frame % len(SPINNER)]
+    if percent is None:
+        percent = 50
     lines = [
         '⚡ <b>CRYPTO ARBITRAGE SCANNER</b>',
         f'<code>{DIVIDER}</code>',
         '',
-        f'{icon} <b>{html.escape(stage)}</b> {spinner}',
+        f'⚡ <b>{html.escape(stage)}</b> {spinner}',
         f'[{_progress_bar(percent)}] <b>{percent}%</b>',
+    ]
+    if elapsed is not None:
+        lines.append(f'⏱ <b>Elapsed:</b> {elapsed:.0f}s')
+    lines += [
         '',
         f'🏦 <b>Exchanges:</b> {selected}',
     ]
@@ -82,11 +90,13 @@ async def live_scan_callback(update, context):
         pass
     states = {n: 'waiting' for n in selected}
     frame = 0
-    await q.edit_message_text(_window('start', len(selected), states, frame=frame), parse_mode='HTML')
+    started = time.monotonic()
+    await q.edit_message_text(_window('Starting scan', len(selected), states, frame=frame, percent=5, elapsed=0), parse_mode='HTML')
     last_text = ''
+    last_edit = 0.0
 
     async def progress(stage, data):
-        nonlocal last_text, frame
+        nonlocal last_text, frame, last_edit
         frame += 1
         if stage == 'exchange':
             states[data['exchange']] = data['status']
@@ -100,6 +110,13 @@ async def live_scan_callback(update, context):
             'complete': 'Scan complete',
         }
         label = labels.get(stage, stage.replace('_', ' ').title())
+        percent = _progress_percent(stage, data, len(selected))
+        completed = data.get('completed')
+        total = data.get('total', len(selected))
+        if stage == 'exchange' and completed is not None:
+            label = f'Exchange responses · {completed}/{total}'
+        elif stage == 'exchange' and data.get('status') == 'loading':
+            label = f'Waiting for {html.escape(str(data.get("exchange", "exchange")).title())}…'
         best = None
         if stage == 'opportunity':
             best = {
@@ -117,10 +134,18 @@ async def live_scan_callback(update, context):
             best,
             data.get('message', ''),
             frame,
+            percent,
+            time.monotonic() - started,
         )
+        now = time.monotonic()
         if text == last_text:
             return
+        # Telegram edit throttling: allow fast terminal updates but avoid hammering
+        # the API when several exchanges report in rapid succession.
+        if stage not in {'complete', 'opportunity'} and now - last_edit < 0.8:
+            return
         last_text = text
+        last_edit = now
         try:
             await q.edit_message_text(text, parse_mode='HTML')
         except Exception:
