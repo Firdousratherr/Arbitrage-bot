@@ -155,6 +155,9 @@ class TerminalService:
             await self.repo.save_scan(snap)
             return snap
 
+    async def close(self):
+        await self._scan_coordinator.close()
+
     async def history(self, user_id):
         return await self.repo.history(user_id)
 
