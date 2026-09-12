@@ -11,7 +11,7 @@ from arbitrage_terminal.domain.models import ScanSnapshot
 
 DEFAULT_FILTERS = {
     'min_gap': .50, 'min_net_profit': 2.00, 'min_volume': 10000., 'min_liquidity': 1000.,
-    'max_data_age': 10., 'trade_size': 1000., 'require_network': False, 'require_fees': False,
+    'max_data_age': 10., 'trade_size': 1000., 'require_network': True, 'require_fees': False,
     'selected_coins': [], 'quote_currency': 'USDT', 'validation_mode': 'strict'
 }
 
@@ -28,7 +28,6 @@ class Repository:
         self.db.row_factory = aiosqlite.Row
         await self.db.executescript('''PRAGMA journal_mode=WAL;PRAGMA foreign_keys=ON;CREATE TABLE IF NOT EXISTS schema_version(version INTEGER NOT NULL);CREATE TABLE IF NOT EXISTS users(telegram_id INTEGER PRIMARY KEY,username TEXT,email TEXT,vip_status TEXT NOT NULL DEFAULT 'pending',vip_expiry TEXT,banned INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL,last_active TEXT NOT NULL);CREATE TABLE IF NOT EXISTS user_exchange_config(user_id INTEGER PRIMARY KEY REFERENCES users(telegram_id) ON DELETE CASCADE,exchanges TEXT NOT NULL DEFAULT '[]');CREATE TABLE IF NOT EXISTS user_scanner_config(user_id INTEGER PRIMARY KEY REFERENCES users(telegram_id) ON DELETE CASCADE,filters TEXT NOT NULL DEFAULT '{}');CREATE TABLE IF NOT EXISTS user_ai_config(user_id INTEGER PRIMARY KEY REFERENCES users(telegram_id) ON DELETE CASCADE,result_mode TEXT NOT NULL DEFAULT 'off',preferences TEXT NOT NULL DEFAULT '{}',maintenance_preferences TEXT NOT NULL DEFAULT '{}');CREATE TABLE IF NOT EXISTS scan_snapshots(scan_id TEXT PRIMARY KEY,user_id INTEGER NOT NULL,started_at TEXT NOT NULL,completed_at TEXT,selected_exchanges TEXT NOT NULL,healthy_exchanges TEXT NOT NULL,degraded_exchanges TEXT NOT NULL,failed_exchanges TEXT NOT NULL,state TEXT NOT NULL,markets_discovered INTEGER NOT NULL,markets_validated INTEGER NOT NULL,candidates_evaluated INTEGER NOT NULL,opportunities_found INTEGER NOT NULL,payload TEXT NOT NULL);CREATE INDEX IF NOT EXISTS idx_scan_user_time ON scan_snapshots(user_id,started_at DESC);CREATE TABLE IF NOT EXISTS vip_keys(key TEXT PRIMARY KEY,created_by INTEGER,created_at TEXT NOT NULL,redeemed_by INTEGER,redeemed_at TEXT,expiry_date TEXT,status TEXT NOT NULL DEFAULT 'unused');CREATE TABLE IF NOT EXISTS ai_analyses(id TEXT PRIMARY KEY,user_id INTEGER NOT NULL,scan_id TEXT,kind TEXT NOT NULL,payload TEXT NOT NULL,created_at TEXT NOT NULL);''')
         cols = {r['name'] for r in await (await self.db.execute('PRAGMA table_info(users)')).fetchall()}
-        # Preserve the legacy column name used by the original schema.
         if 'banned' not in cols:
             await self.db.execute("ALTER TABLE users ADD COLUMN banned INTEGER NOT NULL DEFAULT 0")
         if 'selected_exchanges' in cols:

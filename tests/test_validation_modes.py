@@ -10,10 +10,11 @@ def test_strict_requires_network_and_contract_match():
     o=pair_opportunity(ticker('buy',100),ticker('sell',102),.1,.1,transfer={'network_available':False,'contract_match':False,'networks':[]})
     assert ScanFilters(min_net_profit=.1,validation_mode='strict').check(o) == 'deposit/withdrawal or network validation unavailable'
 
-def test_strict_accepts_verified_common_network():
-    o=pair_opportunity(ticker('buy',100),ticker('sell',102),.1,.1,transfer={'network_available':True,'contract_match':True,'networks':['ERC20']})
+def test_strict_accepts_verified_common_network_with_known_withdrawal_fee():
+    o=pair_opportunity(ticker('buy',100),ticker('sell',102),.1,.1,0.0,transfer={'network_available':True,'contract_match':True,'networks':['ERC20']})
     assert ScanFilters(min_net_profit=.1,validation_mode='strict').check(o) is None
     assert o.metadata['transfer_verified'] is True
+    assert o.metadata['withdrawal_fee_available'] is True
 
 def test_loose_accepts_unverified_transfer():
     o=pair_opportunity(ticker('buy',100),ticker('sell',102),.1,.1,transfer={'network_available':False,'contract_match':False,'networks':[]})

@@ -9,11 +9,12 @@ from .ccxt_adapter import CcxtAdapter
 
 
 class LBankAdapter(CcxtAdapter):
-    """LBank-specific adapter using its best-bid/ask endpoint for spot tickers."""
+    """LBank-specific adapter using its best-bid/ask endpoint for spot prices."""
 
     async def get_tickers(self, symbols=None):
         self.last_ticker_symbols = set()
         self.last_ticker_count = 0
+        self.last_ticker_source = 'book_ticker'
         if not self._markets:
             await self.get_markets()
 
@@ -60,6 +61,37 @@ class LBankAdapter(CcxtAdapter):
             return_exceptions=True,
         )
         out = [item for item in results if isinstance(item, Ticker)]
+
+        # The best-bid/ask endpoint is fast and reliable for prices but does not
+        # consistently expose 24h volume. Enrich the already-collected quotes
+        # with one bulk CCXT ticker request when supported. This avoids an
+        # additional request per symbol and never makes volume up when it is
+        # genuinely unavailable.
+        if out and hasattr(self.client, 'fetch_tickers'):
+            try:
+                bulk = await self._call('volume_tickers', self.client.fetch_tickers, sorted(wanted))
+                volume_by_symbol = {}
+                for raw_symbol, ticker in (bulk or {}).items():
+                    try:
+                        normalized, *_ = normalize_symbol(raw_symbol)
+                        volume = float((ticker or {}).get('quoteVolume'))
+                    except (ValueError, TypeError, AttributeError):
+                        continue
+                    if volume >= 0:
+                        volume_by_symbol[normalized.upper()] = volume
+                if volume_by_symbol:
+                    out = [
+                        Ticker(t.exchange, t.symbol, t.base, t.quote, t.bid, t.ask,
+                               volume_by_symbol.get(t.symbol.upper(), t.quote_volume),
+                               t.timestamp, t.asset_identity)
+                        for t in out
+                    ]
+                    self.last_ticker_source = 'book_ticker+bulk_volume'
+            except Exception:
+                # Price discovery must remain available if the optional volume
+                # enrichment endpoint is unsupported or temporarily unhealthy.
+                self.last_ticker_source = 'book_ticker'
+
         self.last_ticker_symbols = {t.symbol for t in out}
         self.last_ticker_count = len(out)
         return out

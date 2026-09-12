@@ -1,6 +1,6 @@
 from datetime import datetime,timezone
 from arbitrage_terminal.domain.models import Ticker
-from arbitrage_terminal.arbitrage.engine import pair_opportunity
+from arbitrage_terminal.arbitrage.engine import pair_opportunity, withdrawal_cost_pct
 
 def t(ex,p,asset_identity=None):
     return Ticker(ex,'BTC/USDT','BTC','USDT',p-1,p,100000,datetime.now(timezone.utc),asset_identity)
@@ -21,3 +21,11 @@ def test_allows_matching_explicit_asset_identity():
     o=pair_opportunity(t('a',100,'BTC|contract:0xaaa'),t('b',102,'BTC|contract:0xaaa'),.1,.1)
     assert o is not None
     assert o.metadata['asset_identity_verified'] is True
+
+def test_withdrawal_cost_pct_uses_base_asset_fee_and_chooses_cheapest_route():
+    info={'networks': {'TRC20': {'fee': '1.5'}, 'ERC20': {'fee': '0.01'}}}
+    assert withdrawal_cost_pct(info, ['TRC20', 'ERC20'], 10.0) == 0.1
+
+def test_withdrawal_cost_pct_returns_none_when_all_usable_fees_unknown():
+    info={'networks': {'TRC20': {'fee': None}}}
+    assert withdrawal_cost_pct(info, ['TRC20'], 10.0) is None
