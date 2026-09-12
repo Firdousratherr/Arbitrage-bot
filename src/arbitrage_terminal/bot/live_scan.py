@@ -50,18 +50,11 @@ def _window(stage, selected, states, comparisons=0, opportunities=0, best=None, 
     ]
     if elapsed is not None:
         lines.append(f'⏱ <b>Elapsed:</b> {elapsed:.0f}s')
-    lines += [
-        '',
-        f'🏦 <b>Exchanges:</b> {selected}',
-    ]
+    lines += ['', f'🏦 <b>Exchanges:</b> {selected}']
     for name, status in states.items():
         icon = '🟢' if status == 'healthy' else '🔴' if status == 'failed' else '🟡'
         lines.append(f'{icon} {html.escape(name.title())} · {html.escape(status)}')
-    lines += [
-        '',
-        f'🔄 <b>Comparisons:</b> {comparisons:,}',
-        f'🔥 <b>Opportunities:</b> {opportunities:,}',
-    ]
+    lines += ['', f'🔄 <b>Comparisons:</b> {comparisons:,}', f'🔥 <b>Opportunities:</b> {opportunities:,}']
     if best:
         lines += ['', f'💎 <b>Best so far:</b> {html.escape(best["symbol"])} +{best["gap"]:.3f}%']
         lines.append(f'   🟢 {html.escape(best["buy"])} → 🔴 {html.escape(best["sell"])}')
@@ -89,12 +82,19 @@ async def live_scan_callback(update, context):
         selected = json.loads(row['exchanges'] or '[]')
     except Exception:
         pass
+
     states = {n: 'waiting' for n in selected}
     frame = 0
     started = time.monotonic()
     edit_lock = asyncio.Lock()
     last_text = ''
     last_edit = 0.0
+    current_stage = 'Starting scan'
+    current_percent = 5
+    current_comparisons = 0
+    current_opportunities = 0
+    current_best = None
+    current_detail = ''
 
     async def safe_edit(text, force=False):
         nonlocal last_text, last_edit
@@ -122,25 +122,25 @@ async def live_scan_callback(update, context):
             await asyncio.sleep(5)
             frame += 1
             elapsed = time.monotonic() - started
-            # Keep the last real stage percentage; heartbeat is deliberately
-            # informational and never pretends that work completed.
-            text = _window(
-                'Still working…',
-                len(selected),
-                states,
-                comparisons=0,
-                opportunities=0,
-                detail=f'Waiting for exchange/API responses · {elapsed:.0f}s elapsed',
-                frame=frame,
-                percent=10,
-                elapsed=elapsed,
+            await safe_edit(
+                _window(
+                    current_stage,
+                    len(selected),
+                    states,
+                    comparisons=current_comparisons,
+                    opportunities=current_opportunities,
+                    best=current_best,
+                    detail=current_detail or f'No new stage update · {elapsed:.0f}s elapsed',
+                    frame=frame,
+                    percent=current_percent,
+                    elapsed=elapsed,
+                )
             )
-            await safe_edit(text)
 
     heartbeat_task = asyncio.create_task(heartbeat())
 
     async def progress(stage, data):
-        nonlocal frame
+        nonlocal frame, current_stage, current_percent, current_comparisons, current_opportunities, current_best, current_detail
         frame += 1
         if stage == 'exchange':
             states[data['exchange']] = data['status']
@@ -169,14 +169,20 @@ async def live_scan_callback(update, context):
                 'buy': data['buy'],
                 'sell': data['sell'],
             }
+        current_stage = label
+        current_percent = percent
+        current_comparisons = int(data.get('comparisons', current_comparisons) or current_comparisons)
+        current_opportunities = int(data.get('count', data.get('opportunities', current_opportunities)) or current_opportunities)
+        current_best = best or current_best
+        current_detail = str(data.get('message', '') or '')
         text = _window(
             label,
             len(selected),
             states,
-            data.get('comparisons', 0),
-            data.get('count', data.get('opportunities', 0)),
-            best,
-            data.get('message', ''),
+            current_comparisons,
+            current_opportunities,
+            current_best,
+            current_detail,
             frame,
             percent,
             time.monotonic() - started,
@@ -187,12 +193,6 @@ async def live_scan_callback(update, context):
         snap = await svc.run_scan(uid, progress=progress)
         p = snap.to_dict()
         scan_id = p['scan_id']
-        await safe_edit(
-            scan_status(p),
-            force=True,
-        )
-        # Re-apply the result keyboard because safe_edit intentionally handles
-        # progress text only.
         await q.edit_message_text(
             scan_status(p),
             parse_mode='HTML',
