@@ -11,6 +11,7 @@ from .application.service import TerminalService
 from .ai import AIAssistant
 from .arbitrage import ArbitrageScanner
 from .bot import build_handlers
+from .bot import code_repair as code_repair_module
 from .bot.admin import admin_callback, admin_cmd, adminstats_cmd, ban_cmd, givevip_cmd, init_admin_storage, revokevip_cmd, unban_cmd, useractions_cmd, userinfo_cmd, users_cmd, vipkeys_cmd
 from .bot.ai_workbench import ai_workbench_callback, ai_workbench_cmd, aichat_text
 from .bot.code_repair import CodeRepairManager, aifix_callback, aifix_cancel_cmd, aifix_cmd, aifix_history_cmd, aifix_status_cmd
@@ -67,6 +68,11 @@ async def build_runtime():
     scanner = ArbitrageScanner(exchanges, settings.exchange_concurrency, settings.scan_timeout_seconds)
     ai = AIAssistant(settings.ai_api_url, settings.ai_api_key, settings.ai_model, settings.ai_timeout_seconds)
     await ai.start()
+    # Keep all code-repair entry points (command, chat, suggestions) under a
+    # conservative provider request budget. A single full repository context
+    # previously exceeded some OpenAI-compatible gateways and returned HTTP 413.
+    code_repair_module.MAX_CONTEXT_FILES = 5
+    code_repair_module.MAX_FILE_CONTEXT = 5000
     code_repair = CodeRepairManager(ai, settings)
     return settings, repo, exchanges, scanner, ai, code_repair, TerminalService(repo, scanner, ai, settings), exchange_diagnostics
 
