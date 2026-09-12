@@ -22,9 +22,13 @@ def build_exchanges(names, credentials_provider, diagnostics=None, self_healing=
             adapter_cls = SPECIAL.get(name, CcxtAdapter)
             exchange_id = CCXT_IDS.get(name, name)
             adapter = adapter_cls(exchange_id, public_name=name, credentials=credentials_provider(name))
+            # Keep rate limiting/cache outside the raw CCXT adapter but inside
+            # self-healing. This is important: automatic recovery must invalidate
+            # the same cache layer that all scanner reads use.
+            adapter = RateLimitedExchangeAdapter(adapter, concurrency=concurrency)
             if self_healing:
                 adapter = SelfHealingAdapter(adapter, recovery_advisor=recovery_advisor)
-            result[name] = RateLimitedExchangeAdapter(adapter, concurrency=concurrency)
+            result[name] = adapter
         except Exception as exc:
             detail = str(exc)[:500]
             logger.exception('exchange adapter initialization failed', extra={'exchange': name})
