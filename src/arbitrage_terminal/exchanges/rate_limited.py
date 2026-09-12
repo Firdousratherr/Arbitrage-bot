@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -19,11 +20,14 @@ class RateLimitedExchangeAdapter:
         self._cache_lock = asyncio.Lock()
         self._cache: dict[tuple[str, Any], tuple[float, Any]] = {}
         self._inflight: dict[tuple[str, Any], asyncio.Task] = {}
+        self._closed = False
 
     def __getattr__(self, name: str):
         return getattr(self._adapter, name)
 
     async def _cached_call(self, key: tuple[str, Any], ttl: float, fn: Callable[[], Awaitable[Any]]):
+        if self._closed:
+            raise RuntimeError('Exchange adapter is closed')
         now = time.monotonic()
         async with self._cache_lock:
             cached = self._cache.get(key)
@@ -40,7 +44,8 @@ class RateLimitedExchangeAdapter:
             async with self._semaphore:
                 value = await fn()
             async with self._cache_lock:
-                self._cache[key] = (time.monotonic() + ttl, value)
+                if not self._closed:
+                    self._cache[key] = (time.monotonic() + ttl, value)
             return value
         finally:
             async with self._cache_lock:
@@ -58,7 +63,7 @@ class RateLimitedExchangeAdapter:
         if repair is None:
             raise AttributeError('Underlying exchange adapter does not support repair')
         result = repair()
-        if asyncio.iscoroutine(result):
+        if inspect.isawaitable(result):
             await result
         await self.invalidate_market_data_cache()
 
@@ -67,8 +72,18 @@ class RateLimitedExchangeAdapter:
             self._cache.clear()
 
     async def close(self):
+        self._closed = True
+        async with self._cache_lock:
+            tasks = list(self._inflight.values())
+            self._inflight.clear()
+            self._cache.clear()
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
         close = getattr(self._adapter, 'close', None)
         if close is not None:
             result = close()
-            if asyncio.iscoroutine(result):
+            if inspect.isawaitable(result):
                 await result
