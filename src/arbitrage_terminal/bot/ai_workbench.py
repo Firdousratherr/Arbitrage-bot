@@ -8,6 +8,13 @@ from telegram.ext import ContextTypes
 from .handlers import kb
 
 
+MAX_CHAT_HISTORY_MESSAGES = 4
+MAX_CHAT_HISTORY_CHARS = 1500
+MAX_REPO_CONTEXT_CHARS = 28000
+MAX_AI_USER_CHARS = 34000
+MAX_CI_LOG_CHARS = 7000
+
+
 def _is_admin(update, context):
     return bool(update.effective_user and update.effective_user.id in context.application.bot_data['settings'].admin_ids)
 
@@ -45,9 +52,17 @@ def _clean(text, limit=3600):
     return html.escape(str(text or '').strip()[:limit])
 
 
+def _clip(text, limit):
+    value = str(text or '')
+    if len(value) <= limit:
+        return value
+    return value[:limit] + '\n\n[context clipped to protect the AI request size]'
+
+
 async def _ask(manager, system, user, temperature=0.15):
     if not manager.configured:
         raise RuntimeError('AI Code Fixer is not configured.')
+    user = _clip(user, MAX_AI_USER_CHARS)
     r, _, _ = await manager.ai.http.request(
         'POST', manager.ai.url + '/chat/completions',
         headers={'Authorization': f'Bearer {manager.ai.key}', 'Content-Type': 'application/json'},
@@ -62,7 +77,9 @@ async def _ask(manager, system, user, temperature=0.15):
 
 
 async def _repo_context(manager, prompt, branch=None):
-    return await manager._context(prompt, branch or manager.settings.github_base_branch)
+    # main.py applies the same conservative limits globally. Clip once more here
+    # so a large GitHub tree or future constant change cannot recreate HTTP 413.
+    return _clip(await manager._context(prompt, branch or manager.settings.github_base_branch), MAX_REPO_CONTEXT_CHARS)
 
 
 async def _render_menu(update, context):
@@ -115,7 +132,12 @@ async def _suggest(update, context, kind):
             if not run:
                 await q.edit_message_text('✅ No failed CI run was found on the base branch.', reply_markup=workbench_menu())
                 return
-            prompt = f'Review this latest CI failure and explain the root cause, likely fix, affected files, regression risk, and safest next step. Do not invent facts.\n\nCI RUN: {run.get("id")}\nLOGS:\n{logs}'
+            logs = _clip(logs, MAX_CI_LOG_CHARS)
+            prompt = (
+                'Review this latest CI failure and explain the root cause, likely fix, affected files, '
+                'regression risk, and safest next step. Do not invent facts.\n\n'
+                f'CI RUN: {run.get("id")}\nLOGS:\n{logs}'
+            )
             title = '🚨 LATEST CI FAILURE'
         else:
             prompts = {
@@ -126,48 +148,67 @@ async def _suggest(update, context, kind):
             prompt = prompts[kind]
             title = {'health': '🔍 REPOSITORY HEALTH REVIEW', 'scanner': '⚡ SCANNER RELIABILITY REVIEW', 'architecture': '🧠 AI ARCHITECTURE IDEAS'}[kind]
         source = await _repo_context(manager, prompt, branch)
-        answer = await _ask(manager, 'You are a senior engineer advising the admin of a production crypto arbitrage Telegram bot. Be precise, evidence-based and concise. Do not output code unless a small example is necessary.', f'{prompt}\n\nREPOSITORY CONTEXT:\n{source}', 0.1)
+        answer = await _ask(
+            manager,
+            'You are a senior engineer advising the admin of a production crypto arbitrage Telegram bot. Be precise, evidence-based and concise. Do not output code unless a small example is necessary.',
+            f'{prompt}\n\nREPOSITORY CONTEXT:\n{source}',
+            0.1,
+        )
         await q.edit_message_text(f'<b>{title}</b>\n\n{_clean(answer)}', parse_mode='HTML', reply_markup=workbench_menu())
     except Exception as exc:
-        await q.edit_message_text(f'❌ <b>Suggestion failed</b>\n\n<code>{html.escape(type(exc).__name__ + ": " + str(exc)[:900])}</code>', parse_mode='HTML', reply_markup=workbench_menu())
+        await q.edit_message_text(
+            f'❌ <b>Suggestion failed</b>\n\n<code>{html.escape(type(exc).__name__ + ": " + str(exc)[:900])}</code>',
+            parse_mode='HTML', reply_markup=workbench_menu())
 
 
 async def _health(update, context):
     manager = _manager(context)
-    await update.callback_query.edit_message_text('🩺 <b>BOT HEALTH</b>\n\nChecking current configuration and latest CI state...', parse_mode='HTML')
+    await update.callback_query.edit_message_text(
+        '🩺 <b>BOT HEALTH</b>\n\nChecking current configuration and latest CI state...', parse_mode='HTML')
     try:
         branch = manager.settings.github_base_branch
         ci = await manager.ci(branch)
         tree = await manager._tree(branch)
         py_files = sum(1 for x in tree.get('tree', []) if x.get('type') == 'blob' and x.get('path', '').endswith('.py'))
         latest = ci['runs'][0] if ci['runs'] else None
-        text = ('🩺 <b>BOT HEALTH</b>\n\n'
-                f'🔗 Repository: <code>{html.escape(manager.settings.github_repo)}</code>\n'
-                f'🌿 Base branch: <code>{html.escape(branch)}</code>\n'
-                f'🐍 Python files: <b>{py_files}</b>\n'
-                f'🤖 AI: <b>{"ready" if manager.ai.configured else "unavailable"}</b>\n'
-                f'🔐 GitHub: <b>{"configured" if manager.settings.github_token else "missing"}</b>\n'
-                f'🧪 Latest CI: <b>{html.escape(str((latest or {}).get("conclusion") or (latest or {}).get("status") or "not found"))}</b>')
+        text = (
+            '🩺 <b>BOT HEALTH</b>\n\n'
+            f'🔗 Repository: <code>{html.escape(manager.settings.github_repo)}</code>\n'
+            f'🌿 Base branch: <code>{html.escape(branch)}</code>\n'
+            f'🐍 Python files: <b>{py_files}</b>\n'
+            f'🤖 AI: <b>{"ready" if manager.ai.configured else "unavailable"}</b>\n'
+            f'🔐 GitHub: <b>{"configured" if manager.settings.github_token else "missing"}</b>\n'
+            f'🧪 Latest CI: <b>{html.escape(str((latest or {}).get("conclusion") or (latest or {}).get("status") or "not found"))}</b>'
+        )
         await update.callback_query.edit_message_text(text, parse_mode='HTML', reply_markup=workbench_menu())
     except Exception as exc:
-        await update.callback_query.edit_message_text(f'⚠️ Health check failed: <code>{html.escape(type(exc).__name__)}</code>', parse_mode='HTML', reply_markup=workbench_menu())
+        await update.callback_query.edit_message_text(
+            f'⚠️ Health check failed: <code>{html.escape(type(exc).__name__)}</code>',
+            parse_mode='HTML', reply_markup=workbench_menu())
 
 
 async def _ci(update, context):
     manager = _manager(context)
-    await update.callback_query.edit_message_text('🧪 <b>CI & FAILURES</b>\n\nReading recent workflow runs...', parse_mode='HTML')
+    await update.callback_query.edit_message_text(
+        '🧪 <b>CI & FAILURES</b>\n\nReading recent workflow runs...', parse_mode='HTML')
     try:
-        data = await manager._github('GET', f'/repos/{manager.settings.github_repo}/actions/runs?branch={manager.settings.github_base_branch}&per_page=10')
+        data = await manager._github(
+            'GET', f'/repos/{manager.settings.github_repo}/actions/runs?branch={manager.settings.github_base_branch}&per_page=10')
         runs = data.get('workflow_runs', [])
         lines = ['🧪 <b>RECENT CI RUNS</b>', '']
         for run in runs[:10]:
             state = run.get('conclusion') or run.get('status') or 'unknown'
-            lines.append(f'• <code>{run.get("id")}</code> · {html.escape(run.get("name") or "workflow")} · <b>{html.escape(state)}</b>')
+            lines.append(
+                f'• <code>{run.get("id")}</code> · {html.escape(run.get("name") or "workflow")} · <b>{html.escape(state)}</b>')
         if not runs:
             lines.append('No workflow runs found.')
-        await update.callback_query.edit_message_text('\n'.join(lines), parse_mode='HTML', reply_markup=kb([[('💡 Analyze Latest Failure', 'aiwb:suggest:ci')], [('⬅️ Fixer Menu', 'aiwb:menu')]]))
+        await update.callback_query.edit_message_text(
+            '\n'.join(lines), parse_mode='HTML',
+            reply_markup=kb([[('💡 Analyze Latest Failure', 'aiwb:suggest:ci')], [('⬅️ Fixer Menu', 'aiwb:menu')]]))
     except Exception as exc:
-        await update.callback_query.edit_message_text(f'⚠️ CI lookup failed: <code>{html.escape(type(exc).__name__)}</code>', parse_mode='HTML', reply_markup=workbench_menu())
+        await update.callback_query.edit_message_text(
+            f'⚠️ CI lookup failed: <code>{html.escape(type(exc).__name__)}</code>',
+            parse_mode='HTML', reply_markup=workbench_menu())
 
 
 async def _history(update, context):
@@ -175,23 +216,30 @@ async def _history(update, context):
     try:
         data = await manager._github('GET', f'/repos/{manager.settings.github_repo}/branches?per_page=100')
         rows = [x['name'] for x in data if x['name'].startswith('ai-fix/')]
-        text = '📚 <b>AI FIX HISTORY</b>\n\n' + ('\n'.join(f'• <code>{html.escape(x)}</code>' for x in rows[-25:]) or 'No AI-fix branches yet.')
+        text = '📚 <b>AI FIX HISTORY</b>\n\n' + (
+            '\n'.join(f'• <code>{html.escape(x)}</code>' for x in rows[-25:]) or 'No AI-fix branches yet.')
         await update.callback_query.edit_message_text(text, parse_mode='HTML', reply_markup=workbench_menu())
     except Exception as exc:
-        await update.callback_query.edit_message_text(f'⚠️ Could not read history: <code>{html.escape(type(exc).__name__)}</code>', parse_mode='HTML', reply_markup=workbench_menu())
+        await update.callback_query.edit_message_text(
+            f'⚠️ Could not read history: <code>{html.escape(type(exc).__name__)}</code>',
+            parse_mode='HTML', reply_markup=workbench_menu())
 
 
 async def _status(update, context):
     item = context.user_data.get('aifix')
     if not item:
-        await update.callback_query.edit_message_text('🛠️ <b>ACTIVE FIX</b>\n\nNo active repair proposal in this admin session.', parse_mode='HTML', reply_markup=workbench_menu())
+        await update.callback_query.edit_message_text(
+            '🛠️ <b>ACTIVE FIX</b>\n\nNo active repair proposal in this admin session.',
+            parse_mode='HTML', reply_markup=workbench_menu())
         return
     files = item.get('files', [])
-    text = ('🛠️ <b>ACTIVE FIX</b>\n\n'
-            f'Summary: <b>{_clean(item.get("summary", "—"), 600)}</b>\n'
-            f'Branch: <code>{html.escape(item.get("branch", "proposal only"))}</code>\n'
-            f'Files: <b>{len(files)}</b>\n'
-            f'Commits: <b>{len(item.get("commits", []))}</b>')
+    text = (
+        '🛠️ <b>ACTIVE FIX</b>\n\n'
+        f'Summary: <b>{_clean(item.get("summary", "—"), 600)}</b>\n'
+        f'Branch: <code>{html.escape(item.get("branch", "proposal only"))}</code>\n'
+        f'Files: <b>{len(files)}</b>\n'
+        f'Commits: <b>{len(item.get("commits", []))}</b>'
+    )
     await update.callback_query.edit_message_text(text, parse_mode='HTML', reply_markup=_proposal_buttons(item.get('branch')))
 
 
@@ -199,7 +247,10 @@ async def _start_chat(update, context):
     context.user_data['aiwb_chat'] = True
     context.user_data['aiwb_chat_history'] = []
     await update.callback_query.edit_message_text(
-        '💬 <b>AI FIX DISCUSSION</b>\n\nDescribe the bug, behavior you want changed, logs, or your idea. I will inspect the repository context and discuss the safest approach with you.\n\nWhen you are satisfied, press <b>Generate Fix from Chat</b> to turn the discussion into a reviewable repair proposal.\n\n<b>Nothing is changed while chatting.</b>',
+        '💬 <b>AI FIX DISCUSSION</b>\n\n'
+        'Describe the bug, behavior you want changed, logs, or your idea. I will inspect the repository context and discuss the safest approach with you.\n\n'
+        'When you are satisfied, press <b>Generate Fix from Chat</b> to turn the discussion into a reviewable repair proposal.\n\n'
+        '<b>Nothing is changed while chatting.</b>',
         parse_mode='HTML', reply_markup=_chat_buttons())
 
 
@@ -208,16 +259,38 @@ async def _chat_reply(update, context, message):
     history = context.user_data.setdefault('aiwb_chat_history', [])
     branch = manager.settings.github_base_branch
     context_text = await _repo_context(manager, message, branch)
-    messages = [{'role': 'system', 'content': 'You are the private engineering copilot for the admin of a production crypto arbitrage Telegram bot. Discuss bugs and fixes precisely. Inspect supplied repository context. Never claim a change was made. Never expose secrets. If the user asks to fix code, explain the proposed approach and wait for the Generate Fix action before any repository write.'}]
-    messages.extend(history[-10:])
-    messages.append({'role': 'user', 'content': f'{message}\n\nCURRENT REPOSITORY CONTEXT:\n{context_text}'})
-    r, _, _ = await manager.ai.http.request('POST', manager.ai.url + '/chat/completions', headers={'Authorization': f'Bearer {manager.ai.key}', 'Content-Type': 'application/json'}, json={'model': manager.ai.model, 'temperature': 0.2, 'messages': messages})
+    system = (
+        'You are the private engineering copilot for the admin of a production crypto arbitrage Telegram bot. '
+        'Discuss bugs and fixes precisely. Inspect supplied repository context. Never claim a change was made. '
+        'Never expose secrets. If the user asks to fix code, explain the proposed approach and wait for the '
+        'Generate Fix action before any repository write.'
+    )
+    bounded_history = []
+    for item in history[-MAX_CHAT_HISTORY_MESSAGES:]:
+        bounded_history.append({
+            'role': item.get('role', 'user'),
+            'content': _clip(item.get('content', ''), MAX_CHAT_HISTORY_CHARS),
+        })
+    messages = [{'role': 'system', 'content': system}]
+    messages.extend(bounded_history)
+    messages.append({
+        'role': 'user',
+        'content': _clip(f'{message}\n\nCURRENT REPOSITORY CONTEXT:\n{context_text}', MAX_AI_USER_CHARS),
+    })
+    r, _, _ = await manager.ai.http.request(
+        'POST', manager.ai.url + '/chat/completions',
+        headers={'Authorization': f'Bearer {manager.ai.key}', 'Content-Type': 'application/json'},
+        json={'model': manager.ai.model, 'temperature': 0.2, 'messages': messages},
+    )
     if r.status_code >= 400:
         raise RuntimeError(f'AI provider returned HTTP {r.status_code}: {r.text[:500]}')
     answer = r.json()['choices'][0]['message']['content'].strip()
-    history.append({'role': 'user', 'content': message})
-    history.append({'role': 'assistant', 'content': answer})
-    await update.effective_message.reply_text(f'🤖 <b>AI</b>\n\n{_clean(answer)}', parse_mode='HTML', reply_markup=_chat_buttons())
+    history.append({'role': 'user', 'content': _clip(message, MAX_CHAT_HISTORY_CHARS)})
+    history.append({'role': 'assistant', 'content': _clip(answer, MAX_CHAT_HISTORY_CHARS)})
+    # Keep the session itself bounded as well, so later turns cannot grow the request.
+    del history[:-MAX_CHAT_HISTORY_MESSAGES]
+    await update.effective_message.reply_text(
+        f'🤖 <b>AI</b>\n\n{_clean(answer)}', parse_mode='HTML', reply_markup=_chat_buttons())
 
 
 async def aichat_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -236,7 +309,8 @@ async def aichat_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         await _chat_reply(update, context, message)
     except Exception as exc:
-        await update.effective_message.reply_text(f'❌ AI chat failed: {type(exc).__name__}: {str(exc)[:700]}', reply_markup=_chat_buttons())
+        await update.effective_message.reply_text(
+            f'❌ AI chat failed: {type(exc).__name__}: {str(exc)[:700]}', reply_markup=_chat_buttons())
 
 
 async def _makefix(update, context):
@@ -245,7 +319,14 @@ async def _makefix(update, context):
     if not history:
         await update.callback_query.edit_message_text('ℹ️ Discuss a problem with AI first.', reply_markup=_chat_buttons())
         return
-    problem = 'Turn this engineering discussion into a concrete, minimal and safe repair proposal. Preserve the intent and constraints from the conversation.\n\n' + '\n'.join(f'{m["role"].upper()}: {m["content"]}' for m in history[-16:])
+    discussion = '\n'.join(
+        f'{m.get("role", "user").upper()}: {_clip(m.get("content", ""), MAX_CHAT_HISTORY_CHARS)}'
+        for m in history[-MAX_CHAT_HISTORY_MESSAGES:]
+    )
+    problem = (
+        'Turn this engineering discussion into a concrete, minimal and safe repair proposal. '
+        'Preserve the intent and constraints from the conversation.\n\n' + discussion
+    )
     await update.callback_query.edit_message_text('🧠 Converting the discussion into a validated repair proposal...')
     try:
         result = await manager.generate(problem, branch=manager.settings.github_base_branch)
@@ -254,11 +335,23 @@ async def _makefix(update, context):
         context.user_data['aifix'] = result
         files = result.get('files', [])
         if not files:
-            await update.callback_query.edit_message_text('ℹ️ AI could not produce a safe patch from the discussion. Continue the chat with more concrete evidence.', reply_markup=_chat_buttons())
+            await update.callback_query.edit_message_text(
+                'ℹ️ AI could not produce a safe patch from the discussion. Continue the chat with more concrete evidence.',
+                reply_markup=_chat_buttons())
             return
-        await update.callback_query.edit_message_text('<b>🔧 FIX PROPOSAL FROM CHAT</b>\n\n' + f'<b>Summary:</b> {_clean(result.get("summary", "—"), 700)}\n' + f'<b>Root cause:</b> {_clean(result.get("root_cause", "—"), 900)}\n' + f'<b>Risk:</b> {html.escape(str(result.get("risk", "unknown")).upper())}\n' + f'<b>Files:</b> {len(files)}\n' + ''.join(f'• <code>{html.escape(x.get("path", ""))}</code>\n' for x in files) + '\nNothing has been changed. Review and approve with Apply Fix.', parse_mode='HTML', reply_markup=_proposal_buttons())
+        await update.callback_query.edit_message_text(
+            '<b>🔧 FIX PROPOSAL FROM CHAT</b>\n\n'
+            f'<b>Summary:</b> {_clean(result.get("summary", "—"), 700)}\n'
+            f'<b>Root cause:</b> {_clean(result.get("root_cause", "—"), 900)}\n'
+            f'<b>Risk:</b> {html.escape(str(result.get("risk", "unknown")).upper())}\n'
+            f'<b>Files:</b> {len(files)}\n'
+            + ''.join(f'• <code>{html.escape(x.get("path", ""))}</code>\n' for x in files)
+            + 'Nothing has been changed. Review and approve with Apply Fix.',
+            parse_mode='HTML', reply_markup=_proposal_buttons())
     except Exception as exc:
-        await update.callback_query.edit_message_text(f'❌ Fix proposal failed: <code>{html.escape(type(exc).__name__ + ": " + str(exc)[:900])}</code>', parse_mode='HTML', reply_markup=_chat_buttons())
+        await update.callback_query.edit_message_text(
+            f'❌ Fix proposal failed: <code>{html.escape(type(exc).__name__ + ": " + str(exc)[:900])}</code>',
+            parse_mode='HTML', reply_markup=_chat_buttons())
 
 
 async def ai_workbench_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
