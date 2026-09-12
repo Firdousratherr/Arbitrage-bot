@@ -1,30 +1,43 @@
 from __future__ import annotations
 
+import asyncio
 import html
+import time
 
 from .handlers import kb
 from .ui import DIVIDER, scan_status
 
 
 SPINNER = ('◐', '◓', '◑', '◒')
-STAGE_ICONS = {
-    'start': '🚀',
-    'exchange': '🔌',
-    'markets': '📊',
-    'fees': '💸',
-    'candidates': '🔎',
-    'opportunity': '💎',
-    'complete': '✅',
-}
-STAGE_PROGRESS = {
-    'start': 10,
-    'exchange': 25,
-    'markets': 45,
-    'fees': 60,
-    'candidates': 80,
-    'opportunity': 90,
-    'complete': 100,
-}
+
+
+def _progress_percent(stage, data, selected):
+    """Return a truthful progress value for both stage names and UI labels."""
+    if stage == 'start':
+        return 5
+    if stage == 'exchange':
+        total = max(1, int(data.get('total', selected) or selected or 1))
+        completed = max(0, min(total, int(data.get('completed', 0) or 0)))
+        return 10 + int(35 * completed / total)
+    if stage == 'markets':
+        return 50
+    if stage == 'fees':
+        return 65
+    if stage == 'candidates':
+        return 80
+    if stage == 'orderbook':
+        total = max(1, int(data.get('total', 1) or 1))
+        validated = max(0, min(total, int(data.get('validated', 0) or 0)))
+        return 80 + int(10 * validated / total)
+    if stage == 'network':
+        total = max(1, int(data.get('total', 1) or 1))
+        validated = max(0, min(total, int(data.get('validated', 0) or 0)))
+        return 90 + int(5 * validated / total)
+    if stage == 'opportunity':
+        return 95
+    if stage == 'complete':
+        return 100
+    return 50
 
 
 def _progress_bar(percent):
@@ -32,27 +45,24 @@ def _progress_bar(percent):
     return '█' * filled + '░' * (10 - filled)
 
 
-def _window(stage, selected, states, comparisons=0, opportunities=0, best=None, detail='', frame=0):
-    icon = STAGE_ICONS.get(stage, '⚡')
-    percent = STAGE_PROGRESS.get(stage, 50)
+def _window(stage, selected, states, comparisons=0, opportunities=0, best=None, detail='', frame=0, percent=None, elapsed=None):
     spinner = SPINNER[frame % len(SPINNER)]
+    if percent is None:
+        percent = 50
     lines = [
         '⚡ <b>CRYPTO ARBITRAGE SCANNER</b>',
         f'<code>{DIVIDER}</code>',
         '',
-        f'{icon} <b>{html.escape(stage)}</b> {spinner}',
+        f'⚡ <b>{html.escape(stage)}</b> {spinner}',
         f'[{_progress_bar(percent)}] <b>{percent}%</b>',
-        '',
-        f'🏦 <b>Exchanges:</b> {selected}',
     ]
+    if elapsed is not None:
+        lines.append(f'⏱ <b>Elapsed:</b> {elapsed:.0f}s')
+    lines += ['', f'🏦 <b>Exchanges:</b> {selected}']
     for name, status in states.items():
         icon = '🟢' if status == 'healthy' else '🔴' if status == 'failed' else '🟡'
         lines.append(f'{icon} {html.escape(name.title())} · {html.escape(status)}')
-    lines += [
-        '',
-        f'🔄 <b>Comparisons:</b> {comparisons:,}',
-        f'🔥 <b>Opportunities:</b> {opportunities:,}',
-    ]
+    lines += ['', f'🔄 <b>Comparisons:</b> {comparisons:,}', f'🔥 <b>Opportunities:</b> {opportunities:,}']
     if best:
         lines += ['', f'💎 <b>Best so far:</b> {html.escape(best["symbol"])} +{best["gap"]:.3f}%']
         lines.append(f'   🟢 {html.escape(best["buy"])} → 🔴 {html.escape(best["sell"])}')
@@ -80,13 +90,65 @@ async def live_scan_callback(update, context):
         selected = json.loads(row['exchanges'] or '[]')
     except Exception:
         pass
+
     states = {n: 'waiting' for n in selected}
     frame = 0
-    await q.edit_message_text(_window('start', len(selected), states, frame=frame), parse_mode='HTML')
+    started = time.monotonic()
+    edit_lock = asyncio.Lock()
     last_text = ''
+    last_edit = 0.0
+    current_stage = 'Starting scan'
+    current_percent = 5
+    current_comparisons = 0
+    current_opportunities = 0
+    current_best = None
+    current_detail = ''
+
+    async def safe_edit(text, force=False):
+        nonlocal last_text, last_edit
+        if text == last_text:
+            return
+        now = time.monotonic()
+        if not force and now - last_edit < 0.8:
+            return
+        async with edit_lock:
+            if text == last_text:
+                return
+            try:
+                await q.edit_message_text(text, parse_mode='HTML')
+                last_text = text
+                last_edit = time.monotonic()
+            except Exception:
+                pass
+
+    await safe_edit(_window('Starting scan', len(selected), states, frame=frame, percent=5, elapsed=0), force=True)
+
+    async def heartbeat():
+        """Keep Telegram visibly alive while an exchange/API call is slow."""
+        nonlocal frame
+        while True:
+            await asyncio.sleep(5)
+            frame += 1
+            elapsed = time.monotonic() - started
+            await safe_edit(
+                _window(
+                    current_stage,
+                    len(selected),
+                    states,
+                    comparisons=current_comparisons,
+                    opportunities=current_opportunities,
+                    best=current_best,
+                    detail=current_detail or f'No new stage update · {elapsed:.0f}s elapsed',
+                    frame=frame,
+                    percent=current_percent,
+                    elapsed=elapsed,
+                )
+            )
+
+    heartbeat_task = asyncio.create_task(heartbeat())
 
     async def progress(stage, data):
-        nonlocal last_text, frame
+        nonlocal frame, current_stage, current_percent, current_comparisons, current_opportunities, current_best, current_detail
         frame += 1
         if stage == 'exchange':
             states[data['exchange']] = data['status']
@@ -95,11 +157,26 @@ async def live_scan_callback(update, context):
             'exchange': 'Exchange response received',
             'markets': 'Markets loaded · building comparison set…',
             'fees': 'Fee data loaded · evaluating gaps…',
-            'candidates': 'Evaluating price gaps before network validation…',
+            'candidates': 'Evaluating price gaps before order-book validation…',
+            'orderbook': 'Validating executable order books…',
+            'network': 'Validating transfer networks…',
             'opportunity': 'Live opportunity found',
             'complete': 'Scan complete',
         }
         label = labels.get(stage, stage.replace('_', ' ').title())
+        percent = _progress_percent(stage, data, len(selected))
+        completed = data.get('completed')
+        total = data.get('total', len(selected))
+        if stage == 'exchange' and completed is not None:
+            label = f'Exchange responses · {completed}/{total}'
+        elif stage == 'exchange' and data.get('status') == 'loading':
+            label = f'Waiting for {str(data.get("exchange", "exchange")).title()}…'
+        elif stage == 'candidates' and data.get('comparisons') is not None:
+            label = f'Comparing prices · {int(data.get("comparisons", 0)):,} comparisons'
+        elif stage == 'orderbook' and data.get('total') is not None:
+            label = f'Order-book validation · {int(data.get("validated", 0))}/{int(data.get("total", 0))}'
+        elif stage == 'network' and data.get('total') is not None:
+            label = f'Network validation · {int(data.get("validated", 0))}/{int(data.get("total", 0))}'
         best = None
         if stage == 'opportunity':
             best = {
@@ -108,23 +185,25 @@ async def live_scan_callback(update, context):
                 'buy': data['buy'],
                 'sell': data['sell'],
             }
+        current_stage = label
+        current_percent = percent
+        current_comparisons = int(data.get('comparisons', current_comparisons) or current_comparisons)
+        current_opportunities = int(data.get('count', data.get('opportunities', current_opportunities)) or current_opportunities)
+        current_best = best or current_best
+        current_detail = str(data.get('message', '') or '')
         text = _window(
             label,
             len(selected),
             states,
-            data.get('comparisons', 0),
-            data.get('count', data.get('opportunities', 0)),
-            best,
-            data.get('message', ''),
+            current_comparisons,
+            current_opportunities,
+            current_best,
+            current_detail,
             frame,
+            percent,
+            time.monotonic() - started,
         )
-        if text == last_text:
-            return
-        last_text = text
-        try:
-            await q.edit_message_text(text, parse_mode='HTML')
-        except Exception:
-            pass
+        await safe_edit(text, force=stage in {'complete', 'opportunity'})
 
     try:
         snap = await svc.run_scan(uid, progress=progress)
@@ -146,3 +225,6 @@ async def live_scan_callback(update, context):
             parse_mode='HTML',
             reply_markup=kb([[('🔄 Try Again', 'scan'), ('🏠 Dashboard', 'home')]]),
         )
+    finally:
+        heartbeat_task.cancel()
+        await asyncio.gather(heartbeat_task, return_exceptions=True)
