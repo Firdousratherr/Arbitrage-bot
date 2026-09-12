@@ -23,6 +23,7 @@ from .bot.exchange_selection import dashboard_exchanges_callback, exchange_selec
 from .bot.live_scan import live_scan_callback
 from .bot.results import results_page_callback, results_detail_callback
 from .exchanges.registry import build_exchanges
+from .exchanges.rate_limited import RateLimitedExchangeAdapter
 from .infrastructure.config import get_settings
 from .infrastructure.logging import configure
 from .infrastructure.repository import Repository
@@ -64,7 +65,14 @@ async def build_runtime():
         }
 
     exchange_diagnostics = []
-    exchanges = build_exchanges(settings.exchanges, creds, exchange_diagnostics)
+    raw_exchanges = build_exchanges(settings.exchanges, creds, exchange_diagnostics)
+    # Keep exchange I/O isolated per exchange. A very short shared cache also
+    # lets concurrent scans reuse identical market/ticker snapshots without
+    # making the scanner wait for duplicate HTTP requests.
+    exchanges = {
+        name: RateLimitedExchangeAdapter(adapter)
+        for name, adapter in raw_exchanges.items()
+    }
     scanner = ArbitrageScanner(exchanges, settings.exchange_concurrency, settings.scan_timeout_seconds)
     ai = AIAssistant(settings.ai_api_url, settings.ai_api_key, settings.ai_model, settings.ai_timeout_seconds)
     await ai.start()
@@ -147,8 +155,6 @@ async def _run():
     app.add_handler(CommandHandler('vipkeys', vipkeys_cmd))
     app.add_handler(CommandHandler('adminstats', adminstats_cmd))
 
-    # This handler is intentionally registered before the generic text handler so
-    # admin AI-chat messages are consumed by the Fixer Workbench session.
     if settings.ai_code_repair_enabled:
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, aichat_text))
 
@@ -169,6 +175,7 @@ async def _run():
         await app.updater.stop()
         await app.stop()
         await app.shutdown()
+        await service.close()
         await asyncio.gather(*(x.close() for x in exchanges.values()), return_exceptions=True)
         await ai.close()
         await repo.close()

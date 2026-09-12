@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import uuid
 from collections import Counter, defaultdict
+from dataclasses import replace
 
 from arbitrage_terminal.domain.models import AIMode
+from arbitrage_terminal.application.scan_coordinator import ConcurrentScanCoordinator
 
 
 class TerminalService:
@@ -16,6 +19,7 @@ class TerminalService:
         self.exchanges = exchanges if exchanges is not None else getattr(scanner, 'exchanges', {})
         self._scan_locks: dict[int, asyncio.Lock] = {}
         self._scan_locks_guard = asyncio.Lock()
+        self._scan_coordinator = ConcurrentScanCoordinator()
 
     async def ensure_user(self, user, email=None):
         await self.repo.ensure_user(user.id, user.username, email)
@@ -41,6 +45,26 @@ class TerminalService:
     async def _scan_lock(self, user_id):
         async with self._scan_locks_guard:
             return self._scan_locks.setdefault(user_id, asyncio.Lock())
+
+    def _scan_key(self, selected, filters):
+        """Stable key for work that is identical for multiple users."""
+        filter_data = {}
+        for name in (
+            'min_gap', 'min_net_profit', 'min_volume', 'min_liquidity',
+            'max_data_age', 'trade_size', 'require_network', 'require_fees',
+            'require_orderbook', 'selected_coins', 'quote_currency',
+            'validation_mode',
+        ):
+            value = getattr(filters, name, None)
+            if isinstance(value, set):
+                value = sorted(value)
+            filter_data[name] = value
+        return json.dumps(
+            {'exchanges': sorted(set(selected)), 'filters': filter_data},
+            sort_keys=True,
+            separators=(',', ':'),
+            default=str,
+        )
 
     def _add_exchange_coverage(self, snap):
         """Attach exchange-level accounting without changing scanner decisions."""
@@ -84,8 +108,6 @@ class TerminalService:
             ticker_symbols = set(getattr(adapter, 'last_ticker_symbols', set()) or set()) if adapter else set()
             shared = {s for s in ticker_symbols if len(symbol_exchanges[s]) >= 2}
             coverage[name]['shared_symbols'] = len(shared)
-            # The scanner compares every usable ticker against every other exchange's
-            # usable ticker for the same symbol, in both directions.
             coverage[name]['candidate_comparisons'] = sum(len(symbol_exchanges[s]) - 1 for s in ticker_symbols)
 
         for rejection in snap.filter_rejections:
@@ -116,12 +138,25 @@ class TerminalService:
         async with lock:
             row = await self.repo.user(user_id)
             selected = json.loads(row['exchanges'] or '[]')
-            snap = await self.scanner.scan(
-                user_id, selected, self.repo.filters_from_row(row), progress=progress
-            )
+            filters = self.repo.filters_from_row(row)
+            key = self._scan_key(selected, filters)
+
+            async def produce(shared_progress):
+                return await self.scanner.scan(
+                    0, selected, filters, progress=shared_progress
+                )
+
+            # Identical scans from different Telegram users share the expensive
+            # exchange/network work. Each user still gets a private persisted
+            # snapshot with its own scan_id and user_id.
+            shared = await self._scan_coordinator.run(key, produce, progress=progress)
+            snap = replace(shared, scan_id=uuid.uuid4().hex, user_id=user_id)
             self._add_exchange_coverage(snap)
             await self.repo.save_scan(snap)
             return snap
+
+    async def close(self):
+        await self._scan_coordinator.close()
 
     async def history(self, user_id):
         return await self.repo.history(user_id)
