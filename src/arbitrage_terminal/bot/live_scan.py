@@ -25,8 +25,16 @@ def _progress_percent(stage, data, selected):
         return 65
     if stage == 'candidates':
         return 80
+    if stage == 'orderbook':
+        total = max(1, int(data.get('total', 1) or 1))
+        validated = max(0, min(total, int(data.get('validated', 0) or 0)))
+        return 80 + int(10 * validated / total)
+    if stage == 'network':
+        total = max(1, int(data.get('total', 1) or 1))
+        validated = max(0, min(total, int(data.get('validated', 0) or 0)))
+        return 90 + int(5 * validated / total)
     if stage == 'opportunity':
-        return 90
+        return 95
     if stage == 'complete':
         return 100
     return 50
@@ -149,7 +157,9 @@ async def live_scan_callback(update, context):
             'exchange': 'Exchange response received',
             'markets': 'Markets loaded · building comparison set…',
             'fees': 'Fee data loaded · evaluating gaps…',
-            'candidates': 'Evaluating price gaps before network validation…',
+            'candidates': 'Evaluating price gaps before order-book validation…',
+            'orderbook': 'Validating executable order books…',
+            'network': 'Validating transfer networks…',
             'opportunity': 'Live opportunity found',
             'complete': 'Scan complete',
         }
@@ -161,6 +171,12 @@ async def live_scan_callback(update, context):
             label = f'Exchange responses · {completed}/{total}'
         elif stage == 'exchange' and data.get('status') == 'loading':
             label = f'Waiting for {str(data.get("exchange", "exchange")).title()}…'
+        elif stage == 'candidates' and data.get('comparisons') is not None:
+            label = f'Comparing prices · {int(data.get("comparisons", 0)):,} comparisons'
+        elif stage == 'orderbook' and data.get('total') is not None:
+            label = f'Order-book validation · {int(data.get("validated", 0))}/{int(data.get("total", 0))}'
+        elif stage == 'network' and data.get('total') is not None:
+            label = f'Network validation · {int(data.get("validated", 0))}/{int(data.get("total", 0))}'
         best = None
         if stage == 'opportunity':
             best = {
