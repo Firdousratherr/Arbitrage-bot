@@ -15,6 +15,7 @@ class ScanFilters:
     trade_size: float = 1000.
     require_network: bool = True
     require_fees: bool = False
+    require_orderbook: bool = True
     selected_coins: set[str] = field(default_factory=set)
     quote_currency: str = 'USDT'
     validation_mode: str = 'strict'
@@ -61,9 +62,11 @@ class ScanFilters:
             return 'quote currency mismatch'
         if self.require_fees and not o.metadata.get('fee_data_available', False):
             return 'fee data unavailable'
+        if self.require_orderbook and self.validation_mode != 'loose' and not o.metadata.get('orderbook_validated', False):
+            return 'order-book depth validation unavailable or insufficient'
         if include_validation and self.validation_mode != 'loose':
-            if not o.metadata.get('network_available', False):
+            if self.require_network and not o.metadata.get('network_available', False):
                 return 'deposit/withdrawal or network validation unavailable'
-            if not o.metadata.get('contract_match', False):
+            if self.require_network and not o.metadata.get('contract_match', False):
                 return 'contract/address matching unavailable or mismatched'
         return None
