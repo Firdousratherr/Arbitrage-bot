@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import html
 import time
 
@@ -91,12 +92,55 @@ async def live_scan_callback(update, context):
     states = {n: 'waiting' for n in selected}
     frame = 0
     started = time.monotonic()
-    await q.edit_message_text(_window('Starting scan', len(selected), states, frame=frame, percent=5, elapsed=0), parse_mode='HTML')
+    edit_lock = asyncio.Lock()
     last_text = ''
     last_edit = 0.0
 
+    async def safe_edit(text, force=False):
+        nonlocal last_text, last_edit
+        if text == last_text:
+            return
+        now = time.monotonic()
+        if not force and now - last_edit < 0.8:
+            return
+        async with edit_lock:
+            if text == last_text:
+                return
+            try:
+                await q.edit_message_text(text, parse_mode='HTML')
+                last_text = text
+                last_edit = time.monotonic()
+            except Exception:
+                pass
+
+    await safe_edit(_window('Starting scan', len(selected), states, frame=frame, percent=5, elapsed=0), force=True)
+
+    async def heartbeat():
+        """Keep Telegram visibly alive while an exchange/API call is slow."""
+        nonlocal frame
+        while True:
+            await asyncio.sleep(5)
+            frame += 1
+            elapsed = time.monotonic() - started
+            # Keep the last real stage percentage; heartbeat is deliberately
+            # informational and never pretends that work completed.
+            text = _window(
+                'Still working…',
+                len(selected),
+                states,
+                comparisons=0,
+                opportunities=0,
+                detail=f'Waiting for exchange/API responses · {elapsed:.0f}s elapsed',
+                frame=frame,
+                percent=10,
+                elapsed=elapsed,
+            )
+            await safe_edit(text)
+
+    heartbeat_task = asyncio.create_task(heartbeat())
+
     async def progress(stage, data):
-        nonlocal last_text, frame, last_edit
+        nonlocal frame
         frame += 1
         if stage == 'exchange':
             states[data['exchange']] = data['status']
@@ -116,7 +160,7 @@ async def live_scan_callback(update, context):
         if stage == 'exchange' and completed is not None:
             label = f'Exchange responses · {completed}/{total}'
         elif stage == 'exchange' and data.get('status') == 'loading':
-            label = f'Waiting for {html.escape(str(data.get("exchange", "exchange")).title())}…'
+            label = f'Waiting for {str(data.get("exchange", "exchange")).title()}…'
         best = None
         if stage == 'opportunity':
             best = {
@@ -137,24 +181,18 @@ async def live_scan_callback(update, context):
             percent,
             time.monotonic() - started,
         )
-        now = time.monotonic()
-        if text == last_text:
-            return
-        # Telegram edit throttling: allow fast terminal updates but avoid hammering
-        # the API when several exchanges report in rapid succession.
-        if stage not in {'complete', 'opportunity'} and now - last_edit < 0.8:
-            return
-        last_text = text
-        last_edit = now
-        try:
-            await q.edit_message_text(text, parse_mode='HTML')
-        except Exception:
-            pass
+        await safe_edit(text, force=stage in {'complete', 'opportunity'})
 
     try:
         snap = await svc.run_scan(uid, progress=progress)
         p = snap.to_dict()
         scan_id = p['scan_id']
+        await safe_edit(
+            scan_status(p),
+            force=True,
+        )
+        # Re-apply the result keyboard because safe_edit intentionally handles
+        # progress text only.
         await q.edit_message_text(
             scan_status(p),
             parse_mode='HTML',
@@ -171,3 +209,6 @@ async def live_scan_callback(update, context):
             parse_mode='HTML',
             reply_markup=kb([[('🔄 Try Again', 'scan'), ('🏠 Dashboard', 'home')]]),
         )
+    finally:
+        heartbeat_task.cancel()
+        await asyncio.gather(heartbeat_task, return_exceptions=True)
