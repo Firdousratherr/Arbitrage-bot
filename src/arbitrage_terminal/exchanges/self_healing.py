@@ -143,7 +143,10 @@ class SelfHealingAdapter:
         if not callable(target) or name in {"repair", "health", *LIFECYCLE_METHODS}: return target
         async def wrapped(*args, **kwargs): return await self._call(name, target, *args, **kwargs)
         return wrapped
-    async def repair(self) -> bool: return await self._recover()
+    async def repair(self) -> bool:
+        """Force a deterministic repair/probe when explicitly requested."""
+        async with self._recovery_lock:
+            return await self._perform_deterministic_recovery()
     def health_snapshot(self) -> dict[str, Any]:
         h = self.health
         return {"exchange": h.exchange, "state": h.state, "score": h.score, "available": h.available, "consecutive_failures": h.consecutive_failures, "total_failures": h.total_failures, "total_repairs": h.total_repairs, "total_recoveries": h.total_recoveries, "last_error": h.last_error, "last_error_type": h.last_error_type, "last_success_at": h.last_success_at, "last_repair_at": h.last_repair_at, "quarantined_until": h.quarantined_until}
