@@ -68,6 +68,8 @@ class SelfHealingAdapter:
         return False
     async def _deterministic_recover(self) -> bool:
         async with self._recovery_lock:
+            # A concurrent caller may have completed recovery while this task
+            # waited for the lock. In that case no second repair is necessary.
             if self.health.state == "healthy": return True
             self.health.state = "recovering"
             if not await self._do_repair():
@@ -85,6 +87,8 @@ class SelfHealingAdapter:
             if decision is None or not decision.safe_to_auto_repair: return False
             if decision.retry_delay_seconds: await asyncio.sleep(decision.retry_delay_seconds)
             if decision.recommended_action == "retry":
+                # A retry is deliberately non-invasive: the caller will repeat
+                # the original operation without another repair attempt.
                 self.health.state = "healthy"
                 return True
             if decision.recommended_action in {"repair", "reload_markets", "invalidate_cache"}:
@@ -93,6 +97,13 @@ class SelfHealingAdapter:
         except Exception:
             logger.exception("AI exchange recovery advisor failed", extra={"exchange": self.name}); return False
     async def _recover(self, original_error: Exception | None = None) -> bool:
+        # Recovery invoked because an operation just failed must transition out
+        # of healthy before entering the serialized recovery path. Previously,
+        # _deterministic_recover() saw a healthy state and returned immediately,
+        # so repairs never ran when failure_threshold was reached.
+        async with self._recovery_lock:
+            if self.health.state == "healthy":
+                self.health.state = "recovering"
         if await self._deterministic_recover(): return True
         return original_error is not None and await self._ai_recover(original_error)
     async def _call(self, method_name: str, method: Callable[..., Any], *args, **kwargs):
