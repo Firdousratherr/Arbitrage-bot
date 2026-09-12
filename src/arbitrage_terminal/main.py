@@ -5,13 +5,14 @@ import logging
 import os
 
 from telegram import BotCommand, Update
-from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
 from .application.service import TerminalService
 from .ai import AIAssistant
 from .arbitrage import ArbitrageScanner
 from .bot import build_handlers
 from .bot.admin import admin_callback, admin_cmd, adminstats_cmd, ban_cmd, givevip_cmd, init_admin_storage, revokevip_cmd, unban_cmd, useractions_cmd, userinfo_cmd, users_cmd, vipkeys_cmd
+from .bot.ai_workbench import ai_workbench_callback, ai_workbench_cmd, aichat_text
 from .bot.code_repair import CodeRepairManager, aifix_callback, aifix_cancel_cmd, aifix_cmd, aifix_history_cmd, aifix_status_cmd
 from .bot.commands import (
     dashboard_cmd, diagnostics_cmd, filters_callback, filters_cmd, filter_settings_callback,
@@ -110,6 +111,7 @@ async def _run():
     app.add_handler(CallbackQueryHandler(results_detail_callback, pattern=r'^r(?:diag|debug|aian|order):'))
     app.add_handler(CallbackQueryHandler(filters_callback, pattern=r'^filters$'))
     app.add_handler(CallbackQueryHandler(filter_settings_callback, pattern=r'^filter:'))
+    app.add_handler(CallbackQueryHandler(ai_workbench_callback, pattern=r'^aiwb:'))
     app.add_handler(CallbackQueryHandler(admin_callback, pattern=r'^admin:'))
     if settings.ai_code_repair_enabled:
         app.add_handler(CallbackQueryHandler(aifix_callback, pattern=r'^aifix:'))
@@ -128,6 +130,7 @@ async def _run():
         app.add_handler(CommandHandler('aifixstatus', aifix_status_cmd))
         app.add_handler(CommandHandler('aifixhistory', aifix_history_cmd))
         app.add_handler(CommandHandler('aifixcancel', aifix_cancel_cmd))
+        app.add_handler(CommandHandler('aifixer', ai_workbench_cmd))
     app.add_handler(CommandHandler('users', users_cmd))
     app.add_handler(CommandHandler('userinfo', userinfo_cmd))
     app.add_handler(CommandHandler('givevip', givevip_cmd))
@@ -137,6 +140,11 @@ async def _run():
     app.add_handler(CommandHandler('useractions', useractions_cmd))
     app.add_handler(CommandHandler('vipkeys', vipkeys_cmd))
     app.add_handler(CommandHandler('adminstats', adminstats_cmd))
+
+    # This handler is intentionally registered before the generic text handler so
+    # admin AI-chat messages are consumed by the Fixer Workbench session.
+    if settings.ai_code_repair_enabled:
+        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, aichat_text))
 
     [app.add_handler(h) for h in build_handlers()]
     app.add_error_handler(_error_handler)
