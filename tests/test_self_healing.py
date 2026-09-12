@@ -72,3 +72,12 @@ async def test_ai_retry_can_restore_transient_exchange_without_trade_access():
     wrapped = SelfHealingAdapter(adapter, failure_threshold=1, recovery_advisor=Advisor())
     assert await wrapped.get_markets() == ['ok']
     assert adapter.repairs == 2
+
+@pytest.mark.asyncio
+async def test_explicit_repair_forces_recovery_even_when_healthy():
+    adapter = FakeAdapter()
+    wrapped = SelfHealingAdapter(adapter)
+    assert await wrapped.repair() is True
+    assert adapter.repairs == 1
+    assert adapter.probes == 1
+    assert wrapped.health.total_recoveries == 1
