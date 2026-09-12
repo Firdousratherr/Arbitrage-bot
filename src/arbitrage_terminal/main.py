@@ -15,6 +15,7 @@ from .bot import build_handlers
 from .bot import code_repair as code_repair_module
 from .bot.admin import admin_callback, admin_cmd, adminstats_cmd, ban_cmd, givevip_cmd, init_admin_storage, revokevip_cmd, unban_cmd, useractions_cmd, userinfo_cmd, users_cmd, vipkeys_cmd
 from .bot.ai_workbench import ai_workbench_callback, ai_workbench_cmd, aichat_text
+from .bot.ai_recovery_settings import ai_recovery_callback, ai_recovery_cmd, settings_callback as ai_settings_callback, settings_command as ai_settings_cmd
 from .bot.code_repair import CodeRepairManager, aifix_callback, aifix_cancel_cmd, aifix_cmd, aifix_history_cmd, aifix_status_cmd
 from .bot.commands import dashboard_cmd, diagnostics_cmd, filters_callback, filters_cmd, filter_settings_callback, help_cmd, resetfilters_cmd, setfilter_cmd, settings_cmd, status_cmd
 from .bot.exchange_selection import dashboard_exchanges_callback, exchange_selection_callback
@@ -49,7 +50,7 @@ async def build_runtime():
     code_repair_module.MAX_CONTEXT_FILES = 5
     code_repair_module.MAX_FILE_CONTEXT = 5000
     code_repair = CodeRepairManager(ai, settings)
-    return settings, repo, exchanges, scanner, ai, code_repair, TerminalService(repo, scanner, ai, settings), exchange_diagnostics
+    return settings, repo, exchanges, scanner, ai, code_repair, TerminalService(repo, scanner, ai, settings), exchange_diagnostics, recovery_advisor
 
 
 def run():
@@ -67,9 +68,9 @@ async def _error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def _run():
-    settings, repo, exchanges, scanner, ai, code_repair, service, exchange_diagnostics = await build_runtime()
+    settings, repo, exchanges, scanner, ai, code_repair, service, exchange_diagnostics, recovery_advisor = await build_runtime()
     app = Application.builder().token(settings.telegram_bot_token).build()
-    app.bot_data.update({'settings': settings, 'repo': repo, 'exchanges': exchanges, 'exchange_names': [n for n in settings.exchanges if n in exchanges], 'scanner': scanner, 'ai': ai, 'code_repair': code_repair, 'service': service, 'exchange_diagnostics': exchange_diagnostics})
+    app.bot_data.update({'settings': settings, 'repo': repo, 'exchanges': exchanges, 'exchange_names': [n for n in settings.exchanges if n in exchanges], 'scanner': scanner, 'ai': ai, 'code_repair': code_repair, 'service': service, 'exchange_diagnostics': exchange_diagnostics, 'recovery_advisor': recovery_advisor})
     app.add_handler(CallbackQueryHandler(dashboard_exchanges_callback, pattern=r'^exchanges$'))
     app.add_handler(CallbackQueryHandler(exchange_selection_callback, pattern=r'^ex:'))
     app.add_handler(CallbackQueryHandler(live_scan_callback, pattern=r'^scan$'))
@@ -78,10 +79,13 @@ async def _run():
     app.add_handler(CallbackQueryHandler(filters_callback, pattern=r'^filters$'))
     app.add_handler(CallbackQueryHandler(filter_settings_callback, pattern=r'^filter:'))
     app.add_handler(CallbackQueryHandler(ai_workbench_callback, pattern=r'^aiwb:'))
+    app.add_handler(CallbackQueryHandler(ai_recovery_callback, pattern=r'^ai_recovery:'))
+    app.add_handler(CallbackQueryHandler(ai_settings_callback, pattern=r'^settings$'))
     app.add_handler(CallbackQueryHandler(admin_callback, pattern=r'^admin:'))
     if settings.ai_code_repair_enabled: app.add_handler(CallbackQueryHandler(aifix_callback, pattern=r'^aifix:'))
-    for command, handler in [('dashboard', dashboard_cmd), ('status', status_cmd), ('diagnostics', diagnostics_cmd), ('filters', filters_cmd), ('setfilter', setfilter_cmd), ('resetfilters', resetfilters_cmd), ('settings', settings_cmd), ('help', help_cmd), ('admin', admin_cmd), ('users', users_cmd), ('userinfo', userinfo_cmd), ('givevip', givevip_cmd), ('revokevip', revokevip_cmd), ('ban', ban_cmd), ('unban', unban_cmd), ('useractions', useractions_cmd), ('vipkeys', vipkeys_cmd), ('adminstats', adminstats_cmd)]:
+    for command, handler in [('dashboard', dashboard_cmd), ('status', status_cmd), ('diagnostics', diagnostics_cmd), ('filters', filters_cmd), ('setfilter', setfilter_cmd), ('resetfilters', resetfilters_cmd), ('settings', ai_settings_cmd), ('help', help_cmd), ('admin', admin_cmd), ('users', users_cmd), ('userinfo', userinfo_cmd), ('givevip', givevip_cmd), ('revokevip', revokevip_cmd), ('ban', ban_cmd), ('unban', unban_cmd), ('useractions', useractions_cmd), ('vipkeys', vipkeys_cmd), ('adminstats', adminstats_cmd)]:
         app.add_handler(CommandHandler(command, handler))
+    app.add_handler(CommandHandler('airecovery', ai_recovery_cmd))
     if settings.ai_code_repair_enabled:
         for command, handler in [('aifix', aifix_cmd), ('aifixstatus', aifix_status_cmd), ('aifixhistory', aifix_history_cmd), ('aifixcancel', aifix_cancel_cmd), ('aifixer', ai_workbench_cmd)]: app.add_handler(CommandHandler(command, handler))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, aichat_text))
