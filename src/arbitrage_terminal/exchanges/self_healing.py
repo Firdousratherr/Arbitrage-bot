@@ -66,20 +66,31 @@ class SelfHealingAdapter:
             except Exception as exc:
                 logger.warning("exchange repair failed", extra={"exchange": self.name, "attempt": attempt + 1, "error": str(exc)[:300]})
         return False
+    async def _perform_deterministic_recovery(self) -> bool:
+        """Run one recovery while the caller owns _recovery_lock."""
+        self.health.state = "recovering"
+        if not await self._do_repair():
+            self.health.state = "quarantined"
+            self.health.quarantined_until = time.monotonic() + self.quarantine_seconds
+            return False
+        try:
+            await asyncio.wait_for(self._adapter.health_check(), timeout=min(10.0, self.quarantine_seconds))
+        except Exception as exc:
+            self.health.state = "quarantined"
+            self.health.quarantined_until = time.monotonic() + self.quarantine_seconds
+            self.health.last_error = str(exc)[:500]
+            self.health.last_error_type = type(exc).__name__
+            self.health.last_error_at = time.monotonic()
+            return False
+        self.health.state = "healthy"
+        self.health.consecutive_failures = 0
+        self.health.total_recoveries += 1
+        self.health.last_success_at = time.monotonic()
+        return True
     async def _deterministic_recover(self) -> bool:
         async with self._recovery_lock:
-            # A concurrent caller may have completed recovery while this task
-            # waited for the lock. In that case no second repair is necessary.
             if self.health.state == "healthy": return True
-            self.health.state = "recovering"
-            if not await self._do_repair():
-                self.health.state = "quarantined"; self.health.quarantined_until = time.monotonic() + self.quarantine_seconds; return False
-            try:
-                await asyncio.wait_for(self._adapter.health_check(), timeout=min(10.0, self.quarantine_seconds))
-            except Exception as exc:
-                self.health.state = "quarantined"; self.health.quarantined_until = time.monotonic() + self.quarantine_seconds
-                self.health.last_error = str(exc)[:500]; self.health.last_error_type = type(exc).__name__; self.health.last_error_at = time.monotonic(); return False
-            self.health.state = "healthy"; self.health.consecutive_failures = 0; self.health.total_recoveries += 1; self.health.last_success_at = time.monotonic(); return True
+            return await self._perform_deterministic_recovery()
     async def _ai_recover(self, original_error: Exception) -> bool:
         if self.recovery_advisor is None: return False
         try:
@@ -97,14 +108,19 @@ class SelfHealingAdapter:
         except Exception:
             logger.exception("AI exchange recovery advisor failed", extra={"exchange": self.name}); return False
     async def _recover(self, original_error: Exception | None = None) -> bool:
-        # Recovery invoked because an operation just failed must transition out
-        # of healthy before entering the serialized recovery path. Previously,
-        # _deterministic_recover() saw a healthy state and returned immediately,
-        # so repairs never ran when failure_threshold was reached.
+        """Serialize recovery and let concurrent callers reuse one successful repair."""
         async with self._recovery_lock:
+            # A concurrent failure may have arrived while another caller was
+            # repairing. Once that repair succeeds, reuse it rather than repair
+            # the same exchange again.
             if self.health.state == "healthy":
-                self.health.state = "recovering"
-        if await self._deterministic_recover(): return True
+                if original_error is None or self.health.consecutive_failures == 0:
+                    return True
+            deterministic_ok = await self._perform_deterministic_recovery()
+            if deterministic_ok:
+                return True
+        # AI is deliberately outside the recovery lock so an unavailable AI
+        # provider cannot block other exchange calls behind a slow advisor.
         return original_error is not None and await self._ai_recover(original_error)
     async def _call(self, method_name: str, method: Callable[..., Any], *args, **kwargs):
         if self.health.state == "quarantined":
