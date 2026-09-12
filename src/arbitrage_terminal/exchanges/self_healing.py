@@ -116,9 +116,9 @@ class SelfHealingAdapter:
         return True
 
     async def _call(self, method_name: str, method: Callable[..., Any], *args, **kwargs):
-        if not self.health.available:
-            raise ExchangeError("Exchange quarantined while self-healing is in progress.", "circuit_open")
         if self.health.state == "quarantined":
+            if time.monotonic() < self.health.quarantined_until:
+                raise ExchangeError("Exchange quarantined while self-healing is in progress.", "circuit_open")
             if not await self._recover():
                 raise ExchangeError("Exchange recovery probe failed; still quarantined.", "circuit_open")
 
@@ -143,9 +143,16 @@ class SelfHealingAdapter:
                 self.health.last_error_at = time.monotonic()
                 error_type = self.health.last_error_type
                 transient = isinstance(exc, asyncio.TimeoutError) or error_type in TRANSIENT
-                if not transient or error_type in FATAL or attempt + 1 >= attempts:
-                    if self.health.consecutive_failures >= self.failure_threshold and transient:
-                        await self._recover()
+                threshold_reached = transient and self.health.consecutive_failures >= self.failure_threshold
+                if not transient or error_type in FATAL:
+                    raise
+                if threshold_reached:
+                    recovered = await self._recover()
+                    if not recovered:
+                        raise ExchangeError("Exchange recovery failed; exchange quarantined.", "circuit_open") from exc
+                    if attempt + 1 < attempts:
+                        continue
+                if attempt + 1 >= attempts:
                     raise
                 await asyncio.sleep(0.2 * (2 ** attempt))
 
