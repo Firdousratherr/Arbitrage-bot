@@ -5,7 +5,7 @@ import re
 import time
 
 from telegram import Update
-from telegram.ext import ContextTypes, ConversationHandler
+from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes, ConversationHandler, MessageHandler, filters
 
 from .handlers import kb
 
@@ -192,21 +192,18 @@ async def contact_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 def build_contact_conversation():
-    """Build an isolated ConversationHandler so form messages cannot be swallowed by AI/general text handlers."""
+    """Isolate contact-form messages from AI/general text handlers."""
     return ConversationHandler(
         entry_points=[
-            __import__('telegram.ext', fromlist=['CommandHandler']).CommandHandler('contact', contact_open),
-            __import__('telegram.ext', fromlist=['CallbackQueryHandler']).CallbackQueryHandler(contact_open, pattern=r'^contact:open$'),
+            CommandHandler('contact', contact_open),
+            CallbackQueryHandler(contact_open, pattern=r'^contact:open$'),
         ],
         states={
             CONTACT_FORM: [
-                __import__('telegram.ext', fromlist=['CallbackQueryHandler']).CallbackQueryHandler(contact_state_callback, pattern=r'^contact:'),
-                __import__('telegram.ext', fromlist=['MessageHandler']).MessageHandler(
-                    __import__('telegram.ext', fromlist=['filters']).filters.TEXT & ~__import__('telegram.ext', fromlist=['filters']).filters.COMMAND,
-                    contact_state_text,
-                ),
+                CallbackQueryHandler(contact_state_callback, pattern=r'^contact:'),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, contact_state_text),
             ],
         },
-        fallbacks=[__import__('telegram.ext', fromlist=['CommandHandler']).CommandHandler('cancel', contact_cancel)],
+        fallbacks=[CommandHandler('cancel', contact_cancel)],
         allow_reentry=True,
     )
