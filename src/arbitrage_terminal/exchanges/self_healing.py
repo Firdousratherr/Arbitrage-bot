@@ -98,10 +98,12 @@ class SelfHealingAdapter:
             if decision is None or not decision.safe_to_auto_repair: return False
             if decision.retry_delay_seconds: await asyncio.sleep(decision.retry_delay_seconds)
             if decision.recommended_action == "retry":
-                # A retry is deliberately non-invasive: the caller will repeat
-                # the original operation without another repair attempt.
                 self.health.state = "healthy"
                 return True
+            if decision.recommended_action == "quarantine":
+                self.health.state = "quarantined"
+                self.health.quarantined_until = time.monotonic() + self.quarantine_seconds
+                return False
             if decision.recommended_action in {"repair", "reload_markets", "invalidate_cache"}:
                 return await self._deterministic_recover()
             return False
@@ -110,17 +112,12 @@ class SelfHealingAdapter:
     async def _recover(self, original_error: Exception | None = None) -> bool:
         """Serialize recovery and let concurrent callers reuse one successful repair."""
         async with self._recovery_lock:
-            # A concurrent failure may have arrived while another caller was
-            # repairing. Once that repair succeeds, reuse it rather than repair
-            # the same exchange again.
             if self.health.state == "healthy":
                 if original_error is None or self.health.consecutive_failures == 0:
                     return True
             deterministic_ok = await self._perform_deterministic_recovery()
             if deterministic_ok:
                 return True
-        # AI is deliberately outside the recovery lock so an unavailable AI
-        # provider cannot block other exchange calls behind a slow advisor.
         return original_error is not None and await self._ai_recover(original_error)
     async def _call(self, method_name: str, method: Callable[..., Any], *args, **kwargs):
         if self.health.state == "quarantined":
