@@ -8,6 +8,7 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from .handlers import kb
+from .ai_workbench import workbench_menu
 
 
 def _is_admin(update, context):
@@ -18,7 +19,7 @@ def _menu():
     return kb([
         [('👥 Users', 'admin:users'), ('📊 Stats', 'admin:stats')],
         [('🕒 Recent Actions', 'admin:actions'), ('🔑 VIP Keys', 'admin:keys')],
-        [('🤖 AI Code Fixer', 'admin:aifix')],
+        [('🤖 AI Fixer Workbench', 'admin:aifix')],
         [('🔎 User Info Help', 'admin:userhelp')],
         [('🏠 Dashboard', 'home')],
     ])
@@ -220,7 +221,9 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q=update.callback_query
     if not _is_admin(update,context): await q.answer('Admin access only.',show_alert=True); return
     await q.answer(); data=q.data; repo=context.application.bot_data['repo']; await init_admin_storage(repo)
-    if data=='admin:users':
+    if data=='admin:home':
+        await q.edit_message_text('🛠️ <b>ADMIN CONTROL PANEL</b>\n\nManage users, VIP access, activity, keys and runtime statistics.', parse_mode='HTML', reply_markup=_menu())
+    elif data=='admin:users':
         rows=await _users(repo,20); lines=['👥 <b>USERS · LAST 20 ACTIVE</b>','']+[f'{"🟢" if r["vip_status"]=="active" else "⚪"} <code>{r["telegram_id"]}</code> {html.escape("@"+r["username"] if r["username"] else "no_username")} · {r["vip_status"]}{" · 🚫" if r["banned"] else ""}' for r in rows]; await q.edit_message_text('\n'.join(lines) if rows else 'No users yet.',parse_mode='HTML',reply_markup=_menu())
     elif data=='admin:stats':
         total=(await (await repo.db.execute('SELECT COUNT(*) c FROM users')).fetchone())['c']; vip=(await (await repo.db.execute("SELECT COUNT(*) c FROM users WHERE vip_status='active'")).fetchone())['c']; scans=(await (await repo.db.execute('SELECT COUNT(*) c FROM scan_snapshots')).fetchone())['c']; await q.edit_message_text(f'📊 <b>ADMIN STATS</b>\n\n👥 Users: <b>{total}</b>\n🟢 Active VIP: <b>{vip}</b>\n🔎 Scans: <b>{scans}</b>',parse_mode='HTML',reply_markup=_menu())
@@ -232,11 +235,12 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         settings = context.application.bot_data['settings']
         manager = context.application.bot_data.get('code_repair')
         if not settings.ai_code_repair_enabled:
-            text = '🤖 <b>AI CODE FIXER</b>\n\n⚪ Feature is disabled. Set <code>AI_CODE_REPAIR_ENABLED=true</code> in the server environment and restart the bot.'
+            text = '🤖 <b>AI FIXER WORKBENCH</b>\n\n⚪ Feature is disabled. Set <code>AI_CODE_REPAIR_ENABLED=true</code> in the server environment and restart the bot.'
+            await q.edit_message_text(text, parse_mode='HTML', reply_markup=_menu())
         elif not manager or not manager.configured:
-            text = '🤖 <b>AI CODE FIXER</b>\n\n⚠️ Feature is enabled, but GitHub is not configured. Set <code>GITHUB_TOKEN</code> and <code>GITHUB_REPO</code> on the server. The token is never sent to the AI or Telegram.\n\nThen use <code>/aifix &lt;problem&gt;</code>.'
+            text = '🤖 <b>AI FIXER WORKBENCH</b>\n\n⚠️ Feature is enabled, but GitHub/AI is not configured. Set the required server configuration. Secrets are never shown to Telegram or the AI.'
+            await q.edit_message_text(text, parse_mode='HTML', reply_markup=_menu())
         else:
-            text = '🤖 <b>AI CODE FIXER</b>\n\n✅ Configured and ready.\n\nUse <code>/aifix &lt;problem&gt;</code> to inspect the repository and generate a safe repair proposal.\n\nExample:\n<code>/aifix scan gets stuck during network validation</code>\n\nAfter a proposal you can review it before applying. Changes are written to an isolated <code>ai-fix/*</code> branch.'
-        await q.edit_message_text(text, parse_mode='HTML', reply_markup=_menu())
+            await q.edit_message_text('🤖 <b>AI FIXER WORKBENCH</b>\n\nChoose an AI engineering tool:', parse_mode='HTML', reply_markup=workbench_menu())
     elif data=='admin:userhelp':
         await q.edit_message_text('🔎 <b>USER MANAGEMENT</b>\n\n<code>/userinfo USER_ID</code>\n<code>/givevip USER_ID 30</code>\n<code>/givevip USER_ID lifetime</code>\n<code>/revokevip USER_ID</code>\n<code>/ban USER_ID</code>\n<code>/unban USER_ID</code>\n<code>/useractions USER_ID</code>\n\nUse <code>/users</code> for the latest 20 active users.',parse_mode='HTML',reply_markup=_menu())
