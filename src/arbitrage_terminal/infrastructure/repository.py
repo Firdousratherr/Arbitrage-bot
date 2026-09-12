@@ -54,7 +54,7 @@ class Repository:
         now = datetime.now(timezone.utc).isoformat()
         await self.db.execute('INSERT INTO users(telegram_id,username,email,created_at,last_active) VALUES(?,?,?,?,?) ON CONFLICT(telegram_id) DO UPDATE SET username=excluded.username,email=COALESCE(excluded.email,users.email),last_active=excluded.last_active', (user_id, username, email, now, now))
         await self.db.execute('INSERT OR IGNORE INTO user_exchange_config(user_id) VALUES (?)', (user_id,))
-        await self.db.execute('INSERT OR IGNORE INTO user_scanner_config(user_id,filters) VALUES (?)', (user_id,))
+        await self.db.execute('INSERT OR IGNORE INTO user_scanner_config(user_id,filters) VALUES (?,?)', (user_id, json.dumps(DEFAULT_FILTERS)))
         await self.db.execute('INSERT OR IGNORE INTO user_ai_config(user_id) VALUES (?)', (user_id,))
         await self.db.commit()
 
