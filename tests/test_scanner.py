@@ -47,12 +47,12 @@ async def test_orderbook_validation_preserves_ticker_liquidity_and_reprices_net_
     x=await s.scan(1,['a','b'],filters)
     assert x.state==ScanState.SUCCESS
     assert x.opportunities_found==1
-    for o in x.opportunities:
-        assert o.metadata['orderbook_validated'] is True
-        assert o.buy_volume == 100000
-        assert o.sell_volume == 100000
-        assert o.estimated_net_profit is not None
-        assert o.estimated_net_profit < o.metadata['ticker_gap_pct']
+    o=x.opportunities[0]
+    assert o.metadata['orderbook_validated'] is True
+    assert o.buy_volume == 100000
+    assert o.sell_volume == 100000
+    assert o.estimated_net_profit is not None
+    assert o.estimated_net_profit == pytest.approx(o.metadata['executable_gap_pct'] - .2)
 
 
 @pytest.mark.asyncio
