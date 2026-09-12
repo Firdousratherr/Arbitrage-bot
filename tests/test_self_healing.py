@@ -81,10 +81,12 @@ async def test_repair_failure_quarantines_exchange():
             raise RuntimeError('cannot recreate client')
 
     adapter = BrokenRepair()
+    adapter.failures_left = 1
     wrapped = SelfHealingAdapter(adapter, failure_threshold=1, quarantine_seconds=10)
 
     with pytest.raises(ExchangeError):
         await wrapped.get_markets()
 
+    assert adapter.repairs == 2
     assert wrapped.health.state == 'quarantined'
     assert not wrapped.health.available
