@@ -127,6 +127,7 @@ class CcxtAdapter(ExchangeAdapter):
     def _parse_tickers(self, name, raw, wanted):
         out = []; identities = getattr(self, 'last_market_asset_identities', {}) or {}
         for raw_symbol, t in (raw or {}).items():
+            if raw_symbol == 'info' or not isinstance(t, dict): continue
             try:
                 sym, base, quote, _ = normalize_symbol(raw_symbol); bid = float(t.get('bid')); ask = float(t.get('ask')); vol = float(t.get('quoteVolume') or 0)
             except (ValueError, TypeError, AttributeError): continue
@@ -139,19 +140,40 @@ class CcxtAdapter(ExchangeAdapter):
     async def _fetch_best_quotes(self, wanted):
         has = getattr(self.client, 'has', {}) or {}
         if has.get('fetchBidsAsks') and hasattr(self.client, 'fetch_bids_asks'):
-            self.last_ticker_source = 'fetch_bids_asks'; return await self._call('bids_asks', self.client.fetch_bids_asks, sorted(wanted))
-        self.last_ticker_source = 'fetch_tickers'
-        try: return await self._call('tickers', self.client.fetch_tickers, sorted(wanted))
-        except ExchangeError as exc:
-            if getattr(exc, 'error_type', None) not in {'invalid_request', 'exchange_api'}: raise
-            self.last_ticker_source = 'fetch_tickers_all'; return await self._call('tickers_all', self.client.fetch_tickers)
+            self.last_ticker_source = 'fetch_bids_asks'
+            try:
+                raw = await self._call('bids_asks', self.client.fetch_bids_asks, sorted(wanted))
+                if raw: return raw
+            except ExchangeError as exc:
+                if getattr(exc, 'error_type', None) not in {'invalid_request','exchange_api'}: raise
+        if hasattr(self.client, 'fetch_tickers'):
+            self.last_ticker_source = 'fetch_tickers'
+            try:
+                raw = await self._call('tickers', self.client.fetch_tickers, sorted(wanted))
+                if raw: return raw
+            except ExchangeError as exc:
+                if getattr(exc, 'error_type', None) not in {'invalid_request','exchange_api'}: raise
+            self.last_ticker_source = 'fetch_tickers_all'
+            return await self._call('tickers_all', self.client.fetch_tickers)
+        raise ExchangeError('Exchange does not expose a usable ticker endpoint.','invalid_request')
 
     async def get_tickers(self, symbols=None):
         self.last_ticker_symbols = set(); self.last_ticker_count = 0; self.last_ticker_source = ''
         if not self._markets: await self.get_markets()
         wanted = {s.upper() for s in (symbols or self.last_market_symbols)}
         if not wanted: return []
-        raw = await self._fetch_best_quotes(wanted); out = self._parse_tickers(self.name, raw, wanted)
+        raw = await self._fetch_best_quotes(wanted)
+        out = self._parse_tickers(self.name, raw, wanted)
+        # Some exchanges accept the requested symbol list but return an empty or
+        # incomplete payload. A single all-tickers retry is much safer than
+        # declaring the exchange healthy with zero usable prices.
+        if not out and hasattr(self.client, 'fetch_tickers'):
+            try:
+                self.last_ticker_source = 'fetch_tickers_all_retry'
+                raw_all = await self._call('tickers_all_retry', self.client.fetch_tickers)
+                out = self._parse_tickers(self.name, raw_all, wanted)
+            except Exception:
+                pass
         self.last_ticker_symbols = {t.symbol for t in out}; self.last_ticker_count = len(out); return out
 
     async def get_orderbook(self, symbol, limit=10): return await self._call('orderbook', self.client.fetch_order_book, symbol, limit)
