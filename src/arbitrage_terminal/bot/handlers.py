@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
-from .ui import dashboard, card
+from .ui import dashboard
 
 
 def kb(rows):
@@ -19,12 +19,17 @@ async def start(update, context):
         context.user_data['await_email'] = True; await update.effective_message.reply_text('⚡ <b>Welcome to Arbitrage Terminal</b>\n\nSend your email to continue.', parse_mode='HTML'); return
     if svc.settings.require_vip and not await svc.repo.vip_active(update.effective_user.id):
         txt, markup = vip_prompt(); await update.effective_message.reply_text(txt, parse_mode='HTML', reply_markup=markup); return
-    await update.effective_message.reply_text(dashboard(row), parse_mode='HTML', reply_markup=kb([[('🔎 Scan Arbitrage','scan'),('🏦 Exchanges','exchanges')],[('📊 Filters','filters'),('🧠 AI','ai')],[('📡 Status','status'),('📋 History','history')],[('⚙️ Settings','settings'),('❓ Help','help:main')],[('👨‍💻 Contact Developer','contact:open')]]))
+    rows = [[('🔎 Scan Arbitrage','scan'),('🏦 Exchanges','exchanges')],[('📊 Filters','filters'),('🧠 AI','ai')],[('📡 Status','status'),('📋 History','history')],[('⚙️ Settings','settings'),('💬 Arbitrage Chat','chat:open')],[('❓ Help','help:main'),('👨‍💻 Contact Developer','contact:open')]]
+    if update.effective_user.id in svc.settings.admin_ids:
+        rows.insert(-1, [('🛠️ Fix Exchanges','repair:open')])
+    await update.effective_message.reply_text(dashboard(row), parse_mode='HTML', reply_markup=kb(rows))
 
 
 async def text(update, context):
     from .contact import contact_text
     if await contact_text(update, context): return
+    from .user_chat import chat_text
+    if await chat_text(update, context): return
     if context.user_data.pop('await_email', False):
         email = update.effective_message.text.strip()
         if '@' not in email or '.' not in email:
@@ -65,7 +70,7 @@ async def genkey(update, context):
     except Exception as e: await update.effective_message.reply_text(f'⚠️ Could not create key: {type(e).__name__}')
 
 
-async def scan(update, context): await update.effective_message.reply_text('Use the dashboard Scan button.', reply_markup=kb([[('🔎 Scan Arbitrage','scan')]]))
+async def scan(update, context): await update.effective_message.reply_text('Use the dashboard Scan button.', reply_markup=kb([[('🔎 Scan Arbitrage','scan')]))
 
 
 async def results_cmd(update, context):
