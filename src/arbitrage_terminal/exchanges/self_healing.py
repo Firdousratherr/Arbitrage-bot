@@ -10,7 +10,7 @@ from typing import Any, Awaitable, Callable
 from .base import ExchangeError
 
 logger=logging.getLogger(__name__)
-TRANSIENT={'network','rate_limit','exchange_api','timeout','circuit_open'}
+TRANSIENT={'network','rate_limit','exchange_api','timeout','circuit_open','empty_data'}
 FATAL={'authentication','invalid_request'}
 LIFECYCLE_METHODS={'close','disconnect'}
 
@@ -26,7 +26,7 @@ class ExchangeHealth:
         return max(0.0,min(100.0,round(score,1)))
 
 class SelfHealingAdapter:
-    def __init__(self,adapter:Any,repair:Callable[[],Awaitable[Any]]|None=None,failure_threshold:int=3,quarantine_seconds:float=30.0,max_repair_attempts:int=2,recovery_advisor:Any=None,recovery_memory:Any=None):
+    def __init__(self,adapter:Any,repair:Callable[[],Awaitable[Any]]|None=None,failure_threshold:int=3,quarantine_seconds:float=30.0,max_repair_attempts:int=3,recovery_advisor:Any=None,recovery_memory:Any=None):
         self._adapter=adapter;self._repair=repair;self.recovery_advisor=recovery_advisor;self.recovery_memory=recovery_memory;self.failure_threshold=max(1,failure_threshold);self.quarantine_seconds=max(1.0,quarantine_seconds);self.max_repair_attempts=max(1,max_repair_attempts);self.health=ExchangeHealth(getattr(adapter,'name','exchange'));self._recovery_lock=asyncio.Lock()
     @property
     def name(self):return self._adapter.name
@@ -38,7 +38,11 @@ class SelfHealingAdapter:
                 result=self._repair() if self._repair is not None else self._adapter.repair()
                 if inspect.isawaitable(result):await result
                 self.health.total_repairs+=1;self.health.last_repair_at=time.monotonic();return True
-            except Exception as exc:logger.warning('exchange repair failed',extra={'exchange':self.name,'attempt':attempt+1,'error':str(exc)[:300]})
+            except Exception as exc:
+                self.health.total_repairs+=1
+                logger.warning('exchange repair failed',extra={'exchange':self.name,'attempt':attempt+1,'error':str(exc)[:300]})
+                if attempt+1<self.max_repair_attempts:
+                    await asyncio.sleep(min(1.5,0.25*(2**attempt)))
         return False
     async def _perform_deterministic_recovery(self,action='repair'):
         self.health.state='recovering';self.health.last_recovery_action=action
@@ -78,6 +82,10 @@ class SelfHealingAdapter:
                 except Exception:pass
             if ok:return True
         return original_error is not None and await self._ai_recover(original_error)
+    @staticmethod
+    def _empty_data_requires_recovery(method_name,result):
+        if method_name not in {'get_markets','get_tickers'}:return False
+        return isinstance(result,(list,tuple,dict,set)) and len(result)==0
     async def _call(self,method_name,method,*args,**kwargs):
         if self.health.state=='quarantined':
             if time.monotonic()<self.health.quarantined_until:raise ExchangeError('Exchange quarantined while self-healing is in progress.','circuit_open')
@@ -87,7 +95,14 @@ class SelfHealingAdapter:
             try:
                 result=method(*args,**kwargs)
                 if inspect.isawaitable(result):result=await result
-                self.health.recent_latencies_ms.append((time.perf_counter()-started)*1000);self.health.consecutive_failures=0;self.health.last_success_at=time.monotonic();self.health.state='healthy';return result
+                self.health.recent_latencies_ms.append((time.perf_counter()-started)*1000)
+                if self._empty_data_requires_recovery(method_name,result):
+                    self.health.total_failures+=1;self.health.consecutive_failures+=1;self.health.last_error=f'{method_name} returned no usable data';self.health.last_error_type='empty_data';self.health.last_error_at=time.monotonic()
+                    if attempt==0:
+                        recovered=await self._recover(ExchangeError(self.health.last_error,'empty_data'))
+                        if recovered:continue
+                    raise ExchangeError(f'{self.name} returned no usable {method_name} data after recovery.','empty_data')
+                self.health.consecutive_failures=0;self.health.last_success_at=time.monotonic();self.health.state='healthy';return result
             except Exception as exc:
                 self.health.recent_latencies_ms.append((time.perf_counter()-started)*1000);self.health.total_failures+=1;self.health.consecutive_failures+=1;self.health.last_error=str(exc)[:500];self.health.last_error_type=getattr(exc,'error_type',type(exc).__name__);self.health.last_error_at=time.monotonic();error_type=self.health.last_error_type
                 if not (isinstance(exc,asyncio.TimeoutError) or error_type in TRANSIENT) or error_type in FATAL:raise
@@ -97,6 +112,8 @@ class SelfHealingAdapter:
                         try:
                             result=method(*args,**kwargs)
                             if inspect.isawaitable(result):result=await result
+                            if self._empty_data_requires_recovery(method_name,result):
+                                raise ExchangeError(f'{self.name} still returned no usable {method_name} data after recovery.','empty_data')
                             self.health.recent_latencies_ms.append((time.perf_counter()-started)*1000);self.health.consecutive_failures=0;self.health.last_success_at=time.monotonic();self.health.state='healthy';return result
                         except Exception as retry_exc:self.health.last_error=str(retry_exc)[:500];self.health.last_error_type=getattr(retry_exc,'error_type',type(retry_exc).__name__)
                     raise ExchangeError('Exchange recovery failed; exchange quarantined.','circuit_open') from exc
