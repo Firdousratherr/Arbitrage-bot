@@ -16,122 +16,103 @@ LIFECYCLE_METHODS={'close','disconnect'}
 
 @dataclass(slots=True)
 class ExchangeHealth:
-    exchange:str
-    state:str='healthy'
-    consecutive_failures:int=0
-    total_failures:int=0
-    total_repairs:int=0
-    total_recoveries:int=0
-    last_error:str|None=None
-    last_error_type:str|None=None
-    last_error_at:float|None=None
-    last_success_at:float|None=None
-    last_repair_at:float|None=None
-    last_recovery_action:str|None=None
-    quarantined_until:float=0.0
-    recent_latencies_ms:deque[float]=field(default_factory=lambda:deque(maxlen=50))
+    exchange:str; state:str='healthy'; consecutive_failures:int=0; total_failures:int=0; total_repairs:int=0; total_recoveries:int=0; last_error:str|None=None; last_error_type:str|None=None; last_error_at:float|None=None; last_success_at:float|None=None; last_repair_at:float|None=None; last_recovery_action:str|None=None; quarantined_until:float=0.0; recent_latencies_ms:deque[float]=field(default_factory=lambda:deque(maxlen=50))
     @property
     def available(self): return self.state!='quarantined' or time.monotonic()>=self.quarantined_until
     @property
     def score(self):
-        latency=sum(self.recent_latencies_ms)/len(self.recent_latencies_ms) if self.recent_latencies_ms else 0.0
-        score=100.0-min(45.0,self.consecutive_failures*15.0)-min(25.0,self.total_failures/max(1,self.total_failures+self.total_repairs)*25.0)
-        if latency>500: score-=min(20.0,(latency-500)/100.0)
+        latency=sum(self.recent_latencies_ms)/len(self.recent_latencies_ms) if self.recent_latencies_ms else 0.0; score=100.0-min(45.0,self.consecutive_failures*15.0)-min(25.0,self.total_failures/max(1,self.total_failures+self.total_repairs)*25.0)
+        if latency>500:score-=min(20.0,(latency-500)/100.0)
         return max(0.0,min(100.0,round(score,1)))
 
 class SelfHealingAdapter:
     def __init__(self,adapter:Any,repair:Callable[[],Awaitable[Any]]|None=None,failure_threshold:int=3,quarantine_seconds:float=30.0,max_repair_attempts:int=2,recovery_advisor:Any=None,recovery_memory:Any=None):
-        self._adapter=adapter; self._repair=repair; self.recovery_advisor=recovery_advisor; self.recovery_memory=recovery_memory
-        self.failure_threshold=max(1,failure_threshold); self.quarantine_seconds=max(1.0,quarantine_seconds); self.max_repair_attempts=max(1,max_repair_attempts); self.health=ExchangeHealth(getattr(adapter,'name','exchange')); self._recovery_lock=asyncio.Lock()
+        self._adapter=adapter;self._repair=repair;self.recovery_advisor=recovery_advisor;self.recovery_memory=recovery_memory;self.failure_threshold=max(1,failure_threshold);self.quarantine_seconds=max(1.0,quarantine_seconds);self.max_repair_attempts=max(1,max_repair_attempts);self.health=ExchangeHealth(getattr(adapter,'name','exchange'));self._recovery_lock=asyncio.Lock()
     @property
-    def name(self): return self._adapter.name
+    def name(self):return self._adapter.name
     @property
-    def adapter(self): return self._adapter
+    def adapter(self):return self._adapter
     async def _do_repair(self):
         for attempt in range(self.max_repair_attempts):
             try:
                 result=self._repair() if self._repair is not None else self._adapter.repair()
-                if inspect.isawaitable(result): await result
-                self.health.total_repairs+=1; self.health.last_repair_at=time.monotonic(); return True
-            except Exception as exc: logger.warning('exchange repair failed',extra={'exchange':self.name,'attempt':attempt+1,'error':str(exc)[:300]})
+                if inspect.isawaitable(result):await result
+                self.health.total_repairs+=1;self.health.last_repair_at=time.monotonic();return True
+            except Exception as exc:logger.warning('exchange repair failed',extra={'exchange':self.name,'attempt':attempt+1,'error':str(exc)[:300]})
         return False
     async def _perform_deterministic_recovery(self,action='repair'):
-        self.health.state='recovering'; self.health.last_recovery_action=action
+        self.health.state='recovering';self.health.last_recovery_action=action
         if action=='retry':
             try:
-                await asyncio.wait_for(self._adapter.health_check(),timeout=min(10.0,self.quarantine_seconds)); self.health.state='healthy'; self.health.consecutive_failures=0; self.health.total_recoveries+=1; self.health.last_success_at=time.monotonic(); return True
-            except Exception: return False
-        if not await self._do_repair(): self.health.state='quarantined'; self.health.quarantined_until=time.monotonic()+self.quarantine_seconds; return False
-        try: await asyncio.wait_for(self._adapter.health_check(),timeout=min(10.0,self.quarantine_seconds))
+                await asyncio.wait_for(self._adapter.health_check(),timeout=min(10.0,self.quarantine_seconds));self.health.state='healthy';self.health.consecutive_failures=0;self.health.total_recoveries+=1;self.health.last_success_at=time.monotonic();return True
+            except Exception:return False
+        if not await self._do_repair():self.health.state='quarantined';self.health.quarantined_until=time.monotonic()+self.quarantine_seconds;return False
+        try:await asyncio.wait_for(self._adapter.health_check(),timeout=min(10.0,self.quarantine_seconds))
         except Exception as exc:
-            self.health.state='quarantined'; self.health.quarantined_until=time.monotonic()+self.quarantine_seconds; self.health.last_error=str(exc)[:500]; self.health.last_error_type=type(exc).__name__; self.health.last_error_at=time.monotonic(); return False
-        self.health.state='healthy'; self.health.consecutive_failures=0; self.health.total_recoveries+=1; self.health.last_success_at=time.monotonic(); return True
+            self.health.state='quarantined';self.health.quarantined_until=time.monotonic()+self.quarantine_seconds;self.health.last_error=str(exc)[:500];self.health.last_error_type=type(exc).__name__;self.health.last_error_at=time.monotonic();return False
+        self.health.state='healthy';self.health.consecutive_failures=0;self.health.total_recoveries+=1;self.health.last_success_at=time.monotonic();return True
     async def _ai_recover(self,original_error):
         if self.recovery_advisor is None:return False
         try:
             decision=await self.recovery_advisor.advise({'exchange':self.name,'error_type':getattr(original_error,'error_type',type(original_error).__name__),'error':str(original_error)[:500],'consecutive_failures':self.health.consecutive_failures,'total_failures':self.health.total_failures,'state':self.health.state,'recent_latency_ms':[round(x,1) for x in self.health.recent_latencies_ms]})
             if decision is None or not decision.safe_to_auto_repair:return False
-            if decision.retry_delay_seconds: await asyncio.sleep(decision.retry_delay_seconds)
-            if decision.recommended_action=='quarantine': self.health.state='quarantined'; self.health.quarantined_until=time.monotonic()+self.quarantine_seconds; return False
-            action=decision.recommended_action if decision.recommended_action in {'retry','repair','reload_markets','invalidate_cache'} else 'repair'
-            return await self._perform_deterministic_recovery(action)
-        except Exception: logger.exception('AI exchange recovery advisor failed',extra={'exchange':self.name}); return False
+            if decision.retry_delay_seconds:await asyncio.sleep(decision.retry_delay_seconds)
+            if decision.recommended_action=='quarantine':self.health.state='quarantined';self.health.quarantined_until=time.monotonic()+self.quarantine_seconds;return False
+            action=decision.recommended_action if decision.recommended_action in {'retry','repair','reload_markets','invalidate_cache'} else 'repair';return await self._perform_deterministic_recovery(action)
+        except Exception:logger.exception('AI exchange recovery advisor failed',extra={'exchange':self.name});return False
     async def _recover(self,original_error=None):
         async with self._recovery_lock:
-            error_type=str(getattr(original_error,'error_type',type(original_error).__name__)) if original_error else str(self.health.last_error_type or 'unknown')
-            preferred=None
+            if self.health.state=='healthy' and self.health.consecutive_failures==0:return True
+            error_type=str(getattr(original_error,'error_type',type(original_error).__name__)) if original_error else str(self.health.last_error_type or 'unknown');preferred=None
             if self.recovery_memory is not None:
-                try: preferred=await self.recovery_memory.preferred(self.name,error_type)
-                except Exception: pass
+                try:preferred=await self.recovery_memory.preferred(self.name,error_type)
+                except Exception:pass
             if preferred:
                 ok=await self._perform_deterministic_recovery(preferred)
-                try: await self.recovery_memory.record(self.name,error_type,preferred,ok)
-                except Exception: pass
+                try:await self.recovery_memory.record(self.name,error_type,preferred,ok)
+                except Exception:pass
                 if ok:return True
             ok=await self._perform_deterministic_recovery('repair')
             if self.recovery_memory is not None:
-                try: await self.recovery_memory.record(self.name,error_type,'repair',ok)
-                except Exception: pass
+                try:await self.recovery_memory.record(self.name,error_type,'repair',ok)
+                except Exception:pass
             if ok:return True
         return original_error is not None and await self._ai_recover(original_error)
     async def _call(self,method_name,method,*args,**kwargs):
         if self.health.state=='quarantined':
-            if time.monotonic()<self.health.quarantined_until: raise ExchangeError('Exchange quarantined while self-healing is in progress.','circuit_open')
-            if not await self._recover(): raise ExchangeError('Exchange recovery probe failed; still quarantined.','circuit_open')
+            if time.monotonic()<self.health.quarantined_until:raise ExchangeError('Exchange quarantined while self-healing is in progress.','circuit_open')
+            if not await self._recover():raise ExchangeError('Exchange recovery probe failed; still quarantined.','circuit_open')
         for attempt in range(2):
             started=time.perf_counter()
             try:
                 result=method(*args,**kwargs)
-                if inspect.isawaitable(result): result=await result
-                self.health.recent_latencies_ms.append((time.perf_counter()-started)*1000); self.health.consecutive_failures=0; self.health.last_success_at=time.monotonic(); self.health.state='healthy'; return result
+                if inspect.isawaitable(result):result=await result
+                self.health.recent_latencies_ms.append((time.perf_counter()-started)*1000);self.health.consecutive_failures=0;self.health.last_success_at=time.monotonic();self.health.state='healthy';return result
             except Exception as exc:
-                self.health.recent_latencies_ms.append((time.perf_counter()-started)*1000); self.health.total_failures+=1; self.health.consecutive_failures+=1; self.health.last_error=str(exc)[:500]; self.health.last_error_type=getattr(exc,'error_type',type(exc).__name__); self.health.last_error_at=time.monotonic(); error_type=self.health.last_error_type
-                if not (isinstance(exc,asyncio.TimeoutError) or error_type in TRANSIENT) or error_type in FATAL: raise
+                self.health.recent_latencies_ms.append((time.perf_counter()-started)*1000);self.health.total_failures+=1;self.health.consecutive_failures+=1;self.health.last_error=str(exc)[:500];self.health.last_error_type=getattr(exc,'error_type',type(exc).__name__);self.health.last_error_at=time.monotonic();error_type=self.health.last_error_type
+                if not (isinstance(exc,asyncio.TimeoutError) or error_type in TRANSIENT) or error_type in FATAL:raise
                 if attempt==1 or self.health.consecutive_failures>=self.failure_threshold:
                     recovered=await self._recover(exc)
                     if recovered:
                         try:
                             result=method(*args,**kwargs)
-                            if inspect.isawaitable(result): result=await result
-                            self.health.recent_latencies_ms.append((time.perf_counter()-started)*1000); self.health.consecutive_failures=0; self.health.last_success_at=time.monotonic(); self.health.state='healthy'; return result
-                        except Exception as retry_exc:
-                            self.health.last_error=str(retry_exc)[:500]; self.health.last_error_type=getattr(retry_exc,'error_type',type(retry_exc).__name__)
+                            if inspect.isawaitable(result):result=await result
+                            self.health.recent_latencies_ms.append((time.perf_counter()-started)*1000);self.health.consecutive_failures=0;self.health.last_success_at=time.monotonic();self.health.state='healthy';return result
+                        except Exception as retry_exc:self.health.last_error=str(retry_exc)[:500];self.health.last_error_type=getattr(retry_exc,'error_type',type(retry_exc).__name__)
                     raise ExchangeError('Exchange recovery failed; exchange quarantined.','circuit_open') from exc
                 await asyncio.sleep(0.2*(2**attempt))
     def __getattr__(self,name):
         target=getattr(self._adapter,name)
-        if not callable(target) or name in {'repair','health',*LIFECYCLE_METHODS}: return target
-        async def wrapped(*args,**kwargs): return await self._call(name,target,*args,**kwargs)
+        if not callable(target) or name in {'repair','health',*LIFECYCLE_METHODS}:return target
+        async def wrapped(*args,**kwargs):return await self._call(name,target,*args,**kwargs)
         return wrapped
     async def repair(self):
         async with self._recovery_lock:return await self._perform_deterministic_recovery('repair')
     def health_snapshot(self):
-        h=self.health
-        return {'exchange':h.exchange,'state':h.state,'score':h.score,'available':h.available,'consecutive_failures':h.consecutive_failures,'total_failures':h.total_failures,'total_repairs':h.total_repairs,'total_recoveries':h.total_recoveries,'last_error':h.last_error,'last_error_type':h.last_error_type,'last_success_at':h.last_success_at,'last_repair_at':h.last_repair_at,'last_recovery_action':h.last_recovery_action,'quarantined_until':h.quarantined_until}
+        h=self.health;return {'exchange':h.exchange,'state':h.state,'score':h.score,'available':h.available,'consecutive_failures':h.consecutive_failures,'total_failures':h.total_failures,'total_repairs':h.total_repairs,'total_recoveries':h.total_recoveries,'last_error':h.last_error,'last_error_type':h.last_error_type,'last_success_at':h.last_success_at,'last_repair_at':h.last_repair_at,'last_recovery_action':h.last_recovery_action,'quarantined_until':h.quarantined_until}
 
 class ExchangeSelfHealingSupervisor:
-    def __init__(self,adapters,failure_threshold=3,quarantine_seconds=30.0,recovery_advisor=None,recovery_memory=None):
-        self.adapters={name:adapter if isinstance(adapter,SelfHealingAdapter) else SelfHealingAdapter(adapter,failure_threshold=failure_threshold,quarantine_seconds=quarantine_seconds,recovery_advisor=recovery_advisor,recovery_memory=recovery_memory) for name,adapter in adapters.items()}
-    def health(self): return {name:adapter.health_snapshot() for name,adapter in self.adapters.items()}
+    def __init__(self,adapters,failure_threshold=3,quarantine_seconds=30.0,recovery_advisor=None,recovery_memory=None):self.adapters={name:adapter if isinstance(adapter,SelfHealingAdapter) else SelfHealingAdapter(adapter,failure_threshold=failure_threshold,quarantine_seconds=quarantine_seconds,recovery_advisor=recovery_advisor,recovery_memory=recovery_memory) for name,adapter in adapters.items()}
+    def health(self):return {name:adapter.health_snapshot() for name,adapter in self.adapters.items()}
     async def recover(self,name):
-        adapter=self.adapters.get(name); return False if adapter is None else await adapter.repair()
+        adapter=self.adapters.get(name);return False if adapter is None else await adapter.repair()
