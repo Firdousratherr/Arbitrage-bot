@@ -26,7 +26,7 @@ class ExchangeHealth:
         return max(0.0,min(100.0,round(score,1)))
 
 class SelfHealingAdapter:
-    def __init__(self,adapter:Any,repair:Callable[[],Awaitable[Any]]|None=None,failure_threshold:int=3,quarantine_seconds:float=30.0,max_repair_attempts:int=3,recovery_advisor:Any=None,recovery_memory:Any=None):
+    def __init__(self,adapter:Any,repair:Callable[[],Awaitable[Any]]|None=None,failure_threshold:int=3,quarantine_seconds:float=30.0,max_repair_attempts:int=2,recovery_advisor:Any=None,recovery_memory:Any=None):
         self._adapter=adapter;self._repair=repair;self.recovery_advisor=recovery_advisor;self.recovery_memory=recovery_memory;self.failure_threshold=max(1,failure_threshold);self.quarantine_seconds=max(1.0,quarantine_seconds);self.max_repair_attempts=max(1,max_repair_attempts);self.health=ExchangeHealth(getattr(adapter,'name','exchange'));self._recovery_lock=asyncio.Lock()
     @property
     def name(self):return self._adapter.name
