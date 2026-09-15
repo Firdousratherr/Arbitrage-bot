@@ -18,6 +18,7 @@ def _menu(context, user_id):
     rows = [
         [('🩺 Exchange Health', 'repair:health'), ('📡 Test Exchange APIs', 'repair:probe')],
         [('🔬 Deep Diagnose', 'repair:diagnose')],
+        [('🤖 AI Auto Repair', 'repair:ai')],
     ]
     if _is_admin(context, user_id):
         rows += [
@@ -36,16 +37,16 @@ async def repair_open(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.answer()
         text = (
             '🛠️ <b>EXCHANGE TOOLS</b>\n\n'
-            'Check exchange health, test public market APIs, and diagnose market/ticker availability.\n\n'
-            '🔐 Admin-only repair controls are shown only to administrators.\n'
-            '🔒 User diagnostics never display credentials, configuration secrets, source code, or raw internal errors.'
+            'Check exchange health, test public market APIs, diagnose market/ticker availability, or explicitly ask AI to repair an exchange.\n\n'
+            '🤖 <b>AI Auto Repair</b> is user-triggered only. It does not run automatically during scans.\n'
+            '🔒 Repair is limited to predefined safe recovery actions; credentials, secrets, source code, and raw internal errors are never exposed.'
         )
         await q.edit_message_text(text, parse_mode='HTML', reply_markup=_menu(context, uid))
         return
     text = (
         '🛠️ <b>EXCHANGE TOOLS</b>\n\n'
-        'Check exchange health, test public market APIs, and diagnose market/ticker availability.\n\n'
-        '🔐 Repair controls are available only to administrators.'
+        'Check exchange health, test public market APIs, diagnose market/ticker availability, or explicitly ask AI to repair an exchange.\n\n'
+        '🤖 AI Auto Repair is user-triggered and limited to safe recovery actions.'
     )
     await update.effective_message.reply_text(text, parse_mode='HTML', reply_markup=_menu(context, uid))
 
@@ -127,6 +128,84 @@ async def repair_run(update: Update, context: ContextTypes.DEFAULT_TYPE, names=N
     results = await asyncio.gather(*(repair_one(name) for name in selected))
     await _render_results(q, '🛠️ <b>EXCHANGE RECOVERY RESULT</b>', results,
                           'Authentication/invalid-request failures are never bypassed.', context=context)
+
+
+async def _ai_repair_one(name, adapter, advisor, lock):
+    async with lock:
+        verified, detail = await _verify_one(name, adapter, deep=False)
+        health = getattr(adapter, 'health_snapshot', lambda: {})()
+        state = health.get('state', 'unknown') if isinstance(health, dict) else 'unknown'
+        snapshot = {
+            'exchange': str(name),
+            'state': str(state),
+            'verification_ok': bool(verified),
+            'verification_detail': str(detail)[:300],
+            'consecutive_failures': int(health.get('consecutive_failures', 0)) if isinstance(health, dict) else 0,
+            'total_failures': int(health.get('total_failures', 0)) if isinstance(health, dict) else 0,
+            'last_error_type': str(health.get('last_error_type', 'unknown'))[:80] if isinstance(health, dict) else 'unknown',
+            'recent_failure': str(health.get('last_error', ''))[:300] if isinstance(health, dict) else '',
+        }
+        decision = await advisor.advise(snapshot)
+        if decision is None:
+            return name, False, 'AI could not produce a sufficiently confident safe repair decision'
+        if not decision.safe_to_auto_repair:
+            return name, False, f'AI recommends no automatic repair · {decision.reason[:180]}'
+        action = decision.recommended_action
+        if action == 'quarantine':
+            return name, False, f'AI recommends quarantine; no repair performed · {decision.reason[:180]}'
+        if decision.retry_delay_seconds:
+            await asyncio.sleep(decision.retry_delay_seconds)
+        try:
+            if action == 'retry':
+                await asyncio.wait_for(adapter.health_check(), timeout=15.0)
+            elif action in {'repair', 'reload_markets', 'invalidate_cache'}:
+                # The adapter exposes one deterministic lifecycle repair primitive.
+                # reload_markets/invalidate_cache are intentionally mapped to it rather
+                # than allowing the AI to invoke arbitrary methods.
+                ok = await asyncio.wait_for(adapter.repair(), timeout=25.0)
+                if not ok:
+                    return name, False, f'AI selected {action}, but deterministic repair did not report success'
+            else:
+                return name, False, 'AI selected an unsupported action'
+        except Exception:
+            return name, False, f'AI selected {action}, but the safe repair operation failed'
+        final_ok, final_detail = await _verify_one(name, adapter, deep=True)
+        if final_ok:
+            return name, True, f'AI {action} repair verified · {final_detail}'
+        return name, False, f'AI {action} completed but verification failed'
+
+
+async def repair_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    uid = q.from_user.id
+    await q.answer('AI repair started')
+    selected = await _selected(context, uid)
+    exchanges = context.application.bot_data['exchanges']
+    advisor = context.application.bot_data.get('manual_recovery_advisor')
+    if advisor is None or not getattr(advisor, 'enabled', False):
+        await q.edit_message_text('⚠️ AI Auto Repair is not available right now.', reply_markup=_menu(context, uid))
+        return
+    if not getattr(advisor.ai, 'configured', False):
+        await q.edit_message_text('⚠️ AI provider is not configured. Use Exchange Health/API Test instead.', reply_markup=_menu(context, uid))
+        return
+    if not selected:
+        await q.edit_message_text('⚠️ No exchanges are selected. Use Exchanges first.', reply_markup=_menu(context, uid))
+        return
+    await q.edit_message_text(
+        '🤖 <b>AI AUTO REPAIR</b>\n\nDiagnosing selected exchanges and applying only allowlisted safe recovery actions.\n\n'
+        'This is an explicit repair action and is not part of normal scanning.', parse_mode='HTML')
+    locks = context.application.bot_data.setdefault('exchange_repair_locks', {})
+    results = []
+    for name in selected:
+        adapter = exchanges.get(name)
+        if adapter is None:
+            results.append((name, False, 'exchange is not loaded'))
+            continue
+        lock = locks.setdefault(str(name), asyncio.Lock())
+        results.append(await _ai_repair_one(name, adapter, advisor, lock))
+    await _render_results(q, '🤖 <b>AI AUTO REPAIR RESULT</b>', results,
+                          'AI cannot change credentials/configuration or execute arbitrary code. Authentication and invalid-request failures are never auto-repaired.',
+                          public=True, context=context)
 
 
 async def repair_health(update, context):
@@ -211,6 +290,8 @@ async def repair_callback(update, context):
     data = update.callback_query.data
     if data == 'repair:open':
         await repair_open(update, context)
+    elif data == 'repair:ai':
+        await repair_ai(update, context)
     elif data == 'repair:run':
         await repair_run(update, context)
     elif data == 'repair:health':
