@@ -49,13 +49,14 @@ async def build_runtime():
     def creds(name):
         p = name.upper(); return {k:v for k,v in {'apiKey':os.getenv(f'{p}_API_KEY',''),'secret':os.getenv(f'{p}_SECRET',''),'password':os.getenv(f'{p}_PASSWORD','')}.items() if v}
     ai = AIAssistant(settings.ai_api_url, settings.ai_api_key, settings.ai_model, settings.ai_timeout_seconds); await ai.start()
-    # Exchange AI recovery/self-healing is intentionally disabled in the scan path.
-    # Manual admin repair remains available from the Fix Exchanges menu.
-    recovery_advisor = ExchangeRecoveryAdvisor(ai, enabled=False, timeout_seconds=settings.ai_exchange_recovery_timeout_seconds, min_confidence=settings.ai_exchange_recovery_min_confidence)
-    exchanges = build_exchanges(settings.exchanges, creds, exchange_diagnostics := [], self_healing=False, recovery_advisor=recovery_advisor, concurrency=settings.exchange_concurrency)
+    # Automatic AI recovery/self-healing is intentionally disabled in the scan path.
+    # Users can explicitly invoke AI Auto Repair from Exchange Tools when needed.
+    scan_recovery_advisor = ExchangeRecoveryAdvisor(ai, enabled=False, timeout_seconds=settings.ai_exchange_recovery_timeout_seconds, min_confidence=settings.ai_exchange_recovery_min_confidence)
+    manual_recovery_advisor = ExchangeRecoveryAdvisor(ai, enabled=True, timeout_seconds=settings.ai_exchange_recovery_timeout_seconds, min_confidence=settings.ai_exchange_recovery_min_confidence)
+    exchanges = build_exchanges(settings.exchanges, creds, exchange_diagnostics := [], self_healing=False, recovery_advisor=scan_recovery_advisor, concurrency=settings.exchange_concurrency)
     scanner = ArbitrageScanner(exchanges, settings.exchange_concurrency, settings.scan_timeout_seconds)
     code_repair_module.MAX_CONTEXT_FILES=5; code_repair_module.MAX_FILE_CONTEXT=5000; code_repair=CodeRepairManager(ai,settings)
-    return settings,repo,exchanges,scanner,ai,code_repair,TerminalService(repo,scanner,ai,settings),exchange_diagnostics,recovery_advisor,None
+    return settings,repo,exchanges,scanner,ai,code_repair,TerminalService(repo,scanner,ai,settings),exchange_diagnostics,scan_recovery_advisor,None,manual_recovery_advisor
 
 
 def run(): asyncio.run(_run())
@@ -72,9 +73,9 @@ async def _error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def _run():
-    settings,repo,exchanges,scanner,ai,code_repair,service,exchange_diagnostics,recovery_advisor,recovery_memory=await build_runtime()
+    settings,repo,exchanges,scanner,ai,code_repair,service,exchange_diagnostics,scan_recovery_advisor,recovery_memory,manual_recovery_advisor=await build_runtime()
     app=Application.builder().token(settings.telegram_bot_token).concurrent_updates(settings.telegram_concurrent_updates).build()
-    app.bot_data.update({'settings':settings,'repo':repo,'exchanges':exchanges,'exchange_names':[n for n in settings.exchanges if n in exchanges],'scanner':scanner,'ai':ai,'code_repair':code_repair,'service':service,'exchange_diagnostics':exchange_diagnostics,'recovery_advisor':recovery_advisor,'recovery_memory':recovery_memory,'contact_active_users':set()})
+    app.bot_data.update({'settings':settings,'repo':repo,'exchanges':exchanges,'exchange_names':[n for n in settings.exchanges if n in exchanges],'scanner':scanner,'ai':ai,'code_repair':code_repair,'service':service,'exchange_diagnostics':exchange_diagnostics,'recovery_advisor':scan_recovery_advisor,'recovery_memory':recovery_memory,'manual_recovery_advisor':manual_recovery_advisor,'exchange_repair_locks':{},'contact_active_users':set()})
     app.add_handler(CallbackQueryHandler(help_callback,pattern=r'^help:')); app.add_handler(CallbackQueryHandler(contact_callback,pattern=r'^contact:'))
     app.add_handler(CallbackQueryHandler(chat_callback,pattern=r'^chat:')); app.add_handler(CallbackQueryHandler(repair_callback,pattern=r'^repair:'))
     app.add_handler(CallbackQueryHandler(dashboard_exchanges_callback,pattern=r'^exchanges$')); app.add_handler(CallbackQueryHandler(exchange_selection_callback,pattern=r'^ex:'))
