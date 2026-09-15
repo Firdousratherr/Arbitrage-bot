@@ -13,9 +13,7 @@ def _is_admin(context, user_id: int) -> bool:
 
 
 def _settings_markup(context, uid, f):
-    rows = [[('🛡️ Strict', 'val:strict'), ('🔓 Loose', 'val:loose')], [('🧠 AI Mode', 'ai')]]
-    if _is_admin(context, uid):
-        rows.append([('🛠️ Fix Exchanges', 'repair:open')])
+    rows = [[('🛡️ Strict', 'val:strict'), ('🔓 Loose', 'val:loose')], [('🧠 AI Mode', 'ai')], [('🛠️ Exchange Tools', 'repair:open')]]
     rows.append([('🏠 Dashboard', 'home')])
     return kb(rows)
 
@@ -29,7 +27,7 @@ def _settings_text(row, f, context, uid):
         '🛠️ Automatic exchange self-healing: <b>OFF</b>\n'
         '📡 Operation: <b>READ-ONLY SCANNER</b>\n\n'
         'Automatic recovery is disabled during scans to avoid adding latency.\n'
-        'Admins can repair exchanges manually from <b>Fix Exchanges</b>.\n\n'
+        'Use <b>Exchange Tools</b> for manual diagnostics; administrator-only repair controls are hidden from regular users.\n\n'
         '🛡️ <b>Strict</b> requires compatible transfer networks and contract/address matching.\n'
         '🔓 <b>Loose</b> bypasses those two checks and marks results as unverified.'
     )
@@ -81,8 +79,8 @@ async def ai_recovery_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text(
         '🛠️ <b>AUTOMATIC EXCHANGE SELF-HEALING</b>\n\n'
         'Automatic exchange self-healing has been disabled to keep scans fast and predictable.\n\n'
-        'Use <b>Fix Exchanges</b> for manual exchange repair and verification.',
-        parse_mode='HTML', reply_markup=kb([[('🛠️ Fix Exchanges', 'repair:open')], [('🏠 Dashboard', 'home')]]),
+        'Use <b>Exchange Tools</b> for manual diagnostics and administrator-only repair.',
+        parse_mode='HTML', reply_markup=kb([[('🛠️ Exchange Tools', 'repair:open')], [('🏠 Dashboard', 'home')]]),
     )
 
 
@@ -95,6 +93,6 @@ async def ai_recovery_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     await q.edit_message_text(
         '🛠️ <b>AUTOMATIC EXCHANGE SELF-HEALING</b>\n\n'
         'Automatic exchange self-healing is disabled for scan performance.\n\n'
-        'Use <b>Fix Exchanges</b> to manually repair and verify exchanges.',
-        parse_mode='HTML', reply_markup=kb([[('🛠️ Fix Exchanges', 'repair:open')], [('⬅️ Settings', 'settings')]]),
+        'Use <b>Exchange Tools</b> for manual diagnostics and administrator-only repair.',
+        parse_mode='HTML', reply_markup=kb([[('🛠️ Exchange Tools', 'repair:open')], [('⬅️ Settings', 'settings')]]),
     )
