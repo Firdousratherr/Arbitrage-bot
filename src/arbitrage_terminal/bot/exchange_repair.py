@@ -3,11 +3,16 @@ from __future__ import annotations
 import asyncio
 import html
 import json
+import time
 
 from telegram import Update
 from telegram.ext import ContextTypes
 
 from .handlers import kb
+
+USER_REPAIR_COOLDOWN = 90.0
+EXCHANGE_REPAIR_COOLDOWN = 45.0
+AI_REPAIR_TIMEOUT = 75.0
 
 
 def _is_admin(context, user_id):
@@ -130,9 +135,16 @@ async def repair_run(update: Update, context: ContextTypes.DEFAULT_TYPE, names=N
                           'Authentication/invalid-request failures are never bypassed.', context=context)
 
 
-async def _ai_repair_one(name, adapter, advisor, lock):
+async def _ai_repair_one(name, adapter, advisor, lock, context=None):
     async with lock:
+        if context is not None:
+            service = context.application.bot_data.get('service')
+            scan_locks = getattr(service, '_scan_locks', {}) if service else {}
+            if any(lock.locked() for lock in scan_locks.values()):
+                return name, False, 'a scan is active; repair skipped to protect shared exchange state'
         verified, detail = await _verify_one(name, adapter, deep=False)
+        if verified:
+            return name, True, f'already healthy · {detail}'
         health = getattr(adapter, 'health_snapshot', lambda: {})()
         state = health.get('state', 'unknown') if isinstance(health, dict) else 'unknown'
         snapshot = {
@@ -153,6 +165,8 @@ async def _ai_repair_one(name, adapter, advisor, lock):
         action = decision.recommended_action
         if action == 'quarantine':
             return name, False, f'AI recommends quarantine; no repair performed · {decision.reason[:180]}'
+        if action not in {'retry', 'repair'}:
+            return name, False, f'AI selected unsupported action {action}; no repair performed'
         if decision.retry_delay_seconds:
             await asyncio.sleep(decision.retry_delay_seconds)
         try:
@@ -182,6 +196,18 @@ async def repair_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
     selected = await _selected(context, uid)
     exchanges = context.application.bot_data['exchanges']
     advisor = context.application.bot_data.get('manual_recovery_advisor')
+    now = time.monotonic()
+    user_last = context.application.bot_data.setdefault('exchange_repair_user_last', {})
+    exchange_last = context.application.bot_data.setdefault('exchange_repair_last', {})
+    last_user = user_last.get(uid, 0.0)
+    if now - last_user < USER_REPAIR_COOLDOWN:
+        wait = max(1, int(USER_REPAIR_COOLDOWN - (now - last_user)))
+        await q.edit_message_text(f'⏳ AI Auto Repair was used recently. Please wait about {wait}s before trying again.', reply_markup=_menu(context, uid))
+        return
+    if any(lock.locked() for lock in getattr(context.application.bot_data.get('service'), '_scan_locks', {}).values()):
+        await q.edit_message_text('⏳ A scan is currently running. Please wait for it to finish before using AI Auto Repair.', reply_markup=_menu(context, uid))
+        return
+    user_last[uid] = now
     if advisor is None or not getattr(advisor, 'enabled', False):
         await q.edit_message_text('⚠️ AI Auto Repair is not available right now.', reply_markup=_menu(context, uid))
         return
@@ -196,13 +222,27 @@ async def repair_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
         'This is an explicit repair action and is not part of normal scanning.', parse_mode='HTML')
     locks = context.application.bot_data.setdefault('exchange_repair_locks', {})
     results = []
+    deadline = time.monotonic() + AI_REPAIR_TIMEOUT
     for name in selected:
+        if time.monotonic() >= deadline:
+            results.append((name, False, 'overall AI repair time budget exhausted'))
+            continue
         adapter = exchanges.get(name)
         if adapter is None:
             results.append((name, False, 'exchange is not loaded'))
             continue
-        lock = locks.setdefault(str(name), asyncio.Lock())
-        results.append(await _ai_repair_one(name, adapter, advisor, lock))
+        key = str(name).lower()
+        if time.monotonic() - exchange_last.get(key, 0.0) < EXCHANGE_REPAIR_COOLDOWN:
+            results.append((name, False, 'exchange was repaired recently; cooldown active'))
+            continue
+        lock = locks.setdefault(key, asyncio.Lock())
+        try:
+            result = await asyncio.wait_for(_ai_repair_one(name, adapter, advisor, lock, context), max(1.0, deadline - time.monotonic()))
+        except asyncio.TimeoutError:
+            result = (name, False, 'AI repair time budget exhausted')
+        results.append(result)
+        if result[1] and not result[2].startswith('already healthy'):
+            exchange_last[key] = time.monotonic()
     await _render_results(q, '🤖 <b>AI AUTO REPAIR RESULT</b>', results,
                           'AI cannot change credentials/configuration or execute arbitrary code. Authentication and invalid-request failures are never auto-repaired.',
                           public=True, context=context)
