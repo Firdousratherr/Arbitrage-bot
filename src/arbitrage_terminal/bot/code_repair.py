@@ -40,6 +40,30 @@ def _slug(text: str) -> str:
     return (value or 'repair')[:42]
 
 
+def _parse_repair_json(raw: str):
+    """Parse model JSON defensively without accepting arbitrary non-JSON content."""
+    text = (raw or '').strip()
+    if text.startswith('```'):
+        text = re.sub(r'^```(?:json)?\s*', '', text, flags=re.I)
+        text = re.sub(r'\s*```$', '', text, flags=re.S).strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as first_error:
+        # Some providers ignore JSON-only instructions and wrap the object in prose.
+        start = text.find('{')
+        if start >= 0:
+            decoder = json.JSONDecoder()
+            try:
+                result, end = decoder.raw_decode(text[start:])
+                if isinstance(result, dict) and not text[start + end:].strip():
+                    return result
+            except json.JSONDecodeError:
+                pass
+        raise RuntimeError(
+            'AI returned invalid repair JSON. Please retry the repair request; no code was changed.'
+        ) from first_error
+
+
 class CodeRepairManager:
     def __init__(self, ai, settings):
         self.ai = ai
@@ -129,20 +153,15 @@ class CodeRepairManager:
         r, _, _ = await self.ai.http.request(
             'POST', self.ai.url + '/chat/completions',
             headers={'Authorization': f'Bearer {self.ai.key}', 'Content-Type': 'application/json'},
-            json={'model': self.ai.model, 'temperature': 0.05, 'messages': [
+            json={'model': self.ai.model, 'temperature': 0.05, 'response_format': {'type': 'json_object'}, 'messages': [
                 {'role': 'system', 'content': system},
                 {'role': 'user', 'content': user},
             ]},
         )
         if r.status_code >= 400:
             raise RuntimeError(f'AI provider returned HTTP {r.status_code}: {r.text[:500]}')
-        raw = r.json()['choices'][0]['message']['content'].strip()
-        if raw.startswith('```'):
-            raw = re.sub(r'^```(?:json)?\s*|\s*```$', '', raw, flags=re.S)
-        try:
-            result = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            raise RuntimeError(f'AI returned invalid repair JSON: {exc}') from exc
+        raw = r.json()['choices'][0]['message']['content']
+        result = _parse_repair_json(raw)
         self.validate(result)
         result['branch'] = branch
         return result

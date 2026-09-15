@@ -10,8 +10,12 @@ jobs:
           python-version: '3.12'
       - run: python -m pip install --upgrade pip
       - run: pip install -e . pytest pytest-asyncio
+      - name: Compile all Python sources
+        run: python -m compileall -q src
+      - name: Import application entrypoint
+        run: python -c "import arbitrage_terminal.main; print('main import ok')"
       - run: pytest -q
       - name: Build Docker image
         run: docker build -t arbitrage-terminal:test .
       - name: Docker smoke test
-        run: docker run --rm --entrypoint python arbitrage-terminal:test -c "import arbitrage_terminal; print('import ok')"
+        run: docker run --rm --entrypoint python arbitrage-terminal:test -c "import arbitrage_terminal; import arbitrage_terminal.main; print('import ok')"

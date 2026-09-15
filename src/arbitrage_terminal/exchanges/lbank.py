@@ -9,11 +9,12 @@ from .ccxt_adapter import CcxtAdapter
 
 
 class LBankAdapter(CcxtAdapter):
-    """LBank-specific adapter using its best-bid/ask endpoint for spot tickers."""
+    """LBank-specific adapter using its best-bid/ask endpoint for spot prices."""
 
     async def get_tickers(self, symbols=None):
         self.last_ticker_symbols = set()
         self.last_ticker_count = 0
+        self.last_ticker_source = 'book_ticker'
         if not self._markets:
             await self.get_markets()
 
@@ -44,6 +45,13 @@ class LBankAdapter(CcxtAdapter):
                     {"symbol": api_symbol},
                 )
             data = response.get("data") or {}
+            # LBank documents this endpoint as a single object, but tolerate a
+            # list wrapper as well so a harmless API-shape change does not turn
+            # every quote into an empty result set.
+            if isinstance(data, list):
+                data = data[0] if data else {}
+            if not isinstance(data, dict):
+                return None
             try:
                 bid = float(data.get("bidPrice"))
                 ask = float(data.get("askPrice"))
@@ -51,8 +59,11 @@ class LBankAdapter(CcxtAdapter):
                 return None
             if bid <= 0 or ask <= 0:
                 return None
-            stamp = response.get("ts") or response.get("timestamp")
-            timestamp = datetime.fromtimestamp(float(stamp) / 1000, timezone.utc) if stamp else datetime.now(timezone.utc)
+            stamp = response.get("ts") or response.get("timestamp") or data.get("timestamp")
+            try:
+                timestamp = datetime.fromtimestamp(float(stamp) / 1000, timezone.utc) if stamp else datetime.now(timezone.utc)
+            except (TypeError, ValueError, OverflowError):
+                timestamp = datetime.now(timezone.utc)
             return Ticker(self.name, symbol, base, quote, bid, ask, 0.0, timestamp, asset_identity)
 
         results = await asyncio.gather(
@@ -60,6 +71,47 @@ class LBankAdapter(CcxtAdapter):
             return_exceptions=True,
         )
         out = [item for item in results if isinstance(item, Ticker)]
+
+        # If the specialized endpoint temporarily returns no usable quotes,
+        # fall back to CCXT's normalized bid/ask implementation before declaring
+        # the exchange healthy with zero ticker data.
+        if not out:
+            try:
+                self.last_ticker_source = 'ccxt_fallback'
+                return await super().get_tickers(wanted)
+            except Exception:
+                pass
+
+        # The best-bid/ask endpoint is fast and reliable for prices but does not
+        # consistently expose 24h volume. Enrich the already-collected quotes
+        # with one bulk CCXT ticker request when supported. This avoids an
+        # additional request per symbol and never makes volume up when it is
+        # genuinely unavailable.
+        if out and hasattr(self.client, 'fetch_tickers'):
+            try:
+                bulk = await self._call('volume_tickers', self.client.fetch_tickers, sorted(wanted))
+                volume_by_symbol = {}
+                for raw_symbol, ticker in (bulk or {}).items():
+                    if raw_symbol == 'info' or not isinstance(ticker, dict):
+                        continue
+                    try:
+                        normalized, *_ = normalize_symbol(raw_symbol)
+                        volume = float((ticker or {}).get('quoteVolume'))
+                    except (ValueError, TypeError, AttributeError):
+                        continue
+                    if volume >= 0:
+                        volume_by_symbol[normalized.upper()] = volume
+                if volume_by_symbol:
+                    out = [
+                        Ticker(t.exchange, t.symbol, t.base, t.quote, t.bid, t.ask,
+                               volume_by_symbol.get(t.symbol.upper(), t.quote_volume),
+                               t.timestamp, t.asset_identity)
+                        for t in out
+                    ]
+                    self.last_ticker_source = 'book_ticker+bulk_volume'
+            except Exception:
+                self.last_ticker_source = 'book_ticker'
+
         self.last_ticker_symbols = {t.symbol for t in out}
         self.last_ticker_count = len(out)
         return out
