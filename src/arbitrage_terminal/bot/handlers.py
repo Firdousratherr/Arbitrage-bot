@@ -19,9 +19,7 @@ async def start(update, context):
         context.user_data['await_email'] = True; await update.effective_message.reply_text('⚡ <b>Welcome to Arbitrage Terminal</b>\n\nSend your email to continue.', parse_mode='HTML'); return
     if svc.settings.require_vip and not await svc.repo.vip_active(update.effective_user.id):
         txt, markup = vip_prompt(); await update.effective_message.reply_text(txt, parse_mode='HTML', reply_markup=markup); return
-    rows = [[('🔎 Scan Arbitrage','scan'),('🏦 Exchanges','exchanges')],[('📊 Filters','filters'),('🧠 AI','ai')],[('📡 Status','status'),('📋 History','history')],[('⚙️ Settings','settings'),('💬 Arbitrage Chat','chat:open')],[('❓ Help','help:main'),('👨‍💻 Contact Developer','contact:open')]]
-    if update.effective_user.id in svc.settings.admin_ids:
-        rows.insert(-1, [('🛠️ Fix Exchanges','repair:open')])
+    rows = [[('🔎 Scan Arbitrage','scan'),('🏦 Exchanges','exchanges')],[('📊 Filters','filters'),('🧠 AI','ai')],[('📡 Status','status'),('📋 History','history')],[('⚙️ Settings','settings'),('💬 Arbitrage Chat','chat:open')],[('🛠️ Exchange Tools','repair:open')],[('❓ Help','help:main'),('👨‍💻 Contact Developer','contact:open')]]
     await update.effective_message.reply_text(dashboard(row), parse_mode='HTML', reply_markup=kb(rows))
 
 
