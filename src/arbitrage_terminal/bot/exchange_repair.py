@@ -14,36 +14,40 @@ def _is_admin(context, user_id):
     return user_id in context.application.bot_data['settings'].admin_ids
 
 
-def _menu():
-    return kb([
-        [('🛠️ Fix Selected Exchanges', 'repair:run')],
-        [('🩺 Health Status', 'repair:health'), ('🔬 Deep Diagnose', 'repair:diagnose')],
-        [('📡 Test Exchange APIs', 'repair:probe'), ('📊 Recovery Stats', 'repair:stats')],
-        [('⚠️ Fix Unhealthy Only', 'repair:unhealthy'), ('🛠️ Fix All Loaded', 'repair:all')],
-        [('⬅️ Settings', 'settings'), ('🏠 Dashboard', 'home')],
-    ])
+def _menu(context, user_id):
+    rows = [
+        [('🩺 Exchange Health', 'repair:health'), ('📡 Test Exchange APIs', 'repair:probe')],
+        [('🔬 Deep Diagnose', 'repair:diagnose')],
+    ]
+    if _is_admin(context, user_id):
+        rows += [
+            [('🛠️ Fix Selected Exchanges', 'repair:run')],
+            [('📊 Recovery Stats', 'repair:stats')],
+            [('⚠️ Fix Unhealthy Only', 'repair:unhealthy'), ('🛠️ Fix All Loaded', 'repair:all')],
+        ]
+    rows.append([('⬅️ Settings', 'settings'), ('🏠 Dashboard', 'home')])
+    return kb(rows)
 
 
 async def repair_open(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
+    uid = q.from_user.id if q else update.effective_user.id
     if q:
         await q.answer()
-        if not _is_admin(context, q.from_user.id):
-            await q.edit_message_text('⛔ Admin access required.')
-            return
-        await q.edit_message_text(
-            '🛠️ <b>EXCHANGE RECOVERY</b>\n\n'
-            'Use these tools to repair exchanges, inspect health, test live API data, '
-            'and diagnose market/ticker problems. All tools are read-only except repair actions.',
-            parse_mode='HTML', reply_markup=_menu())
+        text = (
+            '🛠️ <b>EXCHANGE TOOLS</b>\n\n'
+            'Check exchange health, test public market APIs, and diagnose market/ticker availability.\n\n'
+            '🔐 Admin-only repair controls are shown only to administrators.\n'
+            '🔒 User diagnostics never display credentials, configuration secrets, source code, or raw internal errors.'
+        )
+        await q.edit_message_text(text, parse_mode='HTML', reply_markup=_menu(context, uid))
         return
-    if not _is_admin(context, update.effective_user.id):
-        await update.effective_message.reply_text('⛔ Admin access required.')
-        return
-    await update.effective_message.reply_text(
-        '🛠️ <b>EXCHANGE RECOVERY</b>\n\n'
-        'Repair, inspect health, test APIs, and diagnose selected exchanges.',
-        parse_mode='HTML', reply_markup=_menu())
+    text = (
+        '🛠️ <b>EXCHANGE TOOLS</b>\n\n'
+        'Check exchange health, test public market APIs, and diagnose market/ticker availability.\n\n'
+        '🔐 Repair controls are available only to administrators.'
+    )
+    await update.effective_message.reply_text(text, parse_mode='HTML', reply_markup=_menu(context, uid))
 
 
 async def _selected(context, user_id):
@@ -75,13 +79,16 @@ async def _verify_one(name, adapter, deep=False):
         return False, f'{type(exc).__name__}: {str(exc)[:140]}'
 
 
-async def _render_results(q, title, results, footer=''):
+async def _render_results(q, title, results, footer='', public=False, context=None):
     lines = [title, '']
     for name, ok, detail in results:
+        if public and not ok:
+            detail = 'API test could not complete'
         lines.append(f'{"🟢" if ok else "🔴"} <b>{html.escape(str(name).title())}</b> · {html.escape(str(detail))}')
     if footer:
         lines += ['', html.escape(footer)]
-    await q.edit_message_text('\n'.join(lines), parse_mode='HTML', reply_markup=_menu())
+    uid = q.from_user.id
+    await q.edit_message_text('\n'.join(lines), parse_mode='HTML', reply_markup=_menu(context, uid))
 
 
 async def repair_run(update: Update, context: ContextTypes.DEFAULT_TYPE, names=None):
@@ -119,37 +126,46 @@ async def repair_run(update: Update, context: ContextTypes.DEFAULT_TYPE, names=N
 
     results = await asyncio.gather(*(repair_one(name) for name in selected))
     await _render_results(q, '🛠️ <b>EXCHANGE RECOVERY RESULT</b>', results,
-                          'Authentication/invalid-request failures are never bypassed.')
+                          'Authentication/invalid-request failures are never bypassed.', context=context)
 
 
 async def repair_health(update, context):
     q = update.callback_query
-    if not _is_admin(context, q.from_user.id):
-        await q.answer('Admin access required', show_alert=True); return
+    uid = q.from_user.id
     await q.answer()
-    selected = await _selected(context, q.from_user.id)
+    selected = await _selected(context, uid)
     exchanges = context.application.bot_data['exchanges']
+    admin = _is_admin(context, uid)
     lines = ['🩺 <b>EXCHANGE HEALTH</b>', '']
     for name in selected:
         adapter = exchanges.get(name)
         if adapter is None:
-            lines.append(f'🔴 <b>{html.escape(str(name).title())}</b> · not loaded'); continue
+            lines.append(f'🔴 <b>{html.escape(str(name).title())}</b> · OFFLINE'); continue
         h = adapter.health_snapshot() if hasattr(adapter, 'health_snapshot') else {}
-        lines.append(
-            f'🟢 <b>{html.escape(str(name).title())}</b> · state={html.escape(str(h.get("state", "unknown")))} · '
-            f'score={h.get("score", "?")} · failures={h.get("consecutive_failures", 0)} · '
-            f'repairs={h.get("total_repairs", 0)} · recoveries={h.get("total_recoveries", 0)}')
-        if h.get('last_error'):
-            lines.append(f'   Last error: {html.escape(str(h["last_error"])[:180])}')
-    await q.edit_message_text('\n'.join(lines), parse_mode='HTML', reply_markup=_menu())
+        if admin:
+            lines.append(
+                f'🟢 <b>{html.escape(str(name).title())}</b> · state={html.escape(str(h.get("state", "unknown")))} · '
+                f'score={h.get("score", "?")} · failures={h.get("consecutive_failures", 0)} · '
+                f'repairs={h.get("total_repairs", 0)} · recoveries={h.get("total_recoveries", 0)}')
+            if h.get('last_error'):
+                lines.append(f'   Last error: {html.escape(str(h["last_error"])[:180])}')
+        else:
+            state = str(h.get('state', 'unknown')).lower()
+            label = 'ONLINE' if state == 'healthy' else ('DEGRADED' if state in {'degraded', 'recovering'} else 'OFFLINE')
+            icon = '🟢' if label == 'ONLINE' else ('🟠' if label == 'DEGRADED' else '🔴')
+            lines.append(f'{icon} <b>{html.escape(str(name).title())}</b> · {label}')
+    if not selected:
+        lines.append('⚠️ No exchanges selected. Use Exchanges.')
+    if not admin:
+        lines += ['', '🔒 Detailed recovery counters and internal errors are admin-only.']
+    await q.edit_message_text('\n'.join(lines), parse_mode='HTML', reply_markup=_menu(context, uid))
 
 
 async def repair_probe(update, context, deep=False):
     q = update.callback_query
-    if not _is_admin(context, q.from_user.id):
-        await q.answer('Admin access required', show_alert=True); return
+    uid = q.from_user.id
     await q.answer('Testing APIs')
-    selected = await _selected(context, q.from_user.id)
+    selected = await _selected(context, uid)
     exchanges = context.application.bot_data['exchanges']
     results = []
     for name in selected:
@@ -159,7 +175,7 @@ async def repair_probe(update, context, deep=False):
         results.append((name, *(await _verify_one(name, adapter, deep=deep))))
     title = '🔬 <b>DEEP EXCHANGE DIAGNOSIS</b>' if deep else '📡 <b>EXCHANGE API TEST</b>'
     await _render_results(q, title, results,
-                          'Diagnosis checks market discovery and a bounded live bid/ask sample.')
+                          'Checks public market discovery and a bounded live bid/ask sample.', public=not _is_admin(context, uid), context=context)
 
 
 async def repair_stats(update, context):
@@ -174,7 +190,7 @@ async def repair_stats(update, context):
         adapter = exchanges.get(name)
         h = adapter.health_snapshot() if adapter and hasattr(adapter, 'health_snapshot') else {}
         lines.append(f'• <b>{html.escape(str(name).title())}</b>: failures={h.get("total_failures", 0)}, repairs={h.get("total_repairs", 0)}, recoveries={h.get("total_recoveries", 0)}, score={h.get("score", "?")}')
-    await q.edit_message_text('\n'.join(lines), parse_mode='HTML', reply_markup=_menu())
+    await q.edit_message_text('\n'.join(lines), parse_mode='HTML', reply_markup=_menu(context, q.from_user.id))
 
 
 async def _names_by_health(context, user_id):
@@ -206,6 +222,8 @@ async def repair_callback(update, context):
     elif data == 'repair:stats':
         await repair_stats(update, context)
     elif data == 'repair:unhealthy':
+        if not _is_admin(context, update.callback_query.from_user.id):
+            await update.callback_query.answer('Admin access required', show_alert=True); return
         names = await _names_by_health(context, update.callback_query.from_user.id)
         await repair_run(update, context, names=names)
     elif data == 'repair:all':
