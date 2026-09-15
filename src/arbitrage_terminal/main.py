@@ -26,7 +26,6 @@ from .bot.live_scan import live_scan_callback
 from .bot.results import results_page_callback, results_detail_callback
 from .bot.user_chat import chat_callback, chat_command
 from .exchanges.registry import build_exchanges
-from .exchanges.recovery_memory import RecoveryMemory
 from .infrastructure.config import get_settings
 from .infrastructure.logging import configure
 from .infrastructure.repository import Repository
@@ -50,12 +49,13 @@ async def build_runtime():
     def creds(name):
         p = name.upper(); return {k:v for k,v in {'apiKey':os.getenv(f'{p}_API_KEY',''),'secret':os.getenv(f'{p}_SECRET',''),'password':os.getenv(f'{p}_PASSWORD','')}.items() if v}
     ai = AIAssistant(settings.ai_api_url, settings.ai_api_key, settings.ai_model, settings.ai_timeout_seconds); await ai.start()
-    recovery_advisor = ExchangeRecoveryAdvisor(ai, enabled=settings.ai_exchange_recovery_enabled, timeout_seconds=settings.ai_exchange_recovery_timeout_seconds, min_confidence=settings.ai_exchange_recovery_min_confidence)
-    recovery_memory = RecoveryMemory(repo); exchange_diagnostics = []
-    exchanges = build_exchanges(settings.exchanges, creds, exchange_diagnostics, recovery_advisor=recovery_advisor, recovery_memory=recovery_memory, concurrency=settings.exchange_concurrency)
+    # Exchange AI recovery/self-healing is intentionally disabled in the scan path.
+    # Manual admin repair remains available from the Fix Exchanges menu.
+    recovery_advisor = ExchangeRecoveryAdvisor(ai, enabled=False, timeout_seconds=settings.ai_exchange_recovery_timeout_seconds, min_confidence=settings.ai_exchange_recovery_min_confidence)
+    exchanges = build_exchanges(settings.exchanges, creds, exchange_diagnostics := [], self_healing=False, recovery_advisor=recovery_advisor, concurrency=settings.exchange_concurrency)
     scanner = ArbitrageScanner(exchanges, settings.exchange_concurrency, settings.scan_timeout_seconds)
     code_repair_module.MAX_CONTEXT_FILES=5; code_repair_module.MAX_FILE_CONTEXT=5000; code_repair=CodeRepairManager(ai,settings)
-    return settings,repo,exchanges,scanner,ai,code_repair,TerminalService(repo,scanner,ai,settings),exchange_diagnostics,recovery_advisor,recovery_memory
+    return settings,repo,exchanges,scanner,ai,code_repair,TerminalService(repo,scanner,ai,settings),exchange_diagnostics,recovery_advisor,None
 
 
 def run(): asyncio.run(_run())
