@@ -69,7 +69,7 @@ async def validation_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     row = await svc.get_user(uid)
     f = svc.repo.filters_from_row(row)
     await q.edit_message_text(
-        f'✅ Validation mode changed to <b>{html.escape(mode.upper())}.\n\n' + _settings_text(row, f, context, uid),
+        f'✅ Validation mode changed to <b>{html.escape(mode.upper())}</b>.\n\n' + _settings_text(row, f, context, uid),
         parse_mode='HTML', reply_markup=_settings_markup(context, uid, f),
     )
 
