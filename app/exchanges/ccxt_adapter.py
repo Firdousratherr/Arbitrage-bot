@@ -26,7 +26,15 @@ class CcxtExchangeAdapter:
         self._exchange_id = name
         self.name = public_name or name
         exchange_class = getattr(ccxt, name)
-        self.client = exchange_class({"enableRateLimit": True, **(credentials or {})})
+        self.client = exchange_class({
+            "enableRateLimit": True,
+            "timeout": 15000,
+            "options": {
+                "maxRetriesOnFailure": 2,
+                "maxRetriesOnFailureDelay": 1000,
+            },
+            **(credentials or {}),
+        })
         self.last_fetch_stats: dict[str, int] = {
             "raw": 0, "dropped_bid_ask": 0, "usable": 0, "fallback_used": 0,
             "targeted_recovery_used": 0, "requested_symbols": 0,
@@ -58,10 +66,24 @@ class CcxtExchangeAdapter:
                 data = await self.client.fetch_tickers()
             elif requested:
                 data = {}
-                for start in range(0, len(requested), self.TICKER_SYMBOL_BATCH_SIZE):
-                    batch = requested[start:start + self.TICKER_SYMBOL_BATCH_SIZE]
-                    response = await self.client.fetch_tickers(batch)
-                    data.update(response or {})
+                # Large scans are much faster on exchanges that expose a native
+                # all-tickers endpoint: one request can replace dozens of 100-symbol
+                # batches. CCXT explicitly exposes fetchTickers capability for this.
+                use_all_tickers = (
+                    len(requested) > 500
+                    and bool(self.client.has.get("fetchTickers"))
+                    and self._exchange_id not in self.BULK_SYMBOL_FILTER_IGNORED
+                )
+                if use_all_tickers:
+                    try:
+                        data = await self.client.fetch_tickers()
+                    except Exception as exc:
+                        logger.info("%s all-ticker request unavailable, falling back to symbol batches: %s: %s", self.name, type(exc).__name__, exc)
+                if not data:
+                    for start in range(0, len(requested), self.TICKER_SYMBOL_BATCH_SIZE):
+                        batch = requested[start:start + self.TICKER_SYMBOL_BATCH_SIZE]
+                        response = await self.client.fetch_tickers(batch)
+                        data.update(response or {})
             else:
                 data = await self.client.fetch_tickers()
 
