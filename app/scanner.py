@@ -29,8 +29,10 @@ class Scanner:
         self.history = OpportunityHistory(max_points=12)
 
     async def _fetch(self, exchange, symbols: list[str] | None = None) -> list[Ticker]:
-        async with self.semaphore:
-            return await exchange.fetch_tickers(symbols)
+        # One coroutine is issued per exchange. CCXT already rate-limits each
+        # exchange instance independently, so a global semaphore only serialized
+        # unrelated exchanges and made a 15-exchange scan unnecessarily slow.
+        return await exchange.fetch_tickers(symbols)
 
     async def _load_market_symbols(self, active_exchanges: dict) -> tuple[dict[str, set[str]], dict[str, str]]:
         async def _one(name: str, exchange):
