@@ -72,8 +72,20 @@ class Scanner:
             return []
 
         market_symbols, market_errors = await self._load_market_symbols(active_exchanges)
+        # A broken exchange must not block comparisons between the healthy exchanges.
+        # The previous all-exchange intersection turned one failed market-discovery
+        # request into a zero-opportunity scan. Only exchanges with usable market
+        # discovery participate in the common-market calculation; failed exchanges
+        # remain visible in diagnostics.
+        healthy_market_sets = [
+            market_symbols[name] for name in active_exchanges
+            if name not in market_errors and market_symbols[name]
+        ]
         all_market_sets = [market_symbols[name] for name in active_exchanges]
-        common_market_symbols = set.intersection(*all_market_sets) if all_market_sets and all(all_market_sets) else set()
+        common_market_symbols = (
+            set.intersection(*healthy_market_sets)
+            if healthy_market_sets else set()
+        )
         union_market_symbols = set().union(*all_market_sets) if all_market_sets else set()
         listing_difference_symbols = len(union_market_symbols - common_market_symbols)
 
