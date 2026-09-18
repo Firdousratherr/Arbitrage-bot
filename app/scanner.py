@@ -136,7 +136,10 @@ class Scanner:
             if not recover:
                 return name, []
             try:
-                recovered = await recover(missing)
+                # Recovery is intentionally bounded. Bulk ticker feeds can omit bid/ask for thousands of symbols;
+                # probing every missing symbol with order-book requests makes a scan appear hung and can trigger
+                # exchange rate limits. Recover only a small sample; the normal bulk feed remains the primary path.
+                recovered = await recover(missing, max_symbols=50)
                 return name, recovered
             except Exception as exc:
                 logger.warning("%s targeted recovery failed: %s: %s", name, type(exc).__name__, exc)
@@ -180,37 +183,57 @@ class Scanner:
         filtered_opportunities = 0
         observed_at = datetime.now(UTC).isoformat()
 
+        # Fee metadata is exchange-level/market metadata, not live per-symbol data.
+        # Loading it inside the symbol loop caused thousands of repeated CCXT calls and
+        # was the main source of scan latency. Fetch fee maps once per exchange instead.
+        fee_maps: dict[str, dict[str, float]] = {}
+        async def _load_fee_map(name: str, exchange) -> tuple[str, dict[str, float]]:
+            try:
+                bulk = getattr(exchange, "get_taker_fees", None)
+                if bulk:
+                    return name, await bulk(by_symbol.keys())
+                return name, {}
+            except Exception as exc:
+                logger.debug("%s bulk fee metadata failed: %s: %s", name, exc)
+                return name, {}
+
+        fee_results = await asyncio.gather(
+            *(_load_fee_map(name, exchange) for name, exchange in active_exchanges.items()),
+            return_exceptions=True,
+        )
+        for item in fee_results:
+            if isinstance(item, Exception):
+                continue
+            name, values = item
+            fee_maps[name] = values
+
         for symbol, tickers in by_symbol.items():
             valid_tickers = [ticker for ticker in tickers if ticker.ask > 0 and ticker.bid > 0]
             if len(valid_tickers) < 2:
                 continue
-            pairs = [(buy, sell) for buy in valid_tickers for sell in valid_tickers if buy.exchange != sell.exchange]
-            if not pairs:
-                continue
-            buy, sell = max(pairs, key=lambda pair: (pair[1].bid - pair[0].ask) / pair[0].ask)
+
+            # Find the best cross-exchange route without constructing every ordered pair.
+            # This changes the hot path from O(n²) comparisons per symbol to a tiny
+            # top-of-book candidate set while preserving the best valid route.
+            best_buy = min(valid_tickers, key=lambda ticker: ticker.ask)
+            best_sell = max(valid_tickers, key=lambda ticker: ticker.bid)
+            if best_buy.exchange == best_sell.exchange:
+                buys = sorted(valid_tickers, key=lambda ticker: ticker.ask)[:2]
+                sells = sorted(valid_tickers, key=lambda ticker: ticker.bid, reverse=True)[:2]
+                candidates = [(buy, sell) for buy in buys for sell in sells if buy.exchange != sell.exchange]
+                if not candidates:
+                    continue
+                buy, sell = max(candidates, key=lambda pair: (pair[1].bid - pair[0].ask) / pair[0].ask)
+            else:
+                buy, sell = best_buy, best_sell
+
             raw_spread = ((sell.bid - buy.ask) / buy.ask) * 100
             if raw_spread <= 0:
                 continue
             positive_spread_symbols += 1
 
-            buy_fee_pct = 0.0
-            sell_fee_pct = 0.0
-            try:
-                buy_exchange = self.exchanges.get(buy.exchange)
-                sell_exchange = self.exchanges.get(sell.exchange)
-                if buy_exchange and sell_exchange:
-                    fees = await asyncio.gather(
-                        buy_exchange.get_taker_fee(symbol),
-                        sell_exchange.get_taker_fee(symbol),
-                        return_exceptions=True,
-                    )
-                    buy_fee_pct = float(fees[0]) * 100 if not isinstance(fees[0], Exception) else 0.1
-                    sell_fee_pct = float(fees[1]) * 100 if not isinstance(fees[1], Exception) else 0.1
-            except Exception:
-                logger.debug("fee calculation failed for %s, using defaults", symbol)
-                buy_fee_pct = 0.1
-                sell_fee_pct = 0.1
-
+            buy_fee_pct = fee_maps.get(buy.exchange, {}).get(symbol, 0.001) * 100
+            sell_fee_pct = fee_maps.get(sell.exchange, {}).get(symbol, 0.001) * 100
             net_profit = raw_spread - buy_fee_pct - sell_fee_pct
             if net_profit > 0:
                 fee_positive_spreads += 1
