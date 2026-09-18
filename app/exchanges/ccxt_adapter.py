@@ -33,6 +33,7 @@ class CcxtExchangeAdapter:
         }
         self.last_fetch_error: str | None = None
         self.last_fetch_symbols: dict[str, str] = {}
+        self._taker_fee_cache: dict[str, float] = {}
 
     @staticmethod
     def _is_active_spot_market(market: dict[str, Any]) -> bool:
@@ -248,6 +249,32 @@ class CcxtExchangeAdapter:
 
     async def fetch_order_book(self, symbol: str, limit: int = 10) -> dict[str, Any]:
         return await self.client.fetch_order_book(symbol, limit)
+
+    async def get_taker_fees(self, symbols) -> dict[str, float]:
+        """Return cached market taker fees with one market-metadata load per exchange."""
+        try:
+            await self.client.load_markets()
+            markets = self.client.markets or {}
+            default_fee = self.client.fees.get("trading", {}).get("taker", 0.001)
+            result: dict[str, float] = {}
+            for symbol in symbols:
+                if symbol in self._taker_fee_cache:
+                    result[symbol] = self._taker_fee_cache[symbol]
+                    continue
+                market = markets.get(symbol)
+                fee = market.get("taker") if market else None
+                if fee is None:
+                    fee = default_fee
+                try:
+                    fee_value = float(fee)
+                except (TypeError, ValueError):
+                    fee_value = 0.001
+                self._taker_fee_cache[symbol] = fee_value
+                result[symbol] = fee_value
+            return result
+        except Exception as exc:
+            logger.info("%s bulk fee metadata unavailable: %s", self.name, exc)
+            return {symbol: self._taker_fee_cache.get(symbol, 0.001) for symbol in symbols}
 
     async def get_taker_fee(self, symbol: str) -> float:
         try:
