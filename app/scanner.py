@@ -174,7 +174,19 @@ class Scanner:
             for ticker in tickers:
                 if ticker.ask > 0 and ticker.bid > 0 and ticker.exchange in valid_by_exchange:
                     valid_by_exchange[ticker.exchange].add(symbol)
-        common_symbols = set.intersection(*valid_by_exchange.values()) if valid_by_exchange else set()
+
+        # A failed exchange has no ticker set, but it must not erase otherwise
+        # valid arbitrage routes between healthy exchanges. Build the executable
+        # common set from exchanges that actually returned usable ticker data.
+        healthy_names = [
+            name for name in active_exchanges
+            if exchange_status.get(name, {}).get("status") in {"ok", "partial"}
+            and valid_by_exchange.get(name)
+        ]
+        common_symbols = (
+            set.intersection(*(valid_by_exchange[name] for name in healthy_names))
+            if len(healthy_names) >= 2 else set()
+        )
 
         # Only report actionable data gaps for markets that are actually listed
         # on every selected exchange. A symbol listed on one exchange but absent
