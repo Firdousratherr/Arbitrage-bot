@@ -114,15 +114,27 @@ class Scanner:
             return []
 
         requested_symbols = sorted(common_market_symbols)
+
+        # Only healthy market-discovery exchanges participate in the ticker fetch.
+        # A broken discovery endpoint should remain visible in diagnostics, but it
+        # must not be allowed to contaminate or stall the healthy comparison route.
+        ticker_exchanges = {
+            name: exchange
+            for name, exchange in active_exchanges.items()
+            if name not in market_errors and market_symbols.get(name)
+        }
         fetched = await asyncio.gather(
-            *(self._fetch(exchange, requested_symbols) for exchange in active_exchanges.values()),
+            *(self._fetch(exchange, requested_symbols) for exchange in ticker_exchanges.values()),
             return_exceptions=True,
         )
         by_symbol: dict[str, list[Ticker]] = {}
         successful_exchanges = 0
-        exchange_status: dict[str, dict] = {}
+        exchange_status: dict[str, dict] = {
+            name: {"status": "market discovery failed", "error": market_errors[name]}
+            for name in market_errors
+        }
 
-        for name, exchange, result in zip(active_exchanges.keys(), active_exchanges.values(), fetched):
+        for name, exchange, result in zip(ticker_exchanges.keys(), ticker_exchanges.values(), fetched):
             missing_symbols = getattr(exchange, "last_fetch_symbols", {}) or {}
             if isinstance(result, Exception):
                 exchange_status[name] = {"status": "fetch failed", "error": f"{type(result).__name__}: {result}"}
@@ -159,7 +171,7 @@ class Scanner:
                 logger.warning("%s targeted recovery failed: %s: %s", name, type(exc).__name__, exc)
                 return name, []
 
-        recovery_results = await asyncio.gather(*(_recover(name, exchange) for name, exchange in active_exchanges.items()))
+        recovery_results = await asyncio.gather(*(_recover(name, exchange) for name, exchange in ticker_exchanges.items()))
         for name, recovered in recovery_results:
             added = self._merge_tickers(by_symbol, recovered)
             if name in exchange_status:
