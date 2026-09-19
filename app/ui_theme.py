@@ -84,7 +84,7 @@ def exchange_picker(selected: list[str], available: list[str]) -> tuple[str, Inl
     return screen(
         "🌐 EXCHANGE ROUTE",
         "Select two or more exchanges",
-        [f"Selected: <b>{len(chosen)} / {len(available)}</b>"],
+        [f"Selected: <b>{len(chosen)}</b> / {len(available)}"],
     ), nav(*buttons, columns=2)
 
 
