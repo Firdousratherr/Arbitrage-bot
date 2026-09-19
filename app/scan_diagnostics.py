@@ -10,9 +10,12 @@ _last_filter_rejections: dict[str, str] = {}
 
 
 def set_last_scan_diagnostics(diagnostics: dict | list[dict]) -> None:
-    global _last_scan_diagnostics
+    global _last_scan_diagnostics, _last_filter_rejections
     with _lock:
         if isinstance(diagnostics, list):
+            # List-form diagnostics are direct snapshots used by tests/manual
+            # diagnostics. Do not leak filter rejections from an earlier scan.
+            _last_filter_rejections = {}
             _last_scan_diagnostics = {"summary": {}, "gaps": deepcopy(diagnostics)}
         else:
             _last_scan_diagnostics = deepcopy(diagnostics)
