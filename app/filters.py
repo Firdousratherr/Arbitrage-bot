@@ -44,38 +44,50 @@ def _effective_profit(opportunity, filters: dict[str, Any]) -> float:
     return float(opportunity.net_profit if filters.get("fee_adjusted", True) else opportunity.raw_spread)
 
 
+def _diagnostic_reason(opportunity: Any, reason: str) -> str:
+    """Add route/spread context so a rejected signal remains actionable in diagnostics."""
+    raw = float(getattr(opportunity, "raw_spread", 0.0))
+    net = float(getattr(opportunity, "net_profit", 0.0))
+    buy = str(getattr(opportunity, "buy_exchange", "?"))
+    sell = str(getattr(opportunity, "sell_exchange", "?"))
+    return f"gap {raw:.2f}% ({buy}→{sell}) • net {net:.2f}% • rejected: {reason}"
+
+
 def match_reason(opportunity, filters: dict[str, Any]) -> str | None:
     raw = float(opportunity.raw_spread)
     profit = _effective_profit(opportunity, filters)
     if not filters["min_profit"] <= profit <= filters["max_profit"]:
         metric = "net profit" if filters.get("fee_adjusted", True) else "spread"
         reason = f"{metric} {profit:.2f}% outside {filters['min_profit']:.2f}%–{filters['max_profit']:.2f}%"
+        reason = _diagnostic_reason(opportunity, reason)
         _record_rejection(opportunity, reason)
         return reason
     if not filters["min_spread"] <= raw <= filters["max_spread"]:
         reason = f"spread {raw:.2f}% outside {filters['min_spread']:.2f}%–{filters['max_spread']:.2f}%"
+        reason = _diagnostic_reason(opportunity, reason)
         _record_rejection(opportunity, reason)
         return reason
     volume = min(float(opportunity.volume_buy or 0), float(opportunity.volume_sell or 0))
     if volume < filters["min_volume"]:
         reason = f"volume ${volume:,.0f} below ${filters['min_volume']:,.0f} minimum"
+        reason = _diagnostic_reason(opportunity, reason)
         _record_rejection(opportunity, reason)
         return reason
     symbol = opportunity.symbol.upper()
     watchlist = {item.upper() for item in filters["watchlist"]}
     if watchlist and symbol not in watchlist:
-        reason = "not in watchlist"
+        reason = _diagnostic_reason(opportunity, "not in watchlist")
         _record_rejection(opportunity, reason)
         return reason
     if symbol in {item.upper() for item in filters["blacklist"]}:
-        reason = "blacklisted symbol"
+        reason = _diagnostic_reason(opportunity, "blacklisted symbol")
         _record_rejection(opportunity, reason)
         return reason
     quote_currency = str(filters.get("quote_currency") or "").upper()
     if quote_currency:
         quote = symbol.split("/", 1)[1].split(":", 1)[0] if "/" in symbol else ""
         if quote and quote != quote_currency:
-            reason = f"quote currency {quote} != {quote_currency}"
+            reason = _diagnostic_reason(opportunity, f"quote currency {quote} != {quote_currency}")
             _record_rejection(opportunity, reason)
             return reason
     return None

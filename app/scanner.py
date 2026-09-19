@@ -29,8 +29,10 @@ class Scanner:
         self.history = OpportunityHistory(max_points=12)
 
     async def _fetch(self, exchange, symbols: list[str] | None = None) -> list[Ticker]:
-        async with self.semaphore:
-            return await exchange.fetch_tickers(symbols)
+        # One coroutine is issued per exchange. CCXT already rate-limits each
+        # exchange instance independently, so a global semaphore only serialized
+        # unrelated exchanges and made a 15-exchange scan unnecessarily slow.
+        return await exchange.fetch_tickers(symbols)
 
     async def _load_market_symbols(self, active_exchanges: dict) -> tuple[dict[str, set[str]], dict[str, str]]:
         async def _one(name: str, exchange):
@@ -72,8 +74,20 @@ class Scanner:
             return []
 
         market_symbols, market_errors = await self._load_market_symbols(active_exchanges)
+        # A broken exchange must not block comparisons between the healthy exchanges.
+        # The previous all-exchange intersection turned one failed market-discovery
+        # request into a zero-opportunity scan. Only exchanges with usable market
+        # discovery participate in the common-market calculation; failed exchanges
+        # remain visible in diagnostics.
+        healthy_market_sets = [
+            market_symbols[name] for name in active_exchanges
+            if name not in market_errors and market_symbols[name]
+        ]
         all_market_sets = [market_symbols[name] for name in active_exchanges]
-        common_market_symbols = set.intersection(*all_market_sets) if all_market_sets and all(all_market_sets) else set()
+        common_market_symbols = (
+            set.intersection(*healthy_market_sets)
+            if healthy_market_sets else set()
+        )
         union_market_symbols = set().union(*all_market_sets) if all_market_sets else set()
         listing_difference_symbols = len(union_market_symbols - common_market_symbols)
 
@@ -100,15 +114,27 @@ class Scanner:
             return []
 
         requested_symbols = sorted(common_market_symbols)
+
+        # Only healthy market-discovery exchanges participate in the ticker fetch.
+        # A broken discovery endpoint should remain visible in diagnostics, but it
+        # must not be allowed to contaminate or stall the healthy comparison route.
+        ticker_exchanges = {
+            name: exchange
+            for name, exchange in active_exchanges.items()
+            if name not in market_errors and market_symbols.get(name)
+        }
         fetched = await asyncio.gather(
-            *(self._fetch(exchange, requested_symbols) for exchange in active_exchanges.values()),
+            *(self._fetch(exchange, requested_symbols) for exchange in ticker_exchanges.values()),
             return_exceptions=True,
         )
         by_symbol: dict[str, list[Ticker]] = {}
         successful_exchanges = 0
-        exchange_status: dict[str, dict] = {}
+        exchange_status: dict[str, dict] = {
+            name: {"status": "market discovery failed", "error": market_errors[name]}
+            for name in market_errors
+        }
 
-        for name, exchange, result in zip(active_exchanges.keys(), active_exchanges.values(), fetched):
+        for name, exchange, result in zip(ticker_exchanges.keys(), ticker_exchanges.values(), fetched):
             missing_symbols = getattr(exchange, "last_fetch_symbols", {}) or {}
             if isinstance(result, Exception):
                 exchange_status[name] = {"status": "fetch failed", "error": f"{type(result).__name__}: {result}"}
@@ -136,13 +162,16 @@ class Scanner:
             if not recover:
                 return name, []
             try:
-                recovered = await recover(missing)
+                # Recovery is intentionally bounded. Bulk ticker feeds can omit bid/ask for thousands of symbols;
+                # probing every missing symbol with order-book requests makes a scan appear hung and can trigger
+                # exchange rate limits. Recover only a small sample; the normal bulk feed remains the primary path.
+                recovered = await recover(missing, max_symbols=50)
                 return name, recovered
             except Exception as exc:
                 logger.warning("%s targeted recovery failed: %s: %s", name, type(exc).__name__, exc)
                 return name, []
 
-        recovery_results = await asyncio.gather(*(_recover(name, exchange) for name, exchange in active_exchanges.items()))
+        recovery_results = await asyncio.gather(*(_recover(name, exchange) for name, exchange in ticker_exchanges.items()))
         for name, recovered in recovery_results:
             added = self._merge_tickers(by_symbol, recovered)
             if name in exchange_status:
@@ -157,7 +186,19 @@ class Scanner:
             for ticker in tickers:
                 if ticker.ask > 0 and ticker.bid > 0 and ticker.exchange in valid_by_exchange:
                     valid_by_exchange[ticker.exchange].add(symbol)
-        common_symbols = set.intersection(*valid_by_exchange.values()) if valid_by_exchange else set()
+
+        # A failed exchange has no ticker set, but it must not erase otherwise
+        # valid arbitrage routes between healthy exchanges. Build the executable
+        # common set from exchanges that actually returned usable ticker data.
+        healthy_names = [
+            name for name in active_exchanges
+            if exchange_status.get(name, {}).get("status") in {"ok", "partial"}
+            and valid_by_exchange.get(name)
+        ]
+        common_symbols = (
+            set.intersection(*(valid_by_exchange[name] for name in healthy_names))
+            if len(healthy_names) >= 2 else set()
+        )
 
         # Only report actionable data gaps for markets that are actually listed
         # on every selected exchange. A symbol listed on one exchange but absent
@@ -180,37 +221,57 @@ class Scanner:
         filtered_opportunities = 0
         observed_at = datetime.now(UTC).isoformat()
 
+        # Fee metadata is exchange-level/market metadata, not live per-symbol data.
+        # Loading it inside the symbol loop caused thousands of repeated CCXT calls and
+        # was the main source of scan latency. Fetch fee maps once per exchange instead.
+        fee_maps: dict[str, dict[str, float]] = {}
+        async def _load_fee_map(name: str, exchange) -> tuple[str, dict[str, float]]:
+            try:
+                bulk = getattr(exchange, "get_taker_fees", None)
+                if bulk:
+                    return name, await bulk(by_symbol.keys())
+                return name, {}
+            except Exception as exc:
+                logger.debug("%s bulk fee metadata failed: %s: %s", name, exc)
+                return name, {}
+
+        fee_results = await asyncio.gather(
+            *(_load_fee_map(name, exchange) for name, exchange in active_exchanges.items()),
+            return_exceptions=True,
+        )
+        for item in fee_results:
+            if isinstance(item, Exception):
+                continue
+            name, values = item
+            fee_maps[name] = values
+
         for symbol, tickers in by_symbol.items():
             valid_tickers = [ticker for ticker in tickers if ticker.ask > 0 and ticker.bid > 0]
             if len(valid_tickers) < 2:
                 continue
-            pairs = [(buy, sell) for buy in valid_tickers for sell in valid_tickers if buy.exchange != sell.exchange]
-            if not pairs:
-                continue
-            buy, sell = max(pairs, key=lambda pair: (pair[1].bid - pair[0].ask) / pair[0].ask)
+
+            # Find the best cross-exchange route without constructing every ordered pair.
+            # This changes the hot path from O(n²) comparisons per symbol to a tiny
+            # top-of-book candidate set while preserving the best valid route.
+            best_buy = min(valid_tickers, key=lambda ticker: ticker.ask)
+            best_sell = max(valid_tickers, key=lambda ticker: ticker.bid)
+            if best_buy.exchange == best_sell.exchange:
+                buys = sorted(valid_tickers, key=lambda ticker: ticker.ask)[:2]
+                sells = sorted(valid_tickers, key=lambda ticker: ticker.bid, reverse=True)[:2]
+                candidates = [(buy, sell) for buy in buys for sell in sells if buy.exchange != sell.exchange]
+                if not candidates:
+                    continue
+                buy, sell = max(candidates, key=lambda pair: (pair[1].bid - pair[0].ask) / pair[0].ask)
+            else:
+                buy, sell = best_buy, best_sell
+
             raw_spread = ((sell.bid - buy.ask) / buy.ask) * 100
             if raw_spread <= 0:
                 continue
             positive_spread_symbols += 1
 
-            buy_fee_pct = 0.0
-            sell_fee_pct = 0.0
-            try:
-                buy_exchange = self.exchanges.get(buy.exchange)
-                sell_exchange = self.exchanges.get(sell.exchange)
-                if buy_exchange and sell_exchange:
-                    fees = await asyncio.gather(
-                        buy_exchange.get_taker_fee(symbol),
-                        sell_exchange.get_taker_fee(symbol),
-                        return_exceptions=True,
-                    )
-                    buy_fee_pct = float(fees[0]) * 100 if not isinstance(fees[0], Exception) else 0.1
-                    sell_fee_pct = float(fees[1]) * 100 if not isinstance(fees[1], Exception) else 0.1
-            except Exception:
-                logger.debug("fee calculation failed for %s, using defaults", symbol)
-                buy_fee_pct = 0.1
-                sell_fee_pct = 0.1
-
+            buy_fee_pct = fee_maps.get(buy.exchange, {}).get(symbol, 0.001) * 100
+            sell_fee_pct = fee_maps.get(sell.exchange, {}).get(symbol, 0.001) * 100
             net_profit = raw_spread - buy_fee_pct - sell_fee_pct
             if net_profit > 0:
                 fee_positive_spreads += 1

@@ -26,13 +26,22 @@ class CcxtExchangeAdapter:
         self._exchange_id = name
         self.name = public_name or name
         exchange_class = getattr(ccxt, name)
-        self.client = exchange_class({"enableRateLimit": True, **(credentials or {})})
+        self.client = exchange_class({
+            "enableRateLimit": True,
+            "timeout": 15000,
+            "options": {
+                "maxRetriesOnFailure": 2,
+                "maxRetriesOnFailureDelay": 1000,
+            },
+            **(credentials or {}),
+        })
         self.last_fetch_stats: dict[str, int] = {
             "raw": 0, "dropped_bid_ask": 0, "usable": 0, "fallback_used": 0,
             "targeted_recovery_used": 0, "requested_symbols": 0,
         }
         self.last_fetch_error: str | None = None
         self.last_fetch_symbols: dict[str, str] = {}
+        self._taker_fee_cache: dict[str, float] = {}
 
     @staticmethod
     def _is_active_spot_market(market: dict[str, Any]) -> bool:
@@ -57,10 +66,24 @@ class CcxtExchangeAdapter:
                 data = await self.client.fetch_tickers()
             elif requested:
                 data = {}
-                for start in range(0, len(requested), self.TICKER_SYMBOL_BATCH_SIZE):
-                    batch = requested[start:start + self.TICKER_SYMBOL_BATCH_SIZE]
-                    response = await self.client.fetch_tickers(batch)
-                    data.update(response or {})
+                # Large scans are much faster on exchanges that expose a native
+                # all-tickers endpoint: one request can replace dozens of 100-symbol
+                # batches. CCXT explicitly exposes fetchTickers capability for this.
+                use_all_tickers = (
+                    len(requested) > 500
+                    and bool(self.client.has.get("fetchTickers"))
+                    and self._exchange_id not in self.BULK_SYMBOL_FILTER_IGNORED
+                )
+                if use_all_tickers:
+                    try:
+                        data = await self.client.fetch_tickers()
+                    except Exception as exc:
+                        logger.info("%s all-ticker request unavailable, falling back to symbol batches: %s: %s", self.name, type(exc).__name__, exc)
+                if not data:
+                    for start in range(0, len(requested), self.TICKER_SYMBOL_BATCH_SIZE):
+                        batch = requested[start:start + self.TICKER_SYMBOL_BATCH_SIZE]
+                        response = await self.client.fetch_tickers(batch)
+                        data.update(response or {})
             else:
                 data = await self.client.fetch_tickers()
 
@@ -248,6 +271,32 @@ class CcxtExchangeAdapter:
 
     async def fetch_order_book(self, symbol: str, limit: int = 10) -> dict[str, Any]:
         return await self.client.fetch_order_book(symbol, limit)
+
+    async def get_taker_fees(self, symbols) -> dict[str, float]:
+        """Return cached market taker fees with one market-metadata load per exchange."""
+        try:
+            await self.client.load_markets()
+            markets = self.client.markets or {}
+            default_fee = self.client.fees.get("trading", {}).get("taker", 0.001)
+            result: dict[str, float] = {}
+            for symbol in symbols:
+                if symbol in self._taker_fee_cache:
+                    result[symbol] = self._taker_fee_cache[symbol]
+                    continue
+                market = markets.get(symbol)
+                fee = market.get("taker") if market else None
+                if fee is None:
+                    fee = default_fee
+                try:
+                    fee_value = float(fee)
+                except (TypeError, ValueError):
+                    fee_value = 0.001
+                self._taker_fee_cache[symbol] = fee_value
+                result[symbol] = fee_value
+            return result
+        except Exception as exc:
+            logger.info("%s bulk fee metadata unavailable: %s", self.name, exc)
+            return {symbol: self._taker_fee_cache.get(symbol, 0.001) for symbol in symbols}
 
     async def get_taker_fee(self, symbol: str) -> float:
         try:
