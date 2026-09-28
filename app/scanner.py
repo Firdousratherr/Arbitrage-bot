@@ -148,6 +148,11 @@ class Scanner:
 
         for name, exchange, result in zip(ticker_exchanges.keys(), ticker_exchanges.values(), fetched):
             missing_symbols = getattr(exchange, "last_fetch_symbols", {}) or {}
+            fetch_error = getattr(exchange, "last_fetch_error", None)
+            if fetch_error:
+                exchange_status[name] = {"status": "fetch failed", "error": fetch_error}
+                logger.warning("%s exchange scan failed: %s", exchange.name, fetch_error)
+                continue
             if isinstance(result, Exception):
                 exchange_status[name] = {"status": "fetch failed", "error": f"{type(result).__name__}: {result}"}
                 logger.warning("%s exchange scan failed: %s", exchange.name, result)
