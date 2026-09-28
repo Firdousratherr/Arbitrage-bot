@@ -268,7 +268,7 @@ class MaintenanceAssistant:
                     raw_source = self._safe_repository_path(item["path"]).read_text(encoding="utf-8", errors="replace")
                     exact_match = re.search(rf"^\\s*(?:async\\s+)?def\\s+{re.escape(query.strip())}\\b", raw_source, re.IGNORECASE | re.MULTILINE)
                     if exact_match:
-                        first_match = exact_match.group(0) and raw_source[:exact_match.start()].count("\\n") + 1
+                        first_match = exact_match.group(0) and raw_source[:exact_match.start()].count("\n") + 1
                         last_match = max(last_match, first_match)
                 except (OSError, MaintenanceError):
                     pass
