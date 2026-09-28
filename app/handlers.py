@@ -228,15 +228,14 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "🤖 <b>CRYPTO ARBITRAGE SCANNER</b>",
         "━━━━━━━━━━━━━━",
         "📌 <b>MAIN</b>",
-        "/start — register or open account",
-        "/menu — open command center",
-        "/help — show this help",
+        "/start — register or open your account",
+        "/menu — open the command center",
+        "/help — show available commands",
         "/status — account status",
         "/scan — run a live scan",
-        "/scaninfo — scan diagnostics",
+        "/scaninfo — scanner diagnostics",
         "/exchanges — manage exchange route",
-        "/filters — view scanner settings",
-        "/pause /resume — control alerts",
+        "/filters — open organized controls",
         "",
         "🎛️ <b>SETTINGS</b>",
         "/setminprofit PERCENT",
@@ -247,7 +246,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/setmintradesize AMOUNT",
         "/setmaxtradesize AMOUNT",
         "/settradesize AMOUNT",
-        "/setmaxslippage PERCENT",
+        "/setmaxslippage PERCENT — execution guard",
         "/setnetworkfee USD",
         "/setdailycap USD",
         "/setalertfreq SECONDS",
@@ -257,18 +256,36 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/blacklist add|remove SYMBOL",
         "/loosemode on|off",
         "/setfeeadjusted on|off",
+        "/pause or /resume",
         "/resetfilters — restore defaults",
         "",
         "🎮 <b>PAPER TRADING</b>",
-        "/papertrade ID SIZE",
+        "/papertrade ID SIZE — execution-aware simulation",
         "/paperstats",
         "/portfolio",
         "/leaderboard [alltime]",
         "",
-        "Use /menu for the visual interface; command aliases and account-management commands are intentionally kept out of the main menu.",
+        "Use /menu for the organized dashboard; low-level setting commands stay out of the main menu.",
     ]
     if is_admin:
-        lines.extend(["", "🛡️ <b>ADMIN</b>", "/admin 8767 — unlock admin tools", "/genkey KEY DAYS|lifetime", "/listkeys [status]", "/revokekey KEY", "/extendvip USER_ID DAYS", "/grantvip USER_ID [DAYS]", "/revokevip USER_ID", "/userinfo USER_ID_OR_USERNAME", "/listusers [all|vip|pending|banned]", "/ban USER_ID REASON", "/unban USER_ID", "/broadcast MESSAGE", "/stats", "/health", "/exchangestats", "/exportusers", "/memstatus", "/diagnose", "/aiprobe", "/fixerror ISSUE", "/patchstatus", "/validatefix PATCH_ID", "/approvefix PATCH_ID", "/rejectfix PATCH_ID"])
+        lines.extend([
+            "", "🛡️ <b>ADMIN</b>",
+            "/admin YOUR_ADMIN_SECRET",
+            "/genkey KEY DAYS|lifetime",
+            "/listkeys [status]",
+            "/revokekey KEY",
+            "/extendvip USER_ID DAYS",
+            "/grantvip USER_ID [DAYS]",
+            "/revokevip USER_ID",
+            "/userinfo USER_ID_OR_USERNAME",
+            "/listusers [all|vip|pending|banned]",
+            "/ban USER_ID REASON",
+            "/unban USER_ID",
+            "/broadcast MESSAGE",
+            "/stats", "/health", "/exchangestats", "/exportusers", "/memstatus",
+            "/diagnose", "/aiprobe", "/fixerror ISSUE", "/patchstatus",
+            "/validatefix PATCH_ID", "/approvefix PATCH_ID", "/rejectfix PATCH_ID",
+        ])
     await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -296,9 +313,20 @@ async def exchanges(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def filters_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await require_vip(update, context): return
-    await update.message.reply_text("🎛️ FILTER GUIDE\n\nUse /myfilters to view current values.\n/setminprofit 1\n/setmaxprofit 50\n/setminspread 0.5\n/setmaxspread 20\n/setminvolume 50000\n/setmaxresults 10\n/setquotecurrency USDT\n/watchlist add BTC/USDT\n/blacklist add DOGE/USDT\n\nUse /resetfilters to restore defaults. Values affect future scans and alerts.")
-
+    if not await require_vip(update, context):
+        return
+    await update.message.reply_text(
+        "🎛️ <b>CONTROL CENTER</b>\n\n"
+        "Use /myfilters to see every current value. The /menu button opens the same settings in organized categories.\n\n"
+        "📈 Profit: /setminprofit /setmaxprofit /setminspread /setmaxspread\n"
+        "💧 Liquidity: /setminvolume /setmintradesize /setmaxtradesize /settradesize\n"
+        "🛡️ Execution: /setmaxslippage /setnetworkfee /setdailycap\n"
+        "👁 Symbols: /watchlist /blacklist\n"
+        "🔔 Alerts: /setalertfreq /setmaxresults /pause /resume\n"
+        "⚠️ Verification: /loosemode /setfeeadjusted\n\n"
+        "Use /resetfilters to restore all settings.",
+        parse_mode="HTML",
+    )
 
 async def myfilters(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await require_vip(update, context): return
@@ -861,7 +889,7 @@ async def admin_access(update, context):
         await update.effective_message.reply_text("🛡️ Admin access required.")
         return
     if len(context.args) != 1:
-        await update.effective_message.reply_text("Usage: /admin 8767")
+        await update.effective_message.reply_text("Usage: /admin YOUR_ADMIN_SECRET")
         return
     if context.args[0] != context.application.bot_data["admin_secret_key"]:
         await update.effective_message.reply_text("❌ Invalid admin secret key.")
