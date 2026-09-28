@@ -18,10 +18,11 @@ class FakeDB:
 
 
 class FakeExchange:
-    def __init__(self, name, ask, bid, *, fail_markets=False, fail_fetch=False):
+    def __init__(self, name, ask, bid, *, fee=0.0, fail_markets=False, fail_fetch=False):
         self.name = name
         self.ask = ask
         self.bid = bid
+        self.fee = fee
         self.fail_markets = fail_markets
         self.fail_fetch = fail_fetch
         self.last_fetch_symbols = {}
@@ -37,7 +38,7 @@ class FakeExchange:
         return [Ticker(self.name, "BTC/USDT", self.bid, self.ask, 1_000_000)]
 
     async def get_taker_fees(self, symbols):
-        return {symbol: 0.0 for symbol in symbols}
+        return {symbol: self.fee for symbol in symbols}
 
     async def close(self):
         return None
@@ -126,3 +127,51 @@ def test_ticker_merge_deduplicates_exchange_entries():
 
     assert added == 2
     assert len(grouped["BTC/USDT"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_scanner_prefers_fee_adjusted_route_over_headline_spread():
+    scanner = Scanner(
+        FakeDB(),
+        {
+            "expensive": FakeExchange("expensive", ask=100, bid=99, fee=0.05),
+            "cheap": FakeExchange("cheap", ask=101, bid=100, fee=0.001),
+            "seller": FakeExchange("seller", ask=104, bid=103, fee=0.001),
+        },
+        interval=30,
+        concurrency=4,
+    )
+
+    results = await scanner.run_cycle(
+        require_matching_user=False,
+        exchange_names={"expensive", "cheap", "seller"},
+    )
+
+    assert results
+    best = results[0]
+    assert best.buy_exchange == "cheap"
+    assert best.sell_exchange == "seller"
+    assert best.metadata["fee_metadata_available"] is True
+    assert best.metadata["stability_observations"] == 1
+
+
+@pytest.mark.asyncio
+async def test_scan_diagnostics_include_duration():
+    scanner = Scanner(
+        FakeDB(),
+        {
+            "buy": FakeExchange("buy", ask=100, bid=99),
+            "sell": FakeExchange("sell", ask=105, bid=104),
+        },
+        interval=30,
+        concurrency=4,
+    )
+
+    await scanner.run_cycle(
+        require_matching_user=False,
+        exchange_names={"buy", "sell"},
+    )
+
+    from app.scan_diagnostics import get_last_scan_snapshot
+    summary = get_last_scan_snapshot()["summary"]
+    assert summary["scan_duration_ms"] >= 0
