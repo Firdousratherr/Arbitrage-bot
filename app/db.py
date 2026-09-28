@@ -116,7 +116,8 @@ class Database:
             "expiry_date": "TEXT",
             "status": "TEXT NOT NULL DEFAULT 'unused'",
         })
-        columns = {row[1] for row in await self._db().execute_fetchall("PRAGMA table_info(users)")}
+        cursor = await self._db().execute("PRAGMA table_info(users)")
+        columns = {row[1] for row in await cursor.fetchall()}
         if "created_at" in columns and "registration_date" in columns:
             await self._db().execute("UPDATE users SET registration_date = created_at WHERE registration_date IS NULL")
         if "filters" in columns:
@@ -124,7 +125,8 @@ class Database:
         await self.connection.commit()
 
     async def _ensure_columns(self, table: str, definitions: dict[str, str]) -> None:
-        columns = {row[1] for row in await self._db().execute_fetchall(f"PRAGMA table_info({table})")}
+        cursor = await self._db().execute(f"PRAGMA table_info({table})")
+        columns = {row[1] for row in await cursor.fetchall()}
         for name, definition in definitions.items():
             if name not in columns:
                 await self._db().execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
