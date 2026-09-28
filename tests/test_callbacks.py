@@ -23,7 +23,7 @@ class FakeQuery:
 
 class FakeExchange:
     async def fetch_order_book(self, symbol, limit):
-        return {"asks": [[1.0, 100.0]], "bids": [[1.2, 100.0]]}
+        return {"asks": [[1.0, 2000.0]], "bids": [[1.2, 2000.0]]}
 
     async def get_taker_fee(self, symbol):
         return 0.001
