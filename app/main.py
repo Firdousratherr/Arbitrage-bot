@@ -17,6 +17,7 @@ from .filters import matches, user_filters
 from .handlers import build_handlers
 from .logging_setup import configure_logging
 from .maintenance import MaintenanceAssistant
+from .user_ai import UserAIAssistant
 from .scanner import Scanner, opportunity_id
 from .ui import format_background_alert, format_error, opportunity_buttons
 from .ui_router import build_ui_handlers
@@ -39,7 +40,8 @@ def run_app() -> None:
         settings.ai_max_input_tokens,
         settings.maintenance_repo_path,
     )
-    logger.info(
+    user_ai = UserAIAssistant(maintenance)
+\n    logger.info(
         "AI maintenance configured: %s%s",
         maintenance.configured,
         " (missing: " + ", ".join(maintenance.missing_settings) + ")" if not maintenance.configured else "",
@@ -148,6 +150,8 @@ def run_app() -> None:
             BotCommand("paperstats", "View paper-trade statistics"),
             BotCommand("portfolio", "View simulated portfolio"),
             BotCommand("leaderboard", "View paper-trading leaderboard"),
+            BotCommand("aichat", "Chat with the AI assistant"),
+            BotCommand("aifix", "Ask AI to investigate a problem"),
         ]
         await application.bot.set_my_commands(user_commands)
         admin_commands = user_commands + [
@@ -187,7 +191,7 @@ def run_app() -> None:
         exchanges.update(build_exchanges(settings.exchange_names, settings.exchange_credentials))
         active_exchange_names = list(exchanges)
         scanner = Scanner(db, exchanges, settings.scan_interval_seconds, settings.max_exchange_concurrency)
-        application.bot_data.update({"db": db, "admin_ids": settings.admin_id_set, "admin_secret_key": settings.admin_secret_key, "exchange_names": active_exchange_names, "exchanges": exchanges, "scanner": scanner, "maintenance": maintenance})
+        application.bot_data.update({"db": db, "admin_ids": settings.admin_id_set, "admin_secret_key": settings.admin_secret_key, "exchange_names": active_exchange_names, "exchanges": exchanges, "scanner": scanner, "maintenance": maintenance, "user_ai": user_ai})
         scanner.task = asyncio.create_task(scanner.loop(alert_opportunities))
         if len(exchanges) < 2:
             logger.error("fewer than two exchanges are active; arbitrage results are impossible")
