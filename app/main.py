@@ -41,7 +41,9 @@ def run_app() -> None:
         settings.maintenance_repo_path,
     )
     user_ai = UserAIAssistant(maintenance)
-\n    logger.info(
+
+
+    logger.info(
         "AI maintenance configured: %s%s",
         maintenance.configured,
         " (missing: " + ", ".join(maintenance.missing_settings) + ")" if not maintenance.configured else "",
