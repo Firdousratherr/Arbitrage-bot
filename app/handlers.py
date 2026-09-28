@@ -964,10 +964,14 @@ async def admin_access(update, context):
     if update.effective_user.id not in context.application.bot_data["admin_ids"]:
         await update.effective_message.reply_text("🛡️ Admin access required.")
         return
+    configured_secret = context.application.bot_data["admin_secret_key"]
+    if not configured_secret:
+        await update.effective_message.reply_text("❌ Admin secret is not configured on the bot.")
+        return
     if len(context.args) != 1:
         await update.effective_message.reply_text("Usage: /admin YOUR_ADMIN_SECRET")
         return
-    if context.args[0] != context.application.bot_data["admin_secret_key"]:
+    if context.args[0] != configured_secret:
         await update.effective_message.reply_text("❌ Invalid admin secret key.")
         return
     context.user_data["admin_unlocked"] = True
