@@ -115,7 +115,7 @@ async def user_ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
     question = " ".join(context.args).strip()
     try:
-        answer = await get_user_ai(context).chat(question)
+        answer = await get_user_ai(context).chat(question, user_id=update.effective_user.id)
     except MaintenanceError as exc:
         await update.effective_message.reply_text(f"🤖 AI chat error: {escape(str(exc))}", parse_mode="HTML")
         return
@@ -133,7 +133,7 @@ async def user_ai_fix(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     issue = " ".join(context.args).strip()
     await update.effective_message.reply_text("🧠 Investigating the problem and preparing a safe repair proposal…")
     try:
-        _, message = await get_user_ai(context).propose_user_fix(issue)
+        _, message = await get_user_ai(context).propose_user_fix(issue, user_id=update.effective_user.id)
     except MaintenanceError as exc:
         await update.effective_message.reply_text(f"🛠 AI fix error: {escape(str(exc))}")
         return
@@ -141,7 +141,7 @@ async def user_ai_fix(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 async def user_ai_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.effective_message.reply_text("🛑 AI request cancelled. No production change was made.")
+    await update.effective_message.reply_text("🛑 AI requests are approval-gated. This command does not cancel an already-running provider request; no production change was made.")
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1044,7 +1044,8 @@ async def validatefix(update, context):
     if len(context.args) != 1:
         await update.effective_message.reply_text("Usage: /validatefix PATCH_ID")
         return
-    await update.effective_message.reply_text(maintenance_service(context).validate(context.args[0]))
+    result = await asyncio.to_thread(maintenance_service(context).validate, context.args[0])
+    await update.effective_message.reply_text(result)
 
 
 async def rejectfix(update, context):
@@ -1058,7 +1059,8 @@ async def approvefix(update, context):
     if len(context.args) != 1:
         await update.effective_message.reply_text("Usage: /approvefix PATCH_ID\nThis applies a previously validated patch.")
         return
-    await update.effective_message.reply_text(maintenance_service(context).approve(context.args[0]))
+    result = await asyncio.to_thread(maintenance_service(context).approve, context.args[0])
+    await update.effective_message.reply_text(result)
 
 
 async def maintenance_callback(update, context):
