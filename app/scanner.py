@@ -70,6 +70,7 @@ class Scanner:
             return await self._run_cycle(*args, **kwargs)
 
     async def _run_cycle(self, *, require_matching_user: bool = True, exchange_names: set[str] | None = None) -> list[Opportunity]:
+        cycle_started = monotonic()
         matching_users = await self.db.list_users("vip") if require_matching_user else []
         if exchange_names is None and require_matching_user:
             exchange_names = set()
@@ -230,7 +231,6 @@ class Scanner:
         detected_opportunities = 0
         filtered_opportunities = 0
         observed_at = datetime.now(UTC).isoformat()
-        cycle_started = monotonic()
 
         # Fee metadata is exchange-level/market metadata, not live per-symbol data.
         # Loading it inside the symbol loop caused thousands of repeated CCXT calls and
