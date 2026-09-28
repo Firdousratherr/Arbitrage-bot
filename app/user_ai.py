@@ -109,7 +109,7 @@ class UserAIAssistant:
             f"<b>Confidence:</b> {html.escape(str(confidence))}\n"
             f"<b>Areas affected:</b> {html.escape(safe_files)}\n\n"
             f"{validation_line}\n"
-            "It has <b>not</b> been applied or deployed. An administrator must review "
+            "It has <b>not been applied or deployed</b>. An administrator must review "
             "and approve it before any production change.\n\n"
             f"<b>Reference:</b> {html.escape(proposal_id)}"
         )
