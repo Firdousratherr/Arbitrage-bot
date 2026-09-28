@@ -94,18 +94,7 @@ def _manual_rejection_lines(candidates: list, preferences: dict, limit: int = 20
     return lines
 
 
-async def enhanced_scan_command(update, context) -> None:
-    from .handlers import require_vip
-
-    if not await require_vip(update, context):
-        return
-    scanner = context.application.bot_data.get("scanner")
-    if not scanner:
-        await update.effective_message.reply_text("Scanner is still starting. Try again shortly.")
-        return
-
-    target = update.effective_message or update.callback_query.message
-    progress = await target.reply_text("🔎 <b>SCANNING MARKETS</b>\n\n🌐 Preparing selected exchanges…", parse_mode="HTML")
+async def _run_enhanced_scan(update, context, scanner, target, progress, preferences, selected, active_selected) -> None:
     animation = asyncio.create_task(_premium_scan_animation(progress, sorted(scanner.exchanges)))
     try:
         user = await _db(context).get_user(update.effective_user.id)
@@ -197,6 +186,45 @@ async def enhanced_scan_command(update, context) -> None:
         except Exception:
             pass
 
+
+async def enhanced_scan_command(update, context) -> None:
+    from .handlers import require_vip
+
+    if not await require_vip(update, context):
+        return
+    scanner = context.application.bot_data.get("scanner")
+    if not scanner:
+        await update.effective_message.reply_text("Scanner is still starting. Try again shortly.")
+        return
+
+    user = await _db(context).get_user(update.effective_user.id)
+    if not user:
+        await update.effective_message.reply_text("❌ Your account could not be loaded. Please run /status and try again.")
+        return
+
+    preferences = user_filters(user)
+    selected = set(json.loads(user["selected_exchanges"] or "[]"))
+    active_selected = selected & set(scanner.exchanges)
+    if len(active_selected) < 2:
+        await update.effective_message.reply_text(
+            format_error("Scan needs at least two active selected exchanges.", f"Selection: {', '.join(sorted(selected)) or 'none'}. Use /exchanges."),
+            parse_mode="HTML",
+        )
+        return
+
+    target = update.effective_message or update.callback_query.message
+    progress = await target.reply_text("🔎 <b>SCANNING MARKETS</b>\n\n🌐 Preparing selected exchanges…", parse_mode="HTML")
+
+    # The enhanced /scan handler is the real /scan route registered first in main.py.
+    # Keep the Telegram update handler short so sequential PTB processing remains responsive.
+    context.application.create_task(
+        _run_enhanced_scan(
+            update, context, scanner, target, progress,
+            preferences, selected, active_selected,
+        ),
+        update=update,
+        name=f"manual-scan-{update.effective_user.id}",
+    )
 
 async def scaninfo_command(update, context) -> None:
     from .handlers import require_vip
