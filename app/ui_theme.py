@@ -51,6 +51,7 @@ def dashboard() -> tuple[str, InlineKeyboardMarkup]:
         ("🎛️ Controls", "ui:filters"),
         ("🎮 Paper Trading", "ui:paper"),
         ("👤 Account", "ui:status"),
+        ("🤖 AI Assistant", "ui:ai"),
         ("🏆 Leaderboard", "ui:leaderboard"),
         ("ℹ️ How It Works", "ui:help"),
         columns=2,
