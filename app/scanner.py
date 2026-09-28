@@ -11,7 +11,7 @@ from time import monotonic
 from .arbitrage_features import OpportunityHistory, confidence_score, rank_score
 from .db import Database
 from .exchanges.base import Opportunity, Ticker
-from .filters import matches, user_filters
+from .filters import clear_filter_rejections, matches, user_filters
 from .scan_diagnostics import set_last_scan_diagnostics
 
 logger = logging.getLogger(__name__)
@@ -71,6 +71,7 @@ class Scanner:
 
     async def _run_cycle(self, *, require_matching_user: bool = True, exchange_names: set[str] | None = None) -> list[Opportunity]:
         cycle_started = monotonic()
+        clear_filter_rejections()
         matching_users = await self.db.list_users("vip") if require_matching_user else []
         if exchange_names is None and require_matching_user:
             exchange_names = set()
