@@ -59,6 +59,7 @@ def build_handlers(db: Database, admin_ids: set[int], exchange_names: list[str],
         CommandHandler("setminspread", numeric_filter("min_spread")), CommandHandler("setmaxspread", numeric_filter("max_spread")),
         CommandHandler("setminvolume", numeric_filter("min_volume")), CommandHandler("setmintradesize", set_min_trade_size), CommandHandler("setmaxtradesize", set_max_trade_size), CommandHandler("settradesize", set_trade_size),
         CommandHandler("setalertfreq", integer_filter("alert_cooldown")), CommandHandler("setmaxresults", positive_integer_filter("max_results")),
+        CommandHandler("setstability", bounded_integer_filter("min_stable_observations", 1, 12)),
         CommandHandler("setquotecurrency", quote_currency), CommandHandler("setmaxslippage", set_max_slippage), CommandHandler("setnetworkfee", set_network_fee), CommandHandler("setdailycap", set_daily_cap), CommandHandler("setemail", setemail),
         CommandHandler("watchlist", list_filter("watchlist")), CommandHandler("blacklist", list_filter("blacklist")),
         CommandHandler("papertrade", papertrade), CommandHandler("paperstats", paperstats), CommandHandler("portfolio", portfolio),
@@ -296,6 +297,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/setdailycap USD",
         "/setalertfreq SECONDS",
         "/setmaxresults N",
+        "/setstability N — require repeated observations before alerting",
         "/setquotecurrency USDT|USDC|BTC",
         "/watchlist add|remove SYMBOL",
         "/blacklist add|remove SYMBOL",
@@ -368,6 +370,7 @@ async def filters_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "🛡️ Execution: /setmaxslippage /setnetworkfee /setdailycap\n"
         "👁 Symbols: /watchlist /blacklist\n"
         "🔔 Alerts: /setalertfreq /setmaxresults /pause /resume\n"
+        "🎯 Quality: /setstability\n"
         "⚠️ Verification: /loosemode /setfeeadjusted\n\n"
         "Use /resetfilters to restore all settings.",
         parse_mode="HTML",
@@ -410,6 +413,25 @@ def integer_filter(name: str):
         except ValueError: await update.message.reply_text("❌ Enter a whole number."); return
         if value < 0:
             await update.message.reply_text("❌ Enter zero or a positive whole number.")
+            return
+        await update_filter(update, context, name, value)
+    return handler
+
+
+def bounded_integer_filter(name: str, minimum: int, maximum: int):
+    async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await require_vip(update, context):
+            return
+        if len(context.args) != 1:
+            await update.message.reply_text(f"Usage: /{update.message.text.split()[0][1:]} WHOLE_NUMBER")
+            return
+        try:
+            value = int(context.args[0])
+        except ValueError:
+            await update.message.reply_text("❌ Enter a whole number.")
+            return
+        if value < minimum or value > maximum:
+            await update.message.reply_text(f"❌ Enter a whole number from {minimum} to {maximum}.")
             return
         await update_filter(update, context, name, value)
     return handler
