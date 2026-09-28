@@ -97,6 +97,37 @@ class Database:
         )
         await self.connection.commit()
 
+        # Additive migrations keep existing production databases compatible with newer bot versions.
+        await self._ensure_columns("users", {
+            "selected_exchanges": "TEXT NOT NULL DEFAULT '[]'",
+            "registration_date": "TEXT",
+            "vip_status": "TEXT NOT NULL DEFAULT 'pending'",
+            "vip_expiry": "TEXT",
+            "vip_key_used": "TEXT",
+            "last_active": "TEXT",
+            "filters": "TEXT NOT NULL DEFAULT '{}'",
+            "banned": "INTEGER NOT NULL DEFAULT 0",
+            "ban_reason": "TEXT",
+            "leaderboard_hidden": "INTEGER NOT NULL DEFAULT 0",
+        })
+        await self._ensure_columns("vip_keys", {
+            "redeemed_by": "INTEGER",
+            "redeemed_at": "TEXT",
+            "expiry_date": "TEXT",
+            "status": "TEXT NOT NULL DEFAULT 'unused'",
+        })
+        columns = {row[1] for row in await self._db().execute_fetchall("PRAGMA table_info(users)")}
+        if "created_at" in columns and "registration_date" in columns:
+            await self._db().execute("UPDATE users SET registration_date = created_at WHERE registration_date IS NULL")
+        if "filters" in columns:
+            await self._db().execute("UPDATE users SET filters = ? WHERE filters IS NULL OR filters = ''", (json.dumps(DEFAULT_FILTERS),))
+        await self.connection.commit()
+
+    async def _ensure_columns(self, table: str, definitions: dict[str, str]) -> None:
+        columns = {row[1] for row in await self._db().execute_fetchall(f"PRAGMA table_info({table})")}
+        for name, definition in definitions.items():
+            if name not in columns:
+                await self._db().execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
     async def close(self) -> None:
         if self.connection:
             await self.connection.close()
