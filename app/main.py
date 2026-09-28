@@ -76,12 +76,6 @@ def run_app() -> None:
         transfer_cache: dict[tuple[str, str], tuple[bool, dict]] = {}
         persisted_opportunities: set[str] = set()
 
-        async def _persist_variant(identifier: str, opportunity) -> None:
-            if identifier in persisted_opportunities:
-                return
-            await db.save_opportunity(identifier, opportunity)
-            persisted_opportunities.add(identifier)
-
 
         async def _verify_transfer(exchange_name: str, symbol: str):
             key = (exchange_name, symbol)
@@ -111,8 +105,7 @@ def run_app() -> None:
                     continue
                 if preferences["loose_mode"]:
                     loose_opportunity = replace(opportunity, loose_mode=True, verified=False)
-                    await _persist_variant(loose_identifier, loose_opportunity)
-                    await _send_alert(db, user_id, loose_opportunity, loose_identifier, context.application, user=user, preferences=preferences, persist=False)
+                    await _send_alert(db, user_id, loose_opportunity, loose_identifier, context.application, user=user, preferences=preferences, persisted_ids=persisted_opportunities)
                     last_alerts[alert_key] = datetime.now(UTC)
                     last_alert_spreads[alert_key] = opportunity.raw_spread
                     sent_counts[user_id] = sent_counts.get(user_id, 0) + 1
@@ -143,8 +136,7 @@ def run_app() -> None:
                         continue
                     if last_sent and not material_change(last_alert_spreads.get(alert_key), opportunity.raw_spread):
                         continue
-                    await _persist_variant(unverified_identifier, unverified_opportunity)
-                    await _send_alert(db, user_id, unverified_opportunity, unverified_identifier, context.application, user=user, preferences=preferences, persist=False)
+                    await _send_alert(db, user_id, unverified_opportunity, unverified_identifier, context.application, user=user, preferences=preferences, persisted_ids=persisted_opportunities)
                     last_alerts[alert_key] = datetime.now(UTC)
                     last_alert_spreads[alert_key] = opportunity.raw_spread
                     sent_counts[user_id] = sent_counts.get(user_id, 0) + 1
@@ -158,8 +150,7 @@ def run_app() -> None:
                     continue
                 if last_sent and not material_change(last_alert_spreads.get(alert_key), opportunity.raw_spread):
                     continue
-                await _persist_variant(verified_identifier, verified_opportunity)
-                await _send_alert(db, user_id, verified_opportunity, verified_identifier, context.application, user=user, preferences=preferences, persist=False)
+                await _send_alert(db, user_id, verified_opportunity, verified_identifier, context.application, user=user, preferences=preferences, persisted_ids=persisted_opportunities)
                 last_alerts[alert_key] = datetime.now(UTC)
                 last_alert_spreads[alert_key] = opportunity.raw_spread
                 sent_counts[user_id] = sent_counts.get(user_id, 0) + 1
@@ -295,7 +286,7 @@ def _matching_network(buy_meta: dict, sell_meta: dict) -> str | None:
     return None
 
 
-async def _send_alert(db: Database, user_id: int, opportunity, identifier: str, application: Application, *, user=None, preferences: dict | None = None, persist: bool = True) -> None:
+async def _send_alert(db: Database, user_id: int, opportunity, identifier: str, application: Application, *, user=None, preferences: dict | None = None, persisted_ids: set[str] | None = None) -> None:
     if user is None:
         user = await db.get_user(user_id)
     if preferences is None:
@@ -321,8 +312,10 @@ async def _send_alert(db: Database, user_id: int, opportunity, identifier: str, 
     opportunity = replace(opportunity, metadata=metadata)
     message = _enhanced_card(opportunity, identifier, float(preferences.get("trade_size", 1000.0)))
     try:
-        if persist:
+        if persisted_ids is None or identifier not in persisted_ids:
             await db.save_opportunity(identifier, opportunity)
+            if persisted_ids is not None:
+                persisted_ids.add(identifier)
         await application.bot.send_message(user_id, message, reply_markup=opportunity_buttons(identifier), parse_mode="HTML")
         await db.increment_stat("alerts_sent")
     except Exception:
