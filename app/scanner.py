@@ -69,9 +69,10 @@ class Scanner:
             return await self._run_cycle(*args, **kwargs)
 
     async def _run_cycle(self, *, require_matching_user: bool = True, exchange_names: set[str] | None = None) -> list[Opportunity]:
+        matching_users = await self.db.list_users("vip") if require_matching_user else []
         if exchange_names is None and require_matching_user:
             exchange_names = set()
-            for user in await self.db.list_users("vip"):
+            for user in matching_users:
                 exchange_names.update(json.loads(user["selected_exchanges"] or "[]"))
         active_exchanges = {name: exchange for name, exchange in self.exchanges.items() if exchange_names is None or name in exchange_names}
         if len(active_exchanges) < 2:
@@ -79,7 +80,6 @@ class Scanner:
             set_last_scan_diagnostics({"summary": {}, "gaps": []})
             return []
 
-        matching_users = await self.db.list_users("vip") if require_matching_user else []
         market_symbols, market_errors = await self._load_market_symbols(active_exchanges)
         # A broken exchange must not block comparisons between the healthy exchanges.
         # The previous all-exchange intersection turned one failed market-discovery
