@@ -149,7 +149,12 @@ def settings_category(filters: dict, category: str) -> tuple[str, InlineKeyboard
                 "/setfeeadjusted on|off",
             ],
         )
-        return text, nav(back, home, columns=2)
+        return text, nav(
+            (("💸 Fee Adjusted: ON" if filters.get("fee_adjusted", True) else "💸 Fee Adjusted: OFF"), "ui:toggle_fee"),
+            back,
+            home,
+            columns=2,
+        )
     if category == "liquidity":
         text = screen(
             "💧 LIQUIDITY & TRADE SIZE",
