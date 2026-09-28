@@ -64,14 +64,32 @@ def run_app() -> None:
     async def alert_opportunities(opportunities) -> None:
         _prune_last_alerts()
         sent_counts: dict[int, int] = {}
+        vip_users = await db.list_users("vip")
+        prepared_users = []
+        for user in vip_users:
+            try:
+                selected = set(json.loads(user["selected_exchanges"] or "[]"))
+            except (TypeError, json.JSONDecodeError):
+                selected = set()
+            prepared_users.append((user, selected, user_filters(user)))
+
+        transfer_cache: dict[tuple[str, str], tuple[bool, dict]] = {}
+
+        async def _verify_transfer(exchange_name: str, symbol: str):
+            key = (exchange_name, symbol)
+            if key in transfer_cache:
+                return transfer_cache[key]
+            adapter = exchanges.get(exchange_name)
+            result = (False, {"unavailable": True, "networks": []}) if not adapter else await adapter.verify_transfer(symbol)
+            transfer_cache[key] = result
+            return result
+
         for opportunity in sorted(opportunities, key=lambda item: item.metadata.get("rank_score", item.net_profit), reverse=True):
             base_identifier = opportunity_id(opportunity)
             loose_identifier = f"{base_identifier}-loose"
             verified_identifier = f"{base_identifier}-verified"
             normal_users = []
-            for user in await db.list_users("vip"):
-                selected = json.loads(user["selected_exchanges"] or "[]")
-                preferences = user_filters(user)
+            for user, selected, preferences in prepared_users:
                 user_id = user["telegram_id"]
                 if opportunity.buy_exchange not in selected or opportunity.sell_exchange not in selected or preferences["paused"] or not matches(opportunity, preferences):
                     continue
@@ -85,12 +103,12 @@ def run_app() -> None:
                     continue
                 if preferences["loose_mode"]:
                     loose_opportunity = replace(opportunity, loose_mode=True, verified=False)
-                    await _send_alert(db, user_id, loose_opportunity, loose_identifier, context.application)
+                    await _send_alert(db, user_id, loose_opportunity, loose_identifier, context.application, user=user, preferences=preferences)
                     last_alerts[alert_key] = datetime.now(UTC)
                     last_alert_spreads[alert_key] = opportunity.raw_spread
                     sent_counts[user_id] = sent_counts.get(user_id, 0) + 1
                     continue
-                normal_users.append(user)
+                normal_users.append((user, preferences))
 
             if not normal_users:
                 continue
@@ -98,37 +116,39 @@ def run_app() -> None:
             sell_adapter = exchanges.get(opportunity.sell_exchange)
             if not buy_adapter or not sell_adapter:
                 continue
-            buy_available, buy_meta = await buy_adapter.verify_transfer(opportunity.symbol)
-            sell_available, sell_meta = await sell_adapter.verify_transfer(opportunity.symbol)
+            buy_result, sell_result = await asyncio.gather(
+                _verify_transfer(opportunity.buy_exchange, opportunity.symbol),
+                _verify_transfer(opportunity.sell_exchange, opportunity.symbol),
+            )
+            buy_available, buy_meta = buy_result
+            sell_available, sell_meta = sell_result
             verification_ok = buy_available and sell_available and _matching_network_exists(buy_meta, sell_meta)
             if not verification_ok:
                 unverified_identifier = f"{base_identifier}-not-verified"
                 unverified_opportunity = replace(opportunity, verified=False, metadata={**opportunity.metadata, "transfer_verification": "not_verified", "buy_transfer": buy_meta, "sell_transfer": sell_meta})
-                for user in normal_users:
+                for user, preferences in normal_users:
                     user_id = user["telegram_id"]
                     alert_key = (user_id, opportunity.symbol, opportunity.buy_exchange, opportunity.sell_exchange)
                     last_sent = last_alerts.get(alert_key)
-                    preferences = user_filters(user)
                     if last_sent and (datetime.now(UTC) - last_sent).total_seconds() < preferences["alert_cooldown"]:
                         continue
                     if last_sent and not material_change(last_alert_spreads.get(alert_key), opportunity.raw_spread):
                         continue
-                    await _send_alert(db, user_id, unverified_opportunity, unverified_identifier, context.application)
+                    await _send_alert(db, user_id, unverified_opportunity, unverified_identifier, context.application, user=user, preferences=preferences)
                     last_alerts[alert_key] = datetime.now(UTC)
                     last_alert_spreads[alert_key] = opportunity.raw_spread
                     sent_counts[user_id] = sent_counts.get(user_id, 0) + 1
                 continue
             verified_opportunity = replace(opportunity, verified=True, metadata={**opportunity.metadata, "buy_transfer": buy_meta, "sell_transfer": sell_meta, "matching_network": _matching_network(buy_meta, sell_meta)})
-            for user in normal_users:
+            for user, preferences in normal_users:
                 user_id = user["telegram_id"]
                 alert_key = (user_id, opportunity.symbol, opportunity.buy_exchange, opportunity.sell_exchange)
                 last_sent = last_alerts.get(alert_key)
-                preferences = user_filters(user)
                 if last_sent and (datetime.now(UTC) - last_sent).total_seconds() < preferences["alert_cooldown"]:
                     continue
                 if last_sent and not material_change(last_alert_spreads.get(alert_key), opportunity.raw_spread):
                     continue
-                await _send_alert(db, user_id, verified_opportunity, verified_identifier, context.application)
+                await _send_alert(db, user_id, verified_opportunity, verified_identifier, context.application, user=user, preferences=preferences)
                 last_alerts[alert_key] = datetime.now(UTC)
                 last_alert_spreads[alert_key] = opportunity.raw_spread
                 sent_counts[user_id] = sent_counts.get(user_id, 0) + 1
