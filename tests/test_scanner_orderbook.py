@@ -175,3 +175,24 @@ async def test_scan_diagnostics_include_duration():
     from app.scan_diagnostics import get_last_scan_snapshot
     summary = get_last_scan_snapshot()["summary"]
     assert summary["scan_duration_ms"] >= 0
+
+
+@pytest.mark.asyncio
+async def test_scan_clears_stale_filter_diagnostics():
+    from app.scan_diagnostics import get_last_scan_snapshot, set_filter_rejections
+
+    set_filter_rejections({"OLD/USDT": "stale diagnostic"})
+    scanner = Scanner(
+        FakeDB(),
+        {
+            "buy": FakeExchange("buy", ask=100, bid=99),
+            "sell": FakeExchange("sell", ask=105, bid=104),
+        },
+        interval=30,
+        concurrency=4,
+    )
+    await scanner.run_cycle(
+        require_matching_user=False,
+        exchange_names={"buy", "sell"},
+    )
+    assert get_last_scan_snapshot()["filter_rejections"] == {}
