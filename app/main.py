@@ -176,6 +176,7 @@ def run_app() -> None:
             BotCommand("leaderboard", "View paper-trading leaderboard"),
             BotCommand("aichat", "Chat with the AI assistant"),
             BotCommand("aifix", "Ask AI to investigate a problem"),
+            BotCommand("aicancel", "Cancel your running AI request"),
             BotCommand("setstability", "Require repeated opportunity observations"),
         ]
         await application.bot.set_my_commands(user_commands)
