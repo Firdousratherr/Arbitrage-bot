@@ -1,6 +1,5 @@
 import pytest
 
-from app.maintenance import MaintenanceError
 from app.user_ai import UserAIAssistant
 
 
@@ -14,7 +13,7 @@ class FakeMaintenance:
     def repository_context(self, query):
         return "safe repository evidence"
 
-    async def _ask(self, prompt):
+    async def ask_user(self, prompt):
         self.last_prompt = prompt
         return "Use the scanner settings shown in /filters."
 
@@ -24,10 +23,12 @@ class FakeMaintenance:
             "root_cause": "A filter value is excluding the opportunity.",
             "confidence": 0.9,
             "affected_files": ["app/filters.py"],
+            "status": "validated",
+            "validation": "git apply: passed; Python syntax: passed; Tests: passed",
         }
         return "abc123", "internal"
 
-    def _load(self, proposal_id):
+    def load_proposal(self, proposal_id):
         return self.proposals.get(proposal_id)
 
 
@@ -46,6 +47,12 @@ async def test_normal_user_ai_fix_returns_proposal_without_patch():
     proposal_id, result = await assistant.propose_user_fix("My scan is not finding opportunities.")
     assert proposal_id == "abc123"
     assert "AI FIX PROPOSAL" in result
+    assert "passed isolated patch" in result
     assert "not been applied or deployed" in result
     assert "app/filters.py" in result
     assert "patch" not in result.lower()
+
+
+def test_user_ai_sanitizes_secret_like_output():
+    assistant = UserAIAssistant(FakeMaintenance())
+    assert assistant._sanitize("api_key=SUPERSECRET /app/.env") == "api_key=[REDACTED] [REDACTED_PATH]"
