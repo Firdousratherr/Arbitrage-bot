@@ -858,9 +858,18 @@ async def paperstats(update, context):
 async def leaderboard(update, context):
     if not await require_vip(update, context):
         return
-    if context.args and context.args[0].lower() not in {"alltime"}:
-        await update.message.reply_text("Usage: /leaderboard or /leaderboard alltime")
-        return
+    if context.args:
+        command = context.args[0].lower()
+        if command in {"hide", "show"}:
+            hidden = command == "hide"
+            db = get_db(context)
+            await db.set_user(update.effective_user.id, leaderboard_hidden=hidden)
+            await db.log_action(update.effective_user.id, "leaderboard_visibility", command.upper())
+            await update.message.reply_text("✅ Your leaderboard visibility is now " + ("hidden." if hidden else "visible."))
+            return
+        if command != "alltime":
+            await update.message.reply_text("Usage: /leaderboard | /leaderboard alltime | /leaderboard hide | /leaderboard show")
+            return
     period = "alltime" if context.args and context.args[0].lower() == "alltime" else datetime.now(UTC).strftime("%G-%V")
     where = "1=1" if period == "alltime" else "period=?"
     args = () if period == "alltime" else (period,)
