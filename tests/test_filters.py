@@ -114,3 +114,13 @@ if __name__ == "__main__":
     test_quote_currency_filter_is_respected()
     test_fee_adjusted_setting_changes_profit_metric()
     asyncio.run(test_fee_adjusted_filters_are_used())
+
+
+def test_corrupted_user_filters_use_defaults():
+    from app.filters import user_filters
+    class User:
+        def __getitem__(self, key):
+            return "not-json" if key == "filters" else None
+    result = user_filters(User())
+    assert result["min_profit"] == 0.5
+    assert result["min_stable_observations"] == 1
