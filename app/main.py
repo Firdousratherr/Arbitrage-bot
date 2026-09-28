@@ -6,6 +6,7 @@ import logging
 from dataclasses import replace
 from datetime import UTC, datetime
 
+from telegram import BotCommand, BotCommandScopeChat
 from telegram.ext import Application
 
 from .arbitrage_features import confidence_score, material_change, rank_score
@@ -131,6 +132,40 @@ def run_app() -> None:
     async def post_init(application: Application) -> None:
         nonlocal scanner
         await db.connect()
+        user_commands = [
+            BotCommand("start", "Register or open your account"),
+            BotCommand("menu", "Open the command center"),
+            BotCommand("help", "Show available commands"),
+            BotCommand("status", "View account status"),
+            BotCommand("scan", "Run a live arbitrage scan"),
+            BotCommand("scaninfo", "View scan diagnostics"),
+            BotCommand("exchanges", "Manage exchange selection"),
+            BotCommand("filters", "View scanner settings"),
+            BotCommand("pause", "Pause alerts"),
+            BotCommand("resume", "Resume alerts"),
+            BotCommand("papertrade", "Record a paper trade"),
+            BotCommand("paperstats", "View paper-trade statistics"),
+            BotCommand("portfolio", "View simulated portfolio"),
+            BotCommand("leaderboard", "View paper-trading leaderboard"),
+        ]
+        await application.bot.set_my_commands(user_commands)
+        admin_commands = user_commands + [
+            BotCommand("admin", "Unlock admin tools"),
+            BotCommand("genkey", "Create a VIP key"),
+            BotCommand("listkeys", "List VIP keys"),
+            BotCommand("grantvip", "Grant VIP access"),
+            BotCommand("revokevip", "Revoke VIP access"),
+            BotCommand("listusers", "List users"),
+            BotCommand("broadcast", "Broadcast a message"),
+            BotCommand("stats", "View bot statistics"),
+            BotCommand("health", "Check exchange health"),
+            BotCommand("diagnose", "Diagnose recent errors"),
+        ]
+        for admin_id in settings.admin_id_set:
+            try:
+                await application.bot.set_my_commands(admin_commands, scope=BotCommandScopeChat(admin_id))
+            except Exception:
+                logger.exception("failed to set admin command menu for %s", admin_id)
         cleaned_users = await db.remove_exchange_from_selections("bitmart")
         if cleaned_users:
             logger.info("removed disabled bitmart selection from %s users", cleaned_users)
