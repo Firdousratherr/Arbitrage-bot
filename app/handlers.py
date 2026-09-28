@@ -11,6 +11,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Upda
 from telegram.ext import (CallbackQueryHandler, CommandHandler, ContextTypes, ConversationHandler,
                           MessageHandler, filters as telegram_filters)
 
+from .arbitrage_features import calculate_executable_trade
 from .db import DEFAULT_FILTERS, Database
 from .exchanges.base import Opportunity
 from .filters import matches, parse_float, trade_size_is_valid, user_filters
@@ -580,6 +581,66 @@ def _transfer_status(metadata: dict, action: str) -> str:
     return ", ".join(available[:4]) if available else "not available"
 
 
+async def _create_paper_trade(context, user_id: int, row, size: float):
+    db = get_db(context)
+    user = await db.get_user(user_id)
+    preferences = user_filters(user)
+    ok, reason = trade_size_is_valid(preferences, size)
+    if not ok:
+        raise ValueError(reason)
+    daily_cap = float(preferences.get("daily_cap", 100000.0) or 100000.0)
+    start_of_day = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    cursor = await db._db().execute(
+        "SELECT COALESCE(SUM(size), 0) AS total FROM paper_trades WHERE user_id=? AND created_at>=?",
+        (user_id, start_of_day),
+    )
+    row_today = await cursor.fetchone()
+    used_today = float(row_today["total"] or 0.0)
+    if used_today + size > daily_cap:
+        raise ValueError(f"daily paper-trade cap is \${daily_cap:,.2f}; used today: \${used_today:,.2f}")
+    exchanges = context.application.bot_data.get("exchanges", {})
+    buy_exchange = exchanges.get(row["buy_exchange"])
+    sell_exchange = exchanges.get(row["sell_exchange"])
+    if not buy_exchange or not sell_exchange:
+        raise ValueError("live exchange data is unavailable")
+    buy_book, sell_book = await asyncio.gather(
+        buy_exchange.fetch_order_book(row["symbol"], 20),
+        sell_exchange.fetch_order_book(row["symbol"], 20),
+    )
+    buy_fee, sell_fee = await asyncio.gather(
+        buy_exchange.get_taker_fee(row["symbol"]),
+        sell_exchange.get_taker_fee(row["symbol"]),
+    )
+    result = calculate_executable_trade(
+        buy_book.get("asks", []),
+        sell_book.get("bids", []),
+        size,
+        buy_fee_rate=float(buy_fee),
+        sell_fee_rate=float(sell_fee),
+    )
+    max_slippage = float(preferences.get("max_slippage", 2.0) or 2.0)
+    observed_slippage = max(float(result.buy_slippage_pct), float(result.sell_slippage_pct))
+    if observed_slippage > max_slippage:
+        raise ValueError(f"slippage {observed_slippage:.2f}% exceeds your {max_slippage:.2f}% limit")
+    if not result.complete:
+        raise ValueError("the selected trade size cannot be fully executed from current order-book depth")
+    network_fee = float(preferences.get("network_fee", 0.0) or 0.0)
+    profit = result.net_profit - network_fee
+    period = datetime.now(UTC).strftime("%G-%V")
+    created_at = datetime.now(UTC).isoformat()
+    await db._db().execute(
+        "INSERT INTO paper_trades(user_id, opportunity_id, size, profit, created_at, period) VALUES (?, ?, ?, ?, ?, ?)",
+        (user_id, row["id"], size, profit, created_at, period),
+    )
+    await db._db().commit()
+    opportunity = type("OpportunityShim", (), {
+        "symbol": row["symbol"],
+        "buy_exchange": row["buy_exchange"],
+        "sell_exchange": row["sell_exchange"],
+    })()
+    return opportunity, result, network_fee, profit
+
+
 async def paper_trade_callback(update, context):
     query = update.callback_query
     await query.answer()
@@ -587,36 +648,40 @@ async def paper_trade_callback(update, context):
     if not await db.active_vip(query.from_user.id):
         await query.answer("Active VIP access required.", show_alert=True)
         return
-    await query.edit_message_text("⏳ Preparing paper trade…")
+    await query.edit_message_text("⏳ Checking live order-book liquidity for paper trade…")
     row = await db.get_opportunity(query.data.split(":", 1)[1])
     if not row:
         await query.edit_message_text("⚠️ Opportunity expired\nRun /scan for fresh data.")
         return
     user = await db.get_user(query.from_user.id)
-    size = user_filters(user)["trade_size"]
-    expected_gross = size * (row["raw_spread"] / 100)
-    profit = size * (row["net_profit"] / 100)
-    period = datetime.now(UTC).strftime("%G-%V")
-    await db._db().execute(
-        "INSERT INTO paper_trades(user_id, opportunity_id, size, profit, created_at, period) VALUES (?, ?, ?, ?, ?, ?)",
-        (query.from_user.id, row["id"], size, profit, datetime.now(UTC).isoformat(), period),
-    )
-    await db._db().commit()
+    size = float(user_filters(user).get("trade_size", 1000.0))
+    try:
+        opportunity, result, network_fee, profit = await _create_paper_trade(
+            context, query.from_user.id, row, size
+        )
+    except Exception as exc:
+        await query.edit_message_text(f"⚠️ Paper trade not created\n{type(exc).__name__}: {exc}")
+        return
     message = format_paper_trade(
-        _opportunity_from_row(row),
-        buy_price=row["buy_price"],
-        sell_price=row["sell_price"],
+        opportunity,
+        buy_price=result.spent_quote / max(result.base_amount, 1e-12),
+        sell_price=result.sell_proceeds / max(result.base_amount, 1e-12),
         size=size,
-        expected_gross=expected_gross,
+        expected_gross=result.gross_profit,
         estimated_net=profit,
         profit=profit,
     )
+    message += (
+        f"\n🌐 Network fee   \${network_fee:,.4f}"
+        f"\n📉 Max slippage  {max(result.buy_slippage_pct, result.sell_slippage_pct):.2f}%"
+    )
     await query.edit_message_text(
         message,
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data=f"back:{row['id']}")]]),
-        parse_mode="HTML"
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("⬅️ Back", callback_data=f"back:{row['id']}")]]
+        ),
+        parse_mode="HTML",
     )
-
 
 def _book_fill(levels, size: float, *, ascending: bool) -> tuple[float, float]:
     """Return a size-weighted fill price and slippage against the first level."""
