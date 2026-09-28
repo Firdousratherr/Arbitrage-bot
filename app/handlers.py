@@ -13,7 +13,7 @@ from telegram.ext import (CallbackQueryHandler, CommandHandler, ContextTypes, Co
 
 from .db import DEFAULT_FILTERS, Database
 from .exchanges.base import Opportunity
-from .filters import matches, parse_float, user_filters
+from .filters import matches, parse_float, trade_size_is_valid, user_filters
 from .maintenance import MaintenanceAssistant
 from .scanner import opportunity_id
 from .ui import (
@@ -56,9 +56,9 @@ def build_handlers(db: Database, admin_ids: set[int], exchange_names: list[str],
         CommandHandler("pause", pause), CommandHandler("resume", resume),
         CommandHandler("setminprofit", numeric_filter("min_profit")), CommandHandler("setmaxprofit", numeric_filter("max_profit")),
         CommandHandler("setminspread", numeric_filter("min_spread")), CommandHandler("setmaxspread", numeric_filter("max_spread")),
-        CommandHandler("setminvolume", numeric_filter("min_volume")), CommandHandler("settradesize", numeric_filter("trade_size")),
+        CommandHandler("setminvolume", numeric_filter("min_volume")), CommandHandler("setmintradesize", set_min_trade_size), CommandHandler("setmaxtradesize", set_max_trade_size), CommandHandler("settradesize", set_trade_size),
         CommandHandler("setalertfreq", integer_filter("alert_cooldown")), CommandHandler("setmaxresults", positive_integer_filter("max_results")),
-        CommandHandler("setquotecurrency", quote_currency), CommandHandler("setemail", setemail),
+        CommandHandler("setquotecurrency", quote_currency), CommandHandler("setmaxslippage", set_max_slippage), CommandHandler("setnetworkfee", set_network_fee), CommandHandler("setdailycap", set_daily_cap), CommandHandler("setemail", setemail),
         CommandHandler("watchlist", list_filter("watchlist")), CommandHandler("blacklist", list_filter("blacklist")),
         CommandHandler("papertrade", papertrade), CommandHandler("paperstats", paperstats), CommandHandler("portfolio", portfolio),
         CommandHandler("leaderboard", leaderboard), CommandHandler("setfeeadjusted", fee_adjusted),
@@ -668,6 +668,78 @@ def _format_order_book(levels, side: str) -> str:
     return "\n".join(rows) or "unavailable"
 
 
+async def _set_numeric_setting(update, context, name: str, label: str, minimum: float = 0.0) -> None:
+    if not await require_vip(update, context):
+        return
+    if len(context.args) != 1:
+        await update.message.reply_text("Usage: /" + update.message.text.split()[0][1:] + " NUMBER")
+        return
+    try:
+        value = parse_float(context.args[0], minimum)
+    except ValueError:
+        await update.message.reply_text(f"❌ {label} must be a number >= {minimum:g}.")
+        return
+    db = get_db(context)
+    user = await db.get_user(update.effective_user.id)
+    preferences = user_filters(user)
+    if name == "min_trade_size" and value > float(preferences.get("max_trade_size", 100000.0)):
+        await update.message.reply_text("❌ Minimum trade size cannot be greater than the maximum trade size.")
+        return
+    if name == "max_trade_size" and value < float(preferences.get("min_trade_size", 10.0)):
+        await update.message.reply_text("❌ Maximum trade size cannot be less than the minimum trade size.")
+        return
+    preferences[name] = value
+    if name in {"min_trade_size", "max_trade_size"}:
+        current = float(preferences.get("trade_size", 1000.0))
+        ok, reason = trade_size_is_valid(preferences, current)
+        if not ok:
+            await update.message.reply_text(f"❌ Current trade size ${current:,.2f} is outside the new range; set /settradesize first.")
+            return
+    await db.set_user(update.effective_user.id, filters=preferences)
+    await db.log_action(update.effective_user.id, "changed_filter", f"{name}={value}")
+    await update.message.reply_text(f"✅ {label}: {value:,.2f}")
+
+
+async def set_trade_size(update, context):
+    if not await require_vip(update, context):
+        return
+    if len(context.args) != 1:
+        await update.message.reply_text("Usage: /settradesize AMOUNT")
+        return
+    try:
+        value = parse_float(context.args[0], 0.01)
+    except ValueError:
+        await update.message.reply_text("❌ Trade size must be greater than zero.")
+        return
+    user = await get_db(context).get_user(update.effective_user.id)
+    preferences = user_filters(user)
+    ok, reason = trade_size_is_valid(preferences, value)
+    if not ok:
+        await update.message.reply_text(f"❌ {reason}. Adjust /setmintradesize or /setmaxtradesize.")
+        return
+    await get_db(context).set_user(update.effective_user.id, filters={**preferences, "trade_size": value})
+    await update.message.reply_text(f"✅ Trade size set to ${value:,.2f}")
+
+
+async def set_min_trade_size(update, context):
+    await _set_numeric_setting(update, context, "min_trade_size", "Minimum trade size", 0.01)
+
+
+async def set_max_trade_size(update, context):
+    await _set_numeric_setting(update, context, "max_trade_size", "Maximum trade size", 0.01)
+
+
+async def set_max_slippage(update, context):
+    await _set_numeric_setting(update, context, "max_slippage", "Maximum slippage (%)", 0.0)
+
+
+async def set_network_fee(update, context):
+    await _set_numeric_setting(update, context, "network_fee", "Network fee per trade ($)", 0.0)
+
+
+async def set_daily_cap(update, context):
+    await _set_numeric_setting(update, context, "daily_cap", "Daily paper-trade cap ($)", 0.01)
+
 async def papertrade(update, context):
     if not await require_vip(update, context): return
     if len(context.args) != 2: await update.message.reply_text("🧪 Usage: /papertrade OPPORTUNITY_ID SIZE"); return
@@ -681,8 +753,23 @@ async def papertrade(update, context):
     if size <= 0:
         await update.message.reply_text("❌ SIZE must be greater than zero.")
         return
+    user = await db.get_user(update.effective_user.id)
+    preferences = user_filters(user)
+    ok, reason = trade_size_is_valid(preferences, size)
+    if not ok:
+        await update.message.reply_text(f"❌ {reason}.")
+        return
+    daily_cap = float(preferences.get("daily_cap", 100000.0) or 100000.0)
+    start_of_day = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    cursor = await db._db().execute("SELECT COALESCE(SUM(size), 0) AS total FROM paper_trades WHERE user_id=? AND created_at>=?", (update.effective_user.id, start_of_day))
+    row_today = await cursor.fetchone()
+    used_today = float(row_today["total"] or 0.0)
+    if used_today + size > daily_cap:
+        await update.message.reply_text(f"❌ Daily paper-trade cap is ${daily_cap:,.2f}. Used today: ${used_today:,.2f}.")
+        return
+    network_fee = float(preferences.get("network_fee", 0.0) or 0.0)
     expected_gross = size * (row["raw_spread"] / 100)
-    profit = size * (row["net_profit"] / 100); period = datetime.now(UTC).strftime("%G-%V")
+    profit = size * (row["net_profit"] / 100) - network_fee; period = datetime.now(UTC).strftime("%G-%V")
     await db._db().execute("INSERT INTO paper_trades(user_id, opportunity_id, size, profit, created_at, period) VALUES (?, ?, ?, ?, ?, ?)", (update.effective_user.id, context.args[0], size, profit, datetime.now(UTC).isoformat(), period)); await db._db().commit()
     message = format_paper_trade(
         type("OpportunityShim", (), {"symbol": row["symbol"], "buy_exchange": row["buy_exchange"], "sell_exchange": row["sell_exchange"]})(),
