@@ -1252,23 +1252,29 @@ async def extend_vip(update, context):
 
 
 async def health(update, context):
-    results = []
-    for name, exchange in context.application.bot_data.get("exchanges", {}).items():
+    exchanges = context.application.bot_data.get("exchanges", {})
+    async def _check(name, exchange):
         try:
-            await exchange.fetch_tickers(["BTC/USDT"])
+            await asyncio.wait_for(exchange.fetch_tickers(["BTC/USDT"]), timeout=8)
             error = getattr(exchange, "last_fetch_error", None)
             stats = getattr(exchange, "last_fetch_stats", None) or {}
             if error:
-                results.append(f"{name}: ❌ unavailable — {error}")
-            elif stats.get("usable", 0) > 0:
+                return f"{name}: ❌ unavailable — {error}"
+            if stats.get("usable", 0) > 0:
                 latency = stats.get("latency_ms")
                 latency_text = f", {latency:.0f}ms" if latency is not None else ""
-                results.append(f"{name}: ✅ ok ({stats['usable']} ticker usable{latency_text})")
-            else:
-                results.append(f"{name}: ⚠️ request returned no usable BTC/USDT data")
+                return f"{name}: ✅ ok ({stats['usable']} ticker usable{latency_text})"
+            return f"{name}: ⚠️ request returned no usable BTC/USDT data"
+        except asyncio.TimeoutError:
+            return f"{name}: ❌ timeout after 8s"
         except Exception as exc:
-            results.append(f"{name}: ❌ unavailable ({type(exc).__name__}: {exc})")
-    await update.message.reply_text("🩺 <b>Exchange health</b>\n━━━━━━━━━━━━━━\n" + "\n".join(results), parse_mode="HTML")
+            return f"{name}: ❌ unavailable ({type(exc).__name__}: {exc})"
+
+    results = await asyncio.gather(*(_check(name, exchange) for name, exchange in exchanges.items()))
+    await update.message.reply_text(
+        "🩺 <b>Exchange health</b>\n━━━━━━━━━━━━━━\n" + "\n".join(results),
+        parse_mode="HTML",
+    )
 
 
 async def exchangestats(update, context):
