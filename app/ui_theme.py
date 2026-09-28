@@ -155,9 +155,9 @@ def settings_category(filters: dict, category: str) -> tuple[str, InlineKeyboard
             "💧 LIQUIDITY & TRADE SIZE",
             "Market depth and position controls",
             [
-                f"Minimum 24h volume  <b>\${filters.get('min_volume', 10000):,.0f}</b>",
-                f"Trade size           <b>\${filters.get('trade_size', 1000):,.2f}</b>",
-                f"Allowed range       <b>\${filters.get('min_trade_size', 10):,.2f} → \${filters.get('max_trade_size', 100000):,.2f}</b>",
+                f"Minimum 24h volume  <b>${filters.get('min_volume', 10000):,.0f}</b>",
+                f"Trade size           <b>${filters.get('trade_size', 1000):,.2f}</b>",
+                f"Allowed range       <b>${filters.get('min_trade_size', 10):,.2f} → ${filters.get('max_trade_size', 100000):,.2f}</b>",
                 f"Quote currency       <b>{filters.get('quote_currency', 'USDT')}</b>",
                 "",
                 "Commands: /setminvolume /setmintradesize",
@@ -172,8 +172,8 @@ def settings_category(filters: dict, category: str) -> tuple[str, InlineKeyboard
             "Rules applied to executable paper trades and details",
             [
                 f"Maximum slippage  <b>{filters.get('max_slippage', 2)}%</b>",
-                f"Network fee        <b>\${filters.get('network_fee', 0):,.2f}</b>",
-                f"Daily paper cap   <b>\${filters.get('daily_cap', 100000):,.2f}</b>",
+                f"Network fee        <b>${filters.get('network_fee', 0):,.2f}</b>",
+                f"Daily paper cap   <b>${filters.get('daily_cap', 100000):,.2f}</b>",
                 "",
                 "Slippage is checked against live order-book depth.",
                 "Network fee is deducted from simulated P/L.",
