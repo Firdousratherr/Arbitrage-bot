@@ -128,8 +128,8 @@ def format_filters_message(filters:dict)->str:
     lines=_panel("🎛 YOUR FILTERS","All scanner settings in one place")
     lines.extend([
         "📈 <b>PROFIT & SPREAD</b>",
-        f"Profit          {filters.get('min_profit',0)}% → {filters.get('max_profit',100)}%",
-        f"Spread          {filters.get('min_spread',0)}% → {filters.get('max_spread',100)}%",
+        f"📈 Profit range  {filters.get('min_profit',0)}% → {filters.get('max_profit',100)}%",
+        f"📊 Spread range  {filters.get('min_spread',0)}% → {filters.get('max_spread',100)}%",
         f"Fee-adjusted    {'ON' if filters.get('fee_adjusted',True) else 'OFF'}",
         "",
         "💧 <b>LIQUIDITY & SIZE</b>",
