@@ -15,7 +15,8 @@ from .arbitrage_features import calculate_executable_trade
 from .db import DEFAULT_FILTERS, Database
 from .exchanges.base import Opportunity
 from .filters import matches, parse_float, trade_size_is_valid, user_filters
-from .maintenance import MaintenanceAssistant
+from .maintenance import MaintenanceAssistant, MaintenanceError
+from .user_ai import UserAIAssistant
 from .scanner import opportunity_id
 from .ui import (
     format_error,
@@ -62,6 +63,7 @@ def build_handlers(db: Database, admin_ids: set[int], exchange_names: list[str],
         CommandHandler("watchlist", list_filter("watchlist")), CommandHandler("blacklist", list_filter("blacklist")),
         CommandHandler("papertrade", papertrade), CommandHandler("paperstats", paperstats), CommandHandler("portfolio", portfolio),
         CommandHandler("leaderboard", leaderboard), CommandHandler("setfeeadjusted", fee_adjusted),
+        CommandHandler("aichat", user_ai_chat), CommandHandler("aifix", user_ai_fix), CommandHandler("aicancel", user_ai_cancel),
     ]
     commands.append(CommandHandler("aistatus", admin_only(db, admin_ids, aistatus)))
     admin_commands = [
@@ -96,6 +98,49 @@ def build_handlers(db: Database, admin_ids: set[int], exchange_names: list[str],
 
 def get_db(context: ContextTypes.DEFAULT_TYPE) -> Database:
     return context.application.bot_data["db"]
+
+
+def get_user_ai(context: ContextTypes.DEFAULT_TYPE) -> UserAIAssistant:
+    return context.application.bot_data["user_ai"]
+
+
+async def user_ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not context.args:
+        await update.effective_message.reply_text(
+            "🤖 <b>AI CHAT</b>\n\nUse: <code>/aichat your question</code>\n\n"
+            "Ask about scanner settings, arbitrage results, fees, liquidity, paper trading, or troubleshooting.",
+            parse_mode="HTML",
+        )
+        return
+    question = " ".join(context.args).strip()
+    try:
+        answer = await get_user_ai(context).chat(question)
+    except MaintenanceError as exc:
+        await update.effective_message.reply_text(f"🤖 AI chat error: {escape(str(exc))}", parse_mode="HTML")
+        return
+    await update.effective_message.reply_text(answer[:3900])
+
+
+async def user_ai_fix(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not context.args:
+        await update.effective_message.reply_text(
+            "🛠 <b>AI FIX</b>\n\nUse: <code>/aifix describe the problem</code>\n\n"
+            "AI will investigate and create a repair proposal. Normal users cannot apply or deploy it.",
+            parse_mode="HTML",
+        )
+        return
+    issue = " ".join(context.args).strip()
+    await update.effective_message.reply_text("🧠 Investigating the problem and preparing a safe repair proposal…")
+    try:
+        _, message = await get_user_ai(context).propose_user_fix(issue)
+    except MaintenanceError as exc:
+        await update.effective_message.reply_text(f"🛠 AI fix error: {escape(str(exc))}")
+        return
+    await update.effective_message.reply_text(message, parse_mode="HTML")
+
+
+async def user_ai_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.effective_message.reply_text("🛑 AI request cancelled. No production change was made.")
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
