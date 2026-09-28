@@ -41,7 +41,11 @@ def test_details_callback_edits_existing_message(tmp_path):
         await db.set_user(7, vip_status="active")
         await db.save_opportunity("stable-id", _opportunity())
         query = FakeQuery("details:stable-id")
-        context = SimpleNamespace(application=SimpleNamespace(bot_data={"db": db, "exchanges": {"buy": FakeExchange(), "sell": FakeExchange()}}))
+        context = SimpleNamespace(
+    application=SimpleNamespace(
+        bot_data={"db": db, "exchanges": {"buy": FakeExchange(), "sell": FakeExchange()}}
+    )
+))
 
         await opportunity_details(SimpleNamespace(callback_query=query), context)
 
