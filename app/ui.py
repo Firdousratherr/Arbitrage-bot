@@ -44,6 +44,7 @@ def format_scan_count(count: int)->str:
             f"🎯 Detected: <b>{summary.get('opportunities_detected',0)}</b>",
             f"🚫 Filtered: <b>{summary.get('opportunities_filtered',0)}</b>",
             f"✅ Returned: <b>{summary.get('opportunities_returned',count)}</b>",
+            f"⏱️ Scan time: <b>{summary.get('scan_duration_ms', 0):g} ms</b>",
         ])
         if summary.get("opportunities_filtered") and not count:
             lines.append("💡 Positive spreads were found but rejected by configured filters.")
@@ -118,6 +119,7 @@ def format_status_message(vip_status:str,vip_expiry:str|None,exchanges:list[str]
         "🔔 <b>ALERTS</b>",
         f"Cooldown         {filters.get('alert_cooldown',300)}s",
         f"Max results      {filters.get('max_results',10)}",
+        f"Stability        {filters.get('min_stable_observations',1)} observation(s)",
     ])
     return "\n".join(lines)
 
@@ -131,6 +133,9 @@ def format_filters_message(filters:dict)->str:
         f"📈 Profit range  {filters.get('min_profit',0)}% → {filters.get('max_profit',100)}%",
         f"📊 Spread range  {filters.get('min_spread',0)}% → {filters.get('max_spread',100)}%",
         f"Fee-adjusted    {'ON' if filters.get('fee_adjusted',True) else 'OFF'}",
+        "",
+        "🎯 <b>SIGNAL QUALITY</b>",
+        f"Stable observations {filters.get('min_stable_observations',1)}",
         "",
         "💧 <b>LIQUIDITY & SIZE</b>",
         f"Volume          ≥ ${_compact_number(filters.get('min_volume',10000))}",
