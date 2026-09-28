@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 from datetime import UTC, datetime
+from time import monotonic
 
 from .arbitrage_features import OpportunityHistory, confidence_score, rank_score
 from .db import Database
@@ -99,7 +100,8 @@ class Scanner:
         listing_difference_symbols = len(union_market_symbols - common_market_symbols)
 
         if not common_market_symbols:
-            summary = {
+            cycle_duration_ms = round((monotonic() - cycle_started) * 1000, 1)
+        summary = {
                 "selected_exchanges": list(active_exchanges),
                 "exchange_status": {
                     name: ({"status": "market discovery failed", "error": market_errors[name]} if name in market_errors else {"status": "no active spot markets", "market_count": len(market_symbols[name])})
@@ -115,6 +117,7 @@ class Scanner:
                 "opportunities_returned": 0,
                 "coverage_gap_symbols": 0,
                 "listing_difference_symbols": listing_difference_symbols,
+            "scan_duration_ms": cycle_duration_ms,
             }
             set_last_scan_diagnostics({"summary": summary, "gaps": []})
             logger.warning("scan stopped: no common active spot markets; listed=%s errors=%s", {name: len(symbols) for name, symbols in market_symbols.items()}, market_errors)
@@ -227,6 +230,7 @@ class Scanner:
         detected_opportunities = 0
         filtered_opportunities = 0
         observed_at = datetime.now(UTC).isoformat()
+        cycle_started = monotonic()
 
         # Fee metadata is exchange-level/market metadata, not live per-symbol data.
         # Loading it inside the symbol loop caused thousands of repeated CCXT calls and
@@ -257,18 +261,29 @@ class Scanner:
             if len(valid_tickers) < 2:
                 continue
 
-            # Find the best cross-exchange route without constructing every ordered pair.
-            # This changes the hot path from O(n²) comparisons per symbol to a tiny
-            # top-of-book candidate set while preserving the best valid route.
-            best_buy = min(valid_tickers, key=lambda ticker: ticker.ask)
-            best_sell = max(valid_tickers, key=lambda ticker: ticker.bid)
+            # Choose the route using fee-adjusted executable top-of-book prices rather
+            # than headline prices alone. This avoids selecting a low-spread exchange
+            # with unusually high taker fees over a slightly wider but cheaper route.
+            def _fee_adjusted_buy(ticker: Ticker) -> float:
+                fee = fee_maps.get(ticker.exchange, {}).get(symbol, 0.001)
+                return ticker.ask * (1.0 + max(0.0, fee))
+
+            def _fee_adjusted_sell(ticker: Ticker) -> float:
+                fee = fee_maps.get(ticker.exchange, {}).get(symbol, 0.001)
+                return ticker.bid * (1.0 - min(max(0.0, fee), 0.99))
+
+            best_buy = min(valid_tickers, key=_fee_adjusted_buy)
+            best_sell = max(valid_tickers, key=_fee_adjusted_sell)
             if best_buy.exchange == best_sell.exchange:
-                buys = sorted(valid_tickers, key=lambda ticker: ticker.ask)[:2]
-                sells = sorted(valid_tickers, key=lambda ticker: ticker.bid, reverse=True)[:2]
+                buys = sorted(valid_tickers, key=_fee_adjusted_buy)[:3]
+                sells = sorted(valid_tickers, key=_fee_adjusted_sell, reverse=True)[:3]
                 candidates = [(buy, sell) for buy in buys for sell in sells if buy.exchange != sell.exchange]
                 if not candidates:
                     continue
-                buy, sell = max(candidates, key=lambda pair: (pair[1].bid - pair[0].ask) / pair[0].ask)
+                buy, sell = max(
+                    candidates,
+                    key=lambda pair: _fee_adjusted_sell(pair[1]) - _fee_adjusted_buy(pair[0]),
+                )
             else:
                 buy, sell = best_buy, best_sell
 
@@ -277,9 +292,12 @@ class Scanner:
                 continue
             positive_spread_symbols += 1
 
-            buy_fee_pct = fee_maps.get(buy.exchange, {}).get(symbol, 0.001) * 100
-            sell_fee_pct = fee_maps.get(sell.exchange, {}).get(symbol, 0.001) * 100
+            buy_fee_rate = fee_maps.get(buy.exchange, {}).get(symbol, 0.001)
+            sell_fee_rate = fee_maps.get(sell.exchange, {}).get(symbol, 0.001)
+            buy_fee_pct = buy_fee_rate * 100
+            sell_fee_pct = sell_fee_rate * 100
             net_profit = raw_spread - buy_fee_pct - sell_fee_pct
+            fee_metadata_available = symbol in fee_maps.get(buy.exchange, {}) and symbol in fee_maps.get(sell.exchange, {})
             if net_profit > 0:
                 fee_positive_spreads += 1
 
@@ -303,6 +321,8 @@ class Scanner:
                 "confidence": confidence,
                 "rank_score": rank_score(net_profit, confidence, None),
                 "headline_only": True,
+                "fee_metadata_available": fee_metadata_available,
+                "stability_observations": len(history),
             }
             opportunity = Opportunity(
                 symbol, buy.exchange, sell.exchange, buy.ask, sell.bid,
