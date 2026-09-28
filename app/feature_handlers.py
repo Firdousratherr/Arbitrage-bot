@@ -118,8 +118,13 @@ async def _run_enhanced_scan(update, context, scanner, target, progress, prefere
 
         opportunities = await scanner.run_cycle(require_matching_user=False, exchange_names=active_selected)
         selected_candidates = [item for item in opportunities if item.buy_exchange in selected and item.sell_exchange in selected]
-        rejected = [item for item in selected_candidates if not matches(item, preferences)]
-        passed = [item for item in selected_candidates if matches(item, preferences)]
+        rejected = []
+        passed = []
+        for item in selected_candidates:
+            if matches(item, preferences):
+                passed.append(item)
+            else:
+                rejected.append(item)
         passed.sort(key=lambda item: item.metadata.get("rank_score", item.net_profit), reverse=True)
         visible = passed[:preferences["max_results"]]
 
