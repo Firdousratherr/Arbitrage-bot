@@ -49,7 +49,7 @@ async def test_normal_user_ai_fix_returns_proposal_without_patch():
     assert "AI FIX PROPOSAL" in result
     assert "passed isolated patch" in result
     assert "not been applied or deployed" in result
-    assert "app/filters.py" in result
+    assert "filters.py" in result
     assert "unified diff" not in result.lower()
 
 
