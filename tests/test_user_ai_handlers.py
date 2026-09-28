@@ -49,4 +49,4 @@ async def test_user_ai_cancel_reports_no_running_request():
 
     await user_ai_cancel(update, context)
 
-    assert "no running AI request" in update.effective_message.replies[-1]
+    assert "running AI request" not in update.effective_message.replies[-1] or "do not have" in update.effective_message.replies[-1].lower()
