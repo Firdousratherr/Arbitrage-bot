@@ -861,32 +861,9 @@ async def _animate_scan_progress(message) -> None:
         logger.debug("scan progress animation stopped", exc_info=True)
 
 
-async def scan_command(update, context):
-    if not await require_vip(update, context):
-        return
-    scanner = context.application.bot_data.get("scanner")
-    if not scanner:
-        await update.effective_message.reply_text("Scanner is still starting. Try again shortly.")
-        return
-
-    progress_msg = await update.effective_message.reply_text("🔎 <b>Scanning exchanges</b>…", parse_mode="HTML")
+async def _run_manual_scan(update, context, scanner, progress_msg, preferences, selected, active_selected):
     animation_task = asyncio.create_task(_animate_scan_progress(progress_msg))
     try:
-        user = await get_db(context).get_user(update.effective_user.id)
-        preferences = user_filters(user)
-        selected = set(json.loads(user["selected_exchanges"] or "[]"))
-        active_selected = selected & set(scanner.exchanges)
-
-        if len(active_selected) < 2:
-            await update.effective_message.reply_text(
-                format_error(
-                    "Scan needs at least two active selected exchanges.",
-                    f"Your selection: {', '.join(sorted(selected)) or 'none'}. Use /exchanges."
-                ),
-                parse_mode="HTML"
-            )
-            return
-
         opportunities = await scanner.run_cycle(require_matching_user=False, exchange_names=active_selected)
         selected_candidates = [
             opportunity for opportunity in opportunities
@@ -894,6 +871,33 @@ async def scan_command(update, context):
         ]
         visible = [opportunity for opportunity in selected_candidates if matches(opportunity, preferences)]
         visible = sorted(visible, key=lambda opportunity: opportunity.net_profit, reverse=True)[:preferences["max_results"]]
+
+        await update.effective_message.reply_text(format_scan_count(len(visible)), parse_mode="HTML")
+
+        db = get_db(context)
+        for index, item in enumerate(visible, 1):
+            identifier = opportunity_id(item)
+            await db.save_opportunity(identifier, item)
+            message = format_opportunity_card(
+                item, identifier, card_number=index,
+                trade_size=preferences.get("trade_size", 1000),
+            )
+            await update.effective_message.reply_text(
+                message,
+                reply_markup=opportunity_buttons(identifier),
+                parse_mode="HTML",
+            )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.exception("manual scan failed")
+        try:
+            await update.effective_message.reply_text(
+                format_error("Scan failed", "Check /diagnose or try again shortly."),
+                parse_mode="HTML",
+            )
+        except Exception:
+            logger.exception("failed to report manual scan error")
     finally:
         animation_task.cancel()
         await asyncio.gather(animation_task, return_exceptions=True)
@@ -902,19 +906,44 @@ async def scan_command(update, context):
         except Exception:
             pass
 
-    count_msg = format_scan_count(len(visible))
-    await update.effective_message.reply_text(count_msg, parse_mode="HTML")
 
-    db = get_db(context)
-    for index, item in enumerate(visible, 1):
-        identifier = opportunity_id(item)
-        await db.save_opportunity(identifier, item)
-        message = format_opportunity_card(item, identifier, card_number=index, trade_size=preferences.get("trade_size", 1000))
+async def scan_command(update, context):
+    if not await require_vip(update, context):
+        return
+    scanner = context.application.bot_data.get("scanner")
+    if not scanner:
+        await update.effective_message.reply_text("Scanner is still starting. Try again shortly.")
+        return
+
+    user = await get_db(context).get_user(update.effective_user.id)
+    preferences = user_filters(user)
+    selected = set(json.loads(user["selected_exchanges"] or "[]"))
+    active_selected = selected & set(scanner.exchanges)
+
+    if len(active_selected) < 2:
         await update.effective_message.reply_text(
-            message,
-            reply_markup=opportunity_buttons(identifier),
+            format_error(
+                "Scan needs at least two active selected exchanges.",
+                f"Your selection: {', '.join(sorted(selected)) or 'none'}. Use /exchanges."
+            ),
             parse_mode="HTML"
         )
+        return
+
+    progress_msg = await update.effective_message.reply_text(
+        "🔎 <b>Scanning exchanges</b>…",
+        parse_mode="HTML",
+    )
+
+    # Keep the update handler short. PTB normally processes updates sequentially;
+    # awaiting a long exchange scan here makes every later command appear frozen.
+    context.application.create_task(
+        _run_manual_scan(
+            update, context, scanner, progress_msg,
+            preferences, selected, active_selected,
+        ),
+        update=update,
+    )
 
 
 def admin_only(db, admin_ids, handler):
