@@ -1261,7 +1261,9 @@ async def health(update, context):
             if error:
                 results.append(f"{name}: ❌ unavailable — {error}")
             elif stats.get("usable", 0) > 0:
-                results.append(f"{name}: ✅ ok ({stats['usable']} ticker usable)")
+                latency = stats.get("latency_ms")
+                latency_text = f", {latency:.0f}ms" if latency is not None else ""
+                results.append(f"{name}: ✅ ok ({stats['usable']} ticker usable{latency_text})")
             else:
                 results.append(f"{name}: ⚠️ request returned no usable BTC/USDT data")
         except Exception as exc:
@@ -1287,9 +1289,9 @@ async def exchangestats(update, context):
         elif stats["usable"] == 0:
             lines.append(f"{name}: ⚠️ {stats['raw']} tickers received, all {stats['dropped_bid_ask']} dropped for missing/zero bid-ask")
         elif stats.get("fallback_used"):
-            lines.append(f"{name}: ✅ {stats['usable']} usable via order-book fallback (bulk dropped {stats['raw']} for missing bid-ask)")
+            lines.append(f"{name}: ✅ {stats['usable']} usable via order-book fallback (bulk dropped {stats['raw']} for missing bid-ask, {stats.get('latency_ms', 0):.0f}ms)")
         else:
-            lines.append(f"{name}: ✅ {stats['usable']}/{stats['raw']} usable (dropped {stats['dropped_bid_ask']} for missing bid-ask)")
+            lines.append(f"{name}: ✅ {stats['usable']}/{stats['raw']} usable (dropped {stats['dropped_bid_ask']} for missing bid-ask, {stats.get('latency_ms', 0):.0f}ms)")
     await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 
 
