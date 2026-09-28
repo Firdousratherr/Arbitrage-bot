@@ -10,12 +10,14 @@ Finish the current scanner-speed/reliability branch as a production-hardening re
 - Keep `arbitrage_data` intact during EC2 deployment.
 
 ## Phase 1 — Scanner and alert-path hardening
-- Preload VIP users once per background scan instead of querying SQLite once per opportunity.
-- Precompute selected exchanges and filters for the alert cycle.
-- Cache transfer metadata by exchange + symbol for the lifetime of one scan/alert cycle.
-- Verify buy/sell transfer metadata concurrently.
-- Avoid redundant user reads when sending alerts.
-- Preserve cooldown and material-change deduplication.
+- [x] Preload VIP users once per background scan instead of querying SQLite once per opportunity.
+- [x] Precompute selected exchanges and filters for the alert cycle.
+- [x] Cache transfer metadata by exchange + symbol for the lifetime of one scan/alert cycle.
+- [x] Verify buy/sell transfer metadata concurrently.
+- [x] Avoid redundant user reads when sending alerts.
+- [x] Deduplicate opportunity-row writes during alert fan-out.
+- [x] Preserve cooldown and material-change deduplication.
+- [x] Add full scan-cycle duration to diagnostics.
 
 ## Phase 2 — Signal quality controls
 - Add configurable minimum stable observations for an opportunity.
@@ -43,6 +45,21 @@ Finish the current scanner-speed/reliability branch as a production-hardening re
 - Add tests for alert-cycle user preloading/transfer-cache behavior where practical.
 - Run compileall + full pytest.
 - Inspect CI logs for failures and fix regressions before deployment.
+
+
+## Additional audit items
+- [x] Add a Python compile gate to CI.
+- [x] Remove the insecure built-in admin-secret fallback.
+- [x] Add normal-user AI rate limiting and response redaction.
+- [x] Make AI patch validation isolated from the live working tree.
+- [x] Require repository HEAD consistency before AI patch approval.
+- [ ] Review transfer-network contract matching for native assets and exchange-specific metadata.
+- [ ] Review execution-quality validation for top-ranked opportunities.
+- [ ] Add user-facing scan-performance/history analytics after the reliability release is green.
+- [ ] Run an EC2 production smoke test after CI is green; never delete the arbitrage_data volume.
+- [ ] Verify deployment environment has an explicit ADMIN_SECRET_KEY because the insecure default was removed.
+- [ ] Re-check command menus and callback routes after the feature batch.
+- [ ] Perform one final regression scan focused on exchange failures, partial ticker feeds, fee fallbacks, and alert deduplication.
 
 ## Completion criteria
 The implementation is considered complete only when:
