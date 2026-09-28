@@ -336,6 +336,7 @@ class Scanner:
             opportunities.append(opportunity)
 
         opportunities.sort(key=lambda item: item.metadata.get("rank_score", item.net_profit), reverse=True)
+        cycle_duration_ms = round((monotonic() - cycle_started) * 1000, 1)
         summary = {
             "selected_exchanges": list(active_exchanges),
             "exchange_status": exchange_status,
@@ -351,6 +352,7 @@ class Scanner:
             "opportunities_before_filters": detected_opportunities,
             "coverage_gap_symbols": len(coverage_gaps),
             "listing_difference_symbols": listing_difference_symbols,
+            "scan_duration_ms": cycle_duration_ms,
         }
         set_last_scan_diagnostics({"summary": summary, "gaps": coverage_gaps})
 
