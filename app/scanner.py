@@ -27,6 +27,7 @@ class Scanner:
         self.task: asyncio.Task | None = None
         self.running = False
         self.history = OpportunityHistory(max_points=12)
+        self._cycle_lock = asyncio.Lock()
 
     async def _fetch(self, exchange, symbols: list[str] | None = None) -> list[Ticker]:
         # One coroutine is issued per exchange. CCXT already rate-limits each
@@ -62,7 +63,12 @@ class Scanner:
             added += 1
         return added
 
-    async def run_cycle(self, *, require_matching_user: bool = True, exchange_names: set[str] | None = None) -> list[Opportunity]:
+    async def run_cycle(self, *args, **kwargs):
+        """Serialize background and manual scans so exchange I/O is not duplicated."""
+        async with self._cycle_lock:
+            return await self._run_cycle(*args, **kwargs)
+
+    async def _run_cycle(self, *, require_matching_user: bool = True, exchange_names: set[str] | None = None) -> list[Opportunity]:
         if exchange_names is None and require_matching_user:
             exchange_names = set()
             for user in await self.db.list_users("vip"):
@@ -73,6 +79,7 @@ class Scanner:
             set_last_scan_diagnostics({"summary": {}, "gaps": []})
             return []
 
+        matching_users = await self.db.list_users("vip") if require_matching_user else []
         market_symbols, market_errors = await self._load_market_symbols(active_exchanges)
         # A broken exchange must not block comparisons between the healthy exchanges.
         # The previous all-exchange intersection turned one failed market-discovery
@@ -303,7 +310,7 @@ class Scanner:
                 metadata=metadata,
             )
             detected_opportunities += 1
-            if require_matching_user and not await self._has_matching_users(opportunity):
+            if require_matching_user and not self._has_matching_users(opportunity, matching_users):
                 filtered_opportunities += 1
                 continue
             opportunities.append(opportunity)
@@ -343,8 +350,8 @@ class Scanner:
         )
         return opportunities
 
-    async def _has_matching_users(self, opportunity: Opportunity) -> bool:
-        for user in await self.db.list_users("vip"):
+    def _has_matching_users(self, opportunity: Opportunity, users) -> bool:
+        for user in users:
             selected = json.loads(user["selected_exchanges"] or "[]")
             if opportunity.buy_exchange not in selected or opportunity.sell_exchange not in selected:
                 continue
