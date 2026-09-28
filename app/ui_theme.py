@@ -124,6 +124,7 @@ def settings_menu() -> tuple[str, InlineKeyboardMarkup]:
         ("🛡️ Execution & Fees", "ui:execution"),
         ("👁 Symbols", "ui:symbols"),
         ("🔔 Alerts", "ui:alerts"),
+        ("🎯 Signal Quality", "ui:quality"),
         ("⚠️ Verification", "ui:verification"),
         ("♻️ Reset All Filters", "ui:reset"),
         ("🏠 Dashboard", "ui:dashboard"),
@@ -225,6 +226,20 @@ def settings_category(filters: dict, category: str) -> tuple[str, InlineKeyboard
             home,
             columns=2,
         )
+    if category == "quality":
+        text = screen(
+            "🎯 SIGNAL QUALITY",
+            "Control how persistent an opportunity must be before alerts",
+            [
+                f"Required observations  <b>{filters.get('min_stable_observations', 1)}</b>",
+                "",
+                "1 = alert on the first observation.",
+                "Higher values require the same route to appear across more scan cycles.",
+                "",
+                "Command: /setstability 1–12",
+            ],
+        )
+        return text, nav(back, home, columns=2)
     if category == "verification":
         loose = bool(filters.get("loose_mode"))
         text = screen(
