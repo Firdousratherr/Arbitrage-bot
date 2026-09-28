@@ -41,7 +41,12 @@ def parse_float(value: str, minimum: float = 0.0) -> float:
 
 
 def _effective_profit(opportunity, filters: dict[str, Any]) -> float:
-    return float(opportunity.net_profit if filters.get("fee_adjusted", True) else opportunity.raw_spread)
+    profit = float(opportunity.net_profit if filters.get("fee_adjusted", True) else opportunity.raw_spread)
+    trade_size = float(filters.get("trade_size", 1000.0) or 1000.0)
+    network_fee = max(0.0, float(filters.get("network_fee", 0.0) or 0.0))
+    if trade_size > 0 and network_fee:
+        profit -= (network_fee / trade_size) * 100.0
+    return profit
 
 
 def _diagnostic_reason(opportunity: Any, reason: str) -> str:
@@ -52,6 +57,16 @@ def _diagnostic_reason(opportunity: Any, reason: str) -> str:
     sell = str(getattr(opportunity, "sell_exchange", "?"))
     return f"gap {raw:.2f}% ({buy}→{sell}) • net {net:.2f}% • rejected: {reason}"
 
+
+
+def trade_size_is_valid(filters: dict[str, Any], size: float) -> tuple[bool, str | None]:
+    minimum = float(filters.get("min_trade_size", 10.0) or 10.0)
+    maximum = float(filters.get("max_trade_size", 100000.0) or 100000.0)
+    if size < minimum:
+        return False, f"trade size must be at least ${minimum:,.2f}"
+    if size > maximum:
+        return False, f"trade size cannot exceed ${maximum:,.2f}"
+    return True, None
 
 def match_reason(opportunity, filters: dict[str, Any]) -> str | None:
     raw = float(opportunity.raw_spread)
