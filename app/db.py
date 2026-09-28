@@ -29,6 +29,7 @@ DEFAULT_FILTERS = {
     "max_results": 10,
     "paused": False,
     "loose_mode": False,
+    "min_stable_observations": 1,
 }
 
 
