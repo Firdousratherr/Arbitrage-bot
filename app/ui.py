@@ -65,7 +65,7 @@ def format_opportunity_card(opportunity, identifier: str, card_number: int|str|N
         elif getattr(opportunity,"loose_mode",False):tag="⚠️ LOOSE-MODE OPPORTUNITY"
         elif getattr(opportunity,"net_profit",0)>=3.0:tag="🚨 HIGH-MARGIN ARBITRAGE"
         else:tag="🔴 LIVE ARBITRAGE"
-    metadata=getattr(opportunity,"metadata",{}) or {};tv=metadata.get("transfer_verification");bt=metadata.get("buy_transfer",{});st=metadata.get("sell_transfer")
+    metadata=getattr(opportunity,"metadata",{}) or {};tv=metadata.get("transfer_verification");bt=metadata.get("buy_transfer") or {};st=metadata.get("sell_transfer") or {}
     quality=int(metadata.get("confidence",0) or 0)
     stability=int(metadata.get("stability_observations",len(metadata.get("history") or [1])) or 1)
     fee_note="✅ exchange fee metadata" if metadata.get("fee_metadata_available") else "⚠️ default fee fallback"
