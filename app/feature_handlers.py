@@ -318,12 +318,21 @@ async def enhanced_details(update, context) -> None:
         metadata = json.loads(row["payload"] or "{}")
         quality = confidence_score(net_profit_pct=(result.net_profit / max(trade_size, 1e-9)) * 100, buy_volume=row["volume_buy"] or 0, sell_volume=row["volume_sell"] or 0, trade_size=trade_size, freshness_seconds=0, transfer_verified=bool(row["verified"]), coverage_complete=bool(metadata.get("coverage_complete")), executable_complete=result.complete)
         executable_pct = (result.net_profit / max(trade_size, 1e-9)) * 100
+        max_slippage = float(user_filters(user).get("max_slippage", 2.0) or 2.0)
+        observed_slippage = max(float(result.buy_slippage_pct), float(result.sell_slippage_pct))
+        slippage_ok = observed_slippage <= max_slippage
         transfer = metadata.get("matching_network")
         transfer_text = f"✅ Matching route: {transfer}" if transfer else "⚠️ Transfer route requires re-check"
         message = format_opportunity_details(row, buy_fill, sell_fill, float(buy_fee), float(sell_fee), result.gross_profit, result.net_profit, result.buy_slippage_pct, result.sell_slippage_pct, transfer_text, buy_book.get("asks", []), sell_book.get("bids", []))
         message += "\n\n🧠 <b>EXECUTION QUALITY</b>\n"
         message += f"💰 Requested trade   <b>${trade_size:,.2f}</b>\n🪙 Executable amount <b>{result.base_amount:,.8f}</b>\n💵 Gross P/L         <b>${result.gross_profit:,.4f}</b>\n✅ Net P/L           <b>${result.net_profit:,.4f}</b>\n🎯 Confidence        <b>{quality}/100</b>\n🏆 Execution rank    <b>{rank_score(row['net_profit'], quality, executable_pct):.2f}</b>\n"
-        message += "✅ Full requested size executable" if result.complete else "⚠️ Order-book depth cannot fill the full requested size"
+        message += f"📉 Max slippage      <b>{observed_slippage:.2f}% / {max_slippage:.2f}%</b>\n"
+        if not slippage_ok:
+            message += "⚠️ <b>Slippage limit exceeded</b> — execution is outside your configured limit"
+        elif result.complete:
+            message += "✅ Full requested size executable"
+        else:
+            message += "⚠️ Order-book depth cannot fill the full requested size"
     except Exception as exc:
         await query.edit_message_text(f"⚠️ Executable analysis unavailable: {type(exc).__name__}: {exc}")
         return
