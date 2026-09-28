@@ -193,8 +193,8 @@ def run_app() -> None:
 
     application = Application.builder().token(settings.telegram_bot_token).post_init(post_init_with_context).post_shutdown(post_shutdown).build()
 
-    # Enhanced feature handlers are registered first so they supersede legacy /scan and details UI,
-    # while all existing commands/callbacks remain available as fallbacks.
+    # Enhanced feature handlers own the live scan/details flows; legacy handlers keep
+    # account, settings, admin, and paper-trading commands available.
     for handler in build_feature_handlers():
         application.add_handler(handler)
     existing_handlers = build_handlers(db, settings.admin_id_set, settings.exchange_names, settings.admin_secret_key)
@@ -204,7 +204,9 @@ def run_app() -> None:
         application.add_handler(handler)
 
     async def error_handler(update, context):
-        logger.exception("exception in handler", exc_info=context.error)
+        error = context.error
+        if error:
+            logger.error("exception in handler: %s", error, exc_info=(type(error), error, error.__traceback__))
         try:
             message = format_error("Something went wrong running that command", "Try again in a moment")
             if update and update.effective_message:
