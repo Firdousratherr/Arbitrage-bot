@@ -40,9 +40,9 @@ class UserAIAssistant:
     def _sanitize(text: str) -> str:
         text = str(text or "")
         patterns = [
-            (r"(?i)(authorization\\s*[:=]\\s*bearer\\s+)[^\\s]+", r"\\1[REDACTED]"),
-            (r"(?i)(\\b(?:api[_-]?key|secret(?:[_-]?key)?|token|password|credential)\\s*[:=]\\s*)[^\\s,;]+", r"\\1[REDACTED]"),
-            (r"(?<!\\w)(?:/app|/home/runner|/workspace)/[^\\s]+", "[REDACTED_PATH]"),
+            (r"(?i)(authorization\s*[:=]\s*bearer\s+)[^\s]+", r"\1[REDACTED]"),
+            (r"(?i)(\b(?:api[_-]?key|secret(?:[_-]?key)?|token|password|credential)\s*[:=]\s*)[^\s,;]+", r"\1[REDACTED]"),
+            (r"(?<!\w)(?:/app|/home/runner|/workspace)/[^\s]+", "[REDACTED_PATH]"),
         ]
         for pattern, replacement in patterns:
             text = re.sub(pattern, replacement, text)
