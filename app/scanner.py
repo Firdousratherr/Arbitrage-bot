@@ -375,7 +375,12 @@ class Scanner:
 
     def _has_matching_users(self, opportunity: Opportunity, users) -> bool:
         for user in users:
-            selected = json.loads(user["selected_exchanges"] or "[]")
+            try:
+                selected = json.loads(user["selected_exchanges"] or "[]")
+            except (TypeError, json.JSONDecodeError):
+                selected = []
+            if not isinstance(selected, list):
+                selected = []
             if opportunity.buy_exchange not in selected or opportunity.sell_exchange not in selected:
                 continue
             filters = user_filters(user)
