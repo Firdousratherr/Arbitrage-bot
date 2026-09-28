@@ -118,7 +118,7 @@ class Scanner:
                 "opportunities_returned": 0,
                 "coverage_gap_symbols": 0,
                 "listing_difference_symbols": listing_difference_symbols,
-            "scan_duration_ms": cycle_duration_ms,
+                "scan_duration_ms": round((monotonic() - cycle_started) * 1000, 1),
             }
             set_last_scan_diagnostics({"summary": summary, "gaps": []})
             logger.warning("scan stopped: no common active spot markets; listed=%s errors=%s", {name: len(symbols) for name, symbols in market_symbols.items()}, market_errors)
