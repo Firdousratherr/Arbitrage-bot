@@ -256,9 +256,9 @@ async def ui_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             "🎮 PAPER TRADING",
             "Simulation only — no real exchange orders",
             [
-                f"💰 Total P/L  <b>\${row['total']:.4f}</b>",
+                f"💰 Total P/L  <b>${row['total']:.4f}</b>",
                 f"🧪 Trades     <b>{row['count']}</b>",
-                f"⭐ Best trade <b>\${row['best']:.4f}</b>",
+                f"⭐ Best trade <b>${row['best']:.4f}</b>",
                 "",
                 "Use a Scan Result's <b>Paper Trade</b> button for an execution-aware simulation.",
             ],
@@ -282,10 +282,10 @@ async def ui_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         cursor = await db._db().execute("SELECT COUNT(*) count, COALESCE(SUM(profit), 0) total, COALESCE(MAX(profit), 0) best FROM paper_trades WHERE user_id=?", (query.from_user.id,))
         row = await cursor.fetchone()
         text = screen("📊 PAPER PORTFOLIO", "Your simulated trading dashboard", [
-            f"💰 Balance  <b>\${10000 + row['total']:.2f}</b>",
-            f"📈 Total P/L <b>\${row['total']:.4f}</b>",
+            f"💰 Balance  <b>${10000 + row['total']:.2f}</b>",
+            f"📈 Total P/L <b>${row['total']:.4f}</b>",
             f"🧪 Trades   <b>{row['count']}</b>",
-            f"⭐ Best     <b>\${row['best']:.4f}</b>",
+            f"⭐ Best     <b>${row['best']:.4f}</b>",
         ])
         await query.edit_message_text(text, reply_markup=nav(("🎮 Paper", "ui:paper"), ("🏠 Dashboard", "ui:dashboard")), parse_mode="HTML")
         return
@@ -298,8 +298,8 @@ async def ui_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         text = screen("📈 PAPER STATS", "Your simulation performance", [
             f"🧪 Trades     <b>{row['count']}</b>",
             f"🎯 Win rate   <b>{row['win_rate'] * 100:.1f}%</b>",
-            f"💰 Total P/L  <b>\${row['total']:.4f}</b>",
-            f"⭐ Best trade <b>\${row['best']:.4f}</b>",
+            f"💰 Total P/L  <b>${row['total']:.4f}</b>",
+            f"⭐ Best trade <b>${row['best']:.4f}</b>",
         ])
         await query.edit_message_text(text, reply_markup=nav(("🎮 Paper", "ui:paper"), ("🏠 Dashboard", "ui:dashboard")), parse_mode="HTML")
         return
