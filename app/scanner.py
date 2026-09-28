@@ -248,7 +248,7 @@ class Scanner:
                 return name, {}
 
         fee_results = await asyncio.gather(
-            *(_load_fee_map(name, exchange) for name, exchange in active_exchanges.items()),
+            *(_load_fee_map(name, exchange) for name, exchange in ticker_exchanges.items()),
             return_exceptions=True,
         )
         for item in fee_results:
