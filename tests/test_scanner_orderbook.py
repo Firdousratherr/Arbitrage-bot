@@ -26,6 +26,7 @@ class FakeExchange:
         self.fail_markets = fail_markets
         self.fail_fetch = fail_fetch
         self.last_fetch_symbols = {}
+        self.last_fetch_error = None
 
     async def get_active_spot_symbols(self):
         if self.fail_markets:
@@ -34,7 +35,9 @@ class FakeExchange:
 
     async def fetch_tickers(self, symbols=None):
         if self.fail_fetch:
-            raise RuntimeError("ticker API unavailable")
+            self.last_fetch_error = "ticker API unavailable"
+            return []
+        self.last_fetch_error = None
         return [Ticker(self.name, "BTC/USDT", self.bid, self.ask, 1_000_000)]
 
     async def get_taker_fees(self, symbols):
@@ -196,3 +199,25 @@ async def test_scan_clears_stale_filter_diagnostics():
         exchange_names={"buy", "sell"},
     )
     assert get_last_scan_snapshot()["filter_rejections"] == {}
+
+
+@pytest.mark.asyncio
+async def test_fetch_error_is_reported_as_failed_exchange():
+    scanner = Scanner(
+        FakeDB(),
+        {
+            "good": FakeExchange("good", ask=100, bid=99),
+            "broken": FakeExchange("broken", ask=101, bid=100, fail_fetch=True),
+        },
+        interval=30,
+        concurrency=4,
+    )
+    await scanner.run_cycle(
+        require_matching_user=False,
+        exchange_names={"good", "broken"},
+    )
+
+    from app.scan_diagnostics import get_last_scan_snapshot
+    status = get_last_scan_snapshot()["summary"]["exchange_status"]["broken"]
+    assert status["status"] == "fetch failed"
+    assert "ticker API unavailable" in status["error"]
