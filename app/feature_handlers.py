@@ -140,7 +140,7 @@ async def _run_enhanced_scan(update, context, scanner, target, progress, prefere
                 "filter": f"gap {item.raw_spread:.2f}% ({item.buy_exchange} → {item.sell_exchange}) — {match_reason(item, preferences) or 'filtered'}"
             },
         } for item in rejected[:50]]
-        set_manual_scan_diagnostics({
+        set_manual_scan_diagnostics(update.effective_user.id, {
             "summary": summary,
             "gaps": manual_gaps,
             "filter_rejections": {item.symbol: match_reason(item, preferences) or "filtered" for item in rejected[:50]},
@@ -169,7 +169,7 @@ async def _run_enhanced_scan(update, context, scanner, target, progress, prefere
     except asyncio.CancelledError:
         raise
     except Exception as exc:
-        snapshot = get_manual_scan_snapshot() or get_last_scan_snapshot() or {}
+        snapshot = get_manual_scan_snapshot(update.effective_user.id) or get_last_scan_snapshot() or {}
         summary = snapshot.get("summary", {}) or {}
         statuses = summary.get("exchange_status", {}) or {}
         details = [f"{type(exc).__name__}: {exc}"]
@@ -231,7 +231,7 @@ async def scaninfo_command(update, context) -> None:
     if not await require_vip(update, context):
         return
 
-    snapshot = get_manual_scan_snapshot() or {}
+    snapshot = get_manual_scan_snapshot(update.effective_user.id) or {}
     if not snapshot.get("summary"):
         snapshot = get_last_scan_snapshot() or {}
     summary = snapshot.get("summary", {}) or {}
