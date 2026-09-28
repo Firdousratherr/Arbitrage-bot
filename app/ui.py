@@ -65,7 +65,10 @@ def format_opportunity_card(opportunity, identifier: str, card_number: int|str|N
         elif getattr(opportunity,"loose_mode",False):tag="⚠️ LOOSE-MODE OPPORTUNITY"
         elif getattr(opportunity,"net_profit",0)>=3.0:tag="🚨 HIGH-MARGIN ARBITRAGE"
         else:tag="🔴 LIVE ARBITRAGE"
-    metadata=getattr(opportunity,"metadata",{}) or {};tv=metadata.get("transfer_verification");bt=metadata.get("buy_transfer",{});st=metadata.get("sell_transfer",{})
+    metadata=getattr(opportunity,"metadata",{}) or {};tv=metadata.get("transfer_verification");bt=metadata.get("buy_transfer",{});st=metadata.get("sell_transfer")
+    quality=int(metadata.get("confidence",0) or 0)
+    stability=int(metadata.get("stability_observations",len(metadata.get("history") or [1])) or 1)
+    fee_note="✅ exchange fee metadata" if metadata.get("fee_metadata_available") else "⚠️ default fee fallback"
     if tv=="loose_mode":transfer_line="⚠️ Transfer checks skipped — verify manually"
     elif tv=="not_verified":transfer_line="🛡️ Unverified — manual check recommended"
     else:
@@ -74,7 +77,7 @@ def format_opportunity_card(opportunity, identifier: str, card_number: int|str|N
         gross=trade_size*opportunity.raw_spread/100;fees=trade_size*(opportunity.raw_spread-opportunity.net_profit)/100;net=trade_size*opportunity.net_profit/100;gross_text=f"${_compact_number(gross,4)}";fees_text=f"${_compact_number(fees,4)}";net_text=f"${_compact_number(net,4)}";size_text=f"${_compact_number(trade_size,4)}"
     else:gross_text=f"{opportunity.raw_spread:.2f}%";fees_text=f"{opportunity.raw_spread-opportunity.net_profit:.2f}%";net_text=f"{opportunity.net_profit:.2f}%";size_text="$1,000"
     coin=opportunity.symbol.split("/")[0];coin_amount=trade_size/opportunity.buy_price if trade_size and opportunity.buy_price>0 else 1000/opportunity.buy_price if opportunity.buy_price>0 else 0
-    lines=_panel(tag,f"<b>{_escape_html(opportunity.symbol)}</b> • live market data");lines.extend(["🟢 <b>BUY HERE</b>",f"   🌐 {_escape_html(opportunity.buy_exchange)}  •  <b>${_compact_number(opportunity.buy_price,8)}</b>","","🔴 <b>SELL HERE</b>",f"   🌐 {_escape_html(opportunity.sell_exchange)}  •  <b>${_compact_number(opportunity.sell_price,8)}</b>","",SECTION_SEPARATOR,"📊 Profit Breakdown",f"   📈 Gross       {gross_text}",f"   💸 Fees        − {fees_text}",f"   🚀 <b>Net        {net_text}</b>",f"   🎯 Spread      <b>{opportunity.net_profit:.2f}%</b>","","📋 <b>TRADE DETAILS</b>",f"   💵 Size        {size_text}",f"   🪙 Amount      {_compact_number(coin_amount,6)} {coin}",f"   🛡️ Transfer    {transfer_line}",BOTTOM]);return "\n".join(lines).replace("\n\n","\n")
+    lines=_panel(tag,f"<b>{_escape_html(opportunity.symbol)}</b> • live market data");lines.extend([f"⭐ Quality <b>{quality}/100</b> • Stability <b>{stability}</b>",f"💸 Fees {fee_note}","🟢 <b>BUY HERE</b>",f"   🌐 {_escape_html(opportunity.buy_exchange)}  •  <b>${_compact_number(opportunity.buy_price,8)}</b>","","🔴 <b>SELL HERE</b>",f"   🌐 {_escape_html(opportunity.sell_exchange)}  •  <b>${_compact_number(opportunity.sell_price,8)}</b>","",SECTION_SEPARATOR,"📊 Profit Breakdown",f"   📈 Gross       {gross_text}",f"   💸 Fees        − {fees_text}",f"   🚀 <b>Net        {net_text}</b>",f"   🎯 Spread      <b>{opportunity.net_profit:.2f}%</b>","","📋 <b>TRADE DETAILS</b>",f"   💵 Size        {size_text}",f"   🪙 Amount      {_compact_number(coin_amount,6)} {coin}",f"   🛡️ Transfer    {transfer_line}",BOTTOM]);return "\n".join(lines).replace("\n\n","\n")
 
 def opportunity_buttons(identifier: str)->InlineKeyboardMarkup:return InlineKeyboardMarkup([[InlineKeyboardButton("📖  Order Book & Analysis",callback_data=f"details:{identifier}")],[InlineKeyboardButton("🎮  Paper Trade",callback_data=f"paper:{identifier}")]])
 def format_background_alert(opportunity,identifier: str)->str:return format_opportunity_card(opportunity,identifier)
