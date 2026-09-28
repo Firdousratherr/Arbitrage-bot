@@ -102,7 +102,7 @@ class Scanner:
 
         if not common_market_symbols:
             cycle_duration_ms = round((monotonic() - cycle_started) * 1000, 1)
-        summary = {
+            summary = {
                 "selected_exchanges": list(active_exchanges),
                 "exchange_status": {
                     name: ({"status": "market discovery failed", "error": market_errors[name]} if name in market_errors else {"status": "no active spot markets", "market_count": len(market_symbols[name])})
@@ -116,9 +116,9 @@ class Scanner:
                 "opportunities_detected": 0,
                 "opportunities_filtered": 0,
                 "opportunities_returned": 0,
-                "coverage_gap_symbols": 0,
                 "listing_difference_symbols": listing_difference_symbols,
-                "scan_duration_ms": round((monotonic() - cycle_started) * 1000, 1),
+                "coverage_gap_symbols": 0,
+                "scan_duration_ms": cycle_duration_ms,
             }
             set_last_scan_diagnostics({"summary": summary, "gaps": []})
             logger.warning("scan stopped: no common active spot markets; listed=%s errors=%s", {name: len(symbols) for name, symbols in market_symbols.items()}, market_errors)
