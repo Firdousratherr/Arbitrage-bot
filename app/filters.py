@@ -69,6 +69,13 @@ def trade_size_is_valid(filters: dict[str, Any], size: float) -> tuple[bool, str
     return True, None
 
 def match_reason(opportunity, filters: dict[str, Any]) -> str | None:
+    metadata = getattr(opportunity, "metadata", {}) or {}
+    history = metadata.get("history") or []
+    minimum_stable = max(1, min(12, int(filters.get("min_stable_observations", 1) or 1)))
+    if len(history) < minimum_stable:
+        reason = _diagnostic_reason(opportunity, f"only {len(history)}/{minimum_stable} required observations")
+        _record_rejection(opportunity, reason)
+        return reason
     raw = float(opportunity.raw_spread)
     profit = _effective_profit(opportunity, filters)
     if not filters["min_profit"] <= profit <= filters["max_profit"]:
