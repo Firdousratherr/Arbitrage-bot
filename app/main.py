@@ -174,6 +174,7 @@ def run_app() -> None:
             BotCommand("leaderboard", "View paper-trading leaderboard"),
             BotCommand("aichat", "Chat with the AI assistant"),
             BotCommand("aifix", "Ask AI to investigate a problem"),
+            BotCommand("setstability", "Require repeated opportunity observations"),
         ]
         await application.bot.set_my_commands(user_commands)
         admin_commands = user_commands + [
@@ -283,9 +284,11 @@ def _matching_network(buy_meta: dict, sell_meta: dict) -> str | None:
     return None
 
 
-async def _send_alert(db: Database, user_id: int, opportunity, identifier: str, application: Application) -> None:
-    user = await db.get_user(user_id)
-    preferences = user_filters(user) if user else {"trade_size": 1000.0}
+async def _send_alert(db: Database, user_id: int, opportunity, identifier: str, application: Application, *, user=None, preferences: dict | None = None) -> None:
+    if user is None:
+        user = await db.get_user(user_id)
+    if preferences is None:
+        preferences = user_filters(user) if user else {"trade_size": 1000.0}
     metadata = dict(getattr(opportunity, "metadata", {}) or {})
     observed_at = metadata.get("observed_at")
     try:
