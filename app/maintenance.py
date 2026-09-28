@@ -263,6 +263,15 @@ class MaintenanceAssistant:
             ]
             first_match = min(line_numbers or [1])
             last_match = max(line_numbers or [120])
+            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", query.strip()):
+                try:
+                    raw_source = self._safe_repository_path(item["path"]).read_text(encoding="utf-8", errors="replace")
+                    exact_match = re.search(rf"^\\s*(?:async\\s+)?def\\s+{re.escape(query.strip())}\\b", raw_source, re.IGNORECASE | re.MULTILINE)
+                    if exact_match:
+                        first_match = exact_match.group(0) and raw_source[:exact_match.start()].count("\\n") + 1
+                        last_match = max(last_match, first_match)
+                except (OSError, MaintenanceError):
+                    pass
             first_line = max(1, first_match - 12)
             source_window = self.read_repository_file(item["path"], first_line, first_match + 60)
             if last_match > first_match + 60:
