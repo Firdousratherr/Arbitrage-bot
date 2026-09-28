@@ -187,9 +187,6 @@ class MaintenanceAssistant:
             for term in terms:
                 if re.search(rf"^\s*(?:async\s+)?def\s+{re.escape(term)}\b", text, re.IGNORECASE | re.MULTILINE):
                     score += 1000
-            for term in terms:
-                if re.search(rf"^\s*(?:async\s+)?def\s+{re.escape(term)}\b", text, re.IGNORECASE | re.MULTILINE):
-                    score += 1000
             if relative in changed_paths:
                 score += 12
             if score == 0:
@@ -247,6 +244,12 @@ class MaintenanceAssistant:
 
     def repository_context(self, query: str) -> str:
         matches = self.search_repository(query)
+        exact = [item for item in matches if item.get("score", 0) >= 1000]
+        others = [item for item in matches if item not in exact]
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", query.strip()):
+            matches = exact[:4] + others[:8]
+        else:
+            matches = matches[:12]
         paths = [item["path"] for item in matches]
         sections = ["Repository: " + str(self.repo_path), "Files discovered: " + str(len(self.list_repository_files()))]
         sections.append("Relevant search results:")
