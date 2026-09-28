@@ -139,9 +139,11 @@ async def ui_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await query.edit_message_text(
             "🤖 <b>AI ASSISTANT</b>\\n\\n"
             "Ask questions about the scanner, arbitrage results, settings, fees, liquidity, paper trading, or troubleshooting.\\n\\n"
-            "<b>Chat:</b> <code>/aichat your question</code>\\n"
-            "<b>Fix:</b> <code>/aifix describe the problem</code>\\n\\n"
-            "AI fixes are proposals only. Production changes require administrator approval.",
+            "<b>Chat:</b> <code>/aichat your question</code>\n"
+            "<b>Fix:</b> <code>/aifix describe the problem</code>\n"
+            "<b>Cancel:</b> <code>/aicancel</code>\n\n"
+            "AI requests run in the background so the bot stays responsive. AI fixes are proposals only. Production changes require administrator approval.",
+
             reply_markup=nav(("🏠 Dashboard", "ui:dashboard"), columns=1),
             parse_mode="HTML",
         )
