@@ -185,7 +185,7 @@ async def ui_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
     category_map = {
         "ui:profit": "profit", "ui:liquidity": "liquidity", "ui:execution": "execution",
-        "ui:symbols": "symbols", "ui:alerts": "alerts", "ui:verification": "verification",
+        "ui:symbols": "symbols", "ui:alerts": "alerts", "ui:quality": "quality", "ui:verification": "verification",
     }
     if action in category_map:
         if not user:
