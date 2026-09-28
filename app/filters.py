@@ -29,7 +29,12 @@ def _record_rejection(opportunity: Any, reason: str) -> None:
 
 
 def user_filters(user: Any) -> dict[str, Any]:
-    stored = json.loads(user["filters"] or "{}")
+    try:
+        stored = json.loads(user["filters"] or "{}")
+    except (TypeError, json.JSONDecodeError):
+        stored = {}
+    if not isinstance(stored, dict):
+        stored = {}
     return {**DEFAULT_FILTERS, **stored}
 
 
