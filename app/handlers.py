@@ -597,7 +597,7 @@ async def _create_paper_trade(context, user_id: int, row, size: float):
     row_today = await cursor.fetchone()
     used_today = float(row_today["total"] or 0.0)
     if used_today + size > daily_cap:
-        raise ValueError(f"daily paper-trade cap is \${daily_cap:,.2f}; used today: \${used_today:,.2f}")
+        raise ValueError(f"daily paper-trade cap is ${daily_cap:,.2f}; used today: ${used_today:,.2f}")
     exchanges = context.application.bot_data.get("exchanges", {})
     buy_exchange = exchanges.get(row["buy_exchange"])
     sell_exchange = exchanges.get(row["sell_exchange"])
@@ -672,7 +672,7 @@ async def paper_trade_callback(update, context):
         profit=profit,
     )
     message += (
-        f"\n🌐 Network fee   \${network_fee:,.4f}"
+        f"\n🌐 Network fee   ${network_fee:,.4f}"
         f"\n📉 Max slippage  {max(result.buy_slippage_pct, result.sell_slippage_pct):.2f}%"
     )
     await query.edit_message_text(
@@ -787,10 +787,15 @@ async def set_daily_cap(update, context):
     await _set_numeric_setting(update, context, "daily_cap", "Daily paper-trade cap ($)", 0.01)
 
 async def papertrade(update, context):
-    if not await require_vip(update, context): return
-    if len(context.args) != 2: await update.message.reply_text("🧪 Usage: /papertrade OPPORTUNITY_ID SIZE"); return
-    db = get_db(context); row = await db.get_opportunity(context.args[0])
-    if not row: await update.message.reply_text("Opportunity not found or expired."); return
+    if not await require_vip(update, context):
+        return
+    if len(context.args) != 2:
+        await update.message.reply_text("🧪 Usage: /papertrade OPPORTUNITY_ID SIZE")
+        return
+    row = await get_db(context).get_opportunity(context.args[0])
+    if not row:
+        await update.message.reply_text("Opportunity not found or expired.")
+        return
     try:
         size = float(context.args[1])
     except ValueError:
@@ -799,35 +804,22 @@ async def papertrade(update, context):
     if size <= 0:
         await update.message.reply_text("❌ SIZE must be greater than zero.")
         return
-    user = await db.get_user(update.effective_user.id)
-    preferences = user_filters(user)
-    ok, reason = trade_size_is_valid(preferences, size)
-    if not ok:
-        await update.message.reply_text(f"❌ {reason}.")
+    try:
+        opportunity, result, network_fee, profit = await _create_paper_trade(context, update.effective_user.id, row, size)
+    except Exception as exc:
+        await update.message.reply_text(f"⚠️ Paper trade not created\n{type(exc).__name__}: {exc}")
         return
-    daily_cap = float(preferences.get("daily_cap", 100000.0) or 100000.0)
-    start_of_day = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
-    cursor = await db._db().execute("SELECT COALESCE(SUM(size), 0) AS total FROM paper_trades WHERE user_id=? AND created_at>=?", (update.effective_user.id, start_of_day))
-    row_today = await cursor.fetchone()
-    used_today = float(row_today["total"] or 0.0)
-    if used_today + size > daily_cap:
-        await update.message.reply_text(f"❌ Daily paper-trade cap is ${daily_cap:,.2f}. Used today: ${used_today:,.2f}.")
-        return
-    network_fee = float(preferences.get("network_fee", 0.0) or 0.0)
-    expected_gross = size * (row["raw_spread"] / 100)
-    profit = size * (row["net_profit"] / 100) - network_fee; period = datetime.now(UTC).strftime("%G-%V")
-    await db._db().execute("INSERT INTO paper_trades(user_id, opportunity_id, size, profit, created_at, period) VALUES (?, ?, ?, ?, ?, ?)", (update.effective_user.id, context.args[0], size, profit, datetime.now(UTC).isoformat(), period)); await db._db().commit()
     message = format_paper_trade(
-        type("OpportunityShim", (), {"symbol": row["symbol"], "buy_exchange": row["buy_exchange"], "sell_exchange": row["sell_exchange"]})(),
-        buy_price=row["buy_price"],
-        sell_price=row["sell_price"],
+        opportunity,
+        buy_price=result.spent_quote / max(result.base_amount, 1e-12),
+        sell_price=result.sell_proceeds / max(result.base_amount, 1e-12),
         size=size,
-        expected_gross=expected_gross,
+        expected_gross=result.gross_profit,
         estimated_net=profit,
         profit=profit,
     )
-    await update.message.reply_text(message)
-
+    message += f"\n🌐 Network fee   ${network_fee:,.4f}\n📉 Max slippage  {max(result.buy_slippage_pct, result.sell_slippage_pct):.2f}%"
+    await update.message.reply_text(message, parse_mode="HTML")
 
 async def paperstats(update, context):
     if not await require_vip(update, context): return
@@ -836,24 +828,29 @@ async def paperstats(update, context):
 
 
 async def leaderboard(update, context):
-    if not await require_vip(update, context): return
-    if context.args and context.args[0].lower() != "alltime":
+    if not await require_vip(update, context):
+        return
+    if context.args and context.args[0].lower() not in {"alltime"}:
         await update.message.reply_text("Usage: /leaderboard or /leaderboard alltime")
         return
     period = "alltime" if context.args and context.args[0].lower() == "alltime" else datetime.now(UTC).strftime("%G-%V")
-    where = "1=1" if period == "alltime" else "period=?"; args = () if period == "alltime" else (period,)
-    cursor = await get_db(context)._db().execute(f"SELECT u.username, u.telegram_id, SUM(p.profit) total FROM paper_trades p JOIN users u ON u.telegram_id=p.user_id WHERE u.leaderboard_hidden=0 AND {where} GROUP BY p.user_id ORDER BY total DESC LIMIT 10", args); rows = await cursor.fetchall()
-    user_rank = None
-    user_profit = None
-    cursor = await get_db(context)._db().execute(f"SELECT ROW_NUMBER() OVER (ORDER BY total DESC) rank, COALESCE(SUM(p.profit), 0) total FROM paper_trades p WHERE p.user_id = ? AND {where}", (update.effective_user.id, *args))
+    where = "1=1" if period == "alltime" else "period=?"
+    args = () if period == "alltime" else (period,)
+    db = get_db(context)
+    cursor = await db._db().execute(
+        f"SELECT u.username, u.telegram_id, SUM(p.profit) total FROM paper_trades p JOIN users u ON u.telegram_id=p.user_id WHERE u.leaderboard_hidden=0 AND {where} GROUP BY p.user_id ORDER BY total DESC LIMIT 10",
+        args,
+    )
+    rows = await cursor.fetchall()
+    cursor = await db._db().execute(
+        f"SELECT rank, total FROM (SELECT p.user_id, SUM(p.profit) total, DENSE_RANK() OVER (ORDER BY SUM(p.profit) DESC) rank FROM paper_trades p WHERE {where} GROUP BY p.user_id) ranked WHERE user_id=?",
+        (*args, update.effective_user.id),
+    )
     user_row = await cursor.fetchone()
-    if user_row and user_row["total"]:
-        user_rank = user_row["rank"]
-        user_profit = user_row["total"]
+    user_rank = user_row["rank"] if user_row else None
+    user_profit = user_row["total"] if user_row else None
     period_name = "All-Time" if period == "alltime" else "Weekly"
-    message = format_leaderboard(list(rows), period_name, user_rank, user_profit)
-    await update.message.reply_text(message, parse_mode="HTML")
-
+    await update.message.reply_text(format_leaderboard(list(rows), period_name, user_rank, user_profit), parse_mode="HTML")
 
 async def leaderboard_callback(update, context):
     await update.callback_query.answer()
