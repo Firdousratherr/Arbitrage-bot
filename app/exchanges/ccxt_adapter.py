@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from time import monotonic
 from typing import Any
 
 import ccxt.async_support as ccxt
@@ -41,6 +42,7 @@ class CcxtExchangeAdapter:
         }
         self.last_fetch_error: str | None = None
         self.last_fetch_symbols: dict[str, str] = {}
+        self.last_fetch_ms: float = 0.0
         self._taker_fee_cache: dict[str, float] = {}
 
     @staticmethod
@@ -59,6 +61,7 @@ class CcxtExchangeAdapter:
         ]
 
     async def fetch_tickers(self, symbols: list[str] | None = None) -> list[Ticker]:
+        started = monotonic()
         try:
             requested = list(dict.fromkeys(symbols or []))
             requested_set = set(requested)
@@ -119,19 +122,23 @@ class CcxtExchangeAdapter:
                         missing_symbols.pop(symbol, None)
 
             self.last_fetch_symbols = missing_symbols
+            self.last_fetch_ms = round((monotonic() - started) * 1000, 1)
             self.last_fetch_stats = {
                 "raw": len(data), "dropped_bid_ask": dropped, "usable": len(result),
                 "fallback_used": fallback_used, "targeted_recovery_used": 0,
                 "requested_symbols": len(requested),
+                "latency_ms": self.last_fetch_ms,
             }
             self.last_fetch_error = None
             if requested_set and missing_symbols:
                 logger.warning("%s still has %s requested symbols without usable ticker data", self.name, len(missing_symbols))
             return result
         except Exception as exc:
+            self.last_fetch_ms = round((monotonic() - started) * 1000, 1)
             self.last_fetch_stats = {
                 "raw": 0, "dropped_bid_ask": 0, "usable": 0, "fallback_used": 0,
                 "targeted_recovery_used": 0, "requested_symbols": len(symbols or []),
+                "latency_ms": self.last_fetch_ms,
             }
             self.last_fetch_error = f"{type(exc).__name__}: {exc}"
             self.last_fetch_symbols = {symbol: self.last_fetch_error for symbol in (symbols or [])}
