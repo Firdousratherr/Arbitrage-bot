@@ -263,7 +263,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/papertrade ID SIZE — execution-aware simulation",
         "/paperstats",
         "/portfolio",
-        "/leaderboard [alltime]",
+        "/leaderboard [alltime|hide|show]",
         "",
         "Use /menu for the organized dashboard; low-level setting commands stay out of the main menu.",
     ]
