@@ -105,6 +105,49 @@ def get_user_ai(context: ContextTypes.DEFAULT_TYPE) -> UserAIAssistant:
     return context.application.bot_data["user_ai"]
 
 
+def _user_ai_tasks(context):
+    return context.application.bot_data.setdefault("user_ai_tasks", {})
+
+
+def _track_user_ai_task(context, user_id: int, task: asyncio.Task) -> None:
+    tasks = _user_ai_tasks(context)
+    tasks[user_id] = task
+
+    def _cleanup(done_task: asyncio.Task) -> None:
+        if tasks.get(user_id) is done_task:
+            tasks.pop(user_id, None)
+
+    task.add_done_callback(_cleanup)
+
+
+async def _run_user_ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE, question: str) -> None:
+    try:
+        answer = await get_user_ai(context).chat(question, user_id=update.effective_user.id)
+        await update.effective_message.reply_text(answer[:3900])
+    except asyncio.CancelledError:
+        logger.info("user AI chat cancelled for %s", update.effective_user.id)
+        raise
+    except MaintenanceError as exc:
+        await update.effective_message.reply_text(f"🤖 AI chat error: {escape(str(exc))}", parse_mode="HTML")
+    except Exception as exc:
+        logger.exception("normal-user AI chat failed")
+        await update.effective_message.reply_text(f"🤖 AI chat failed: {type(exc).__name__}")
+
+
+async def _run_user_ai_fix(update: Update, context: ContextTypes.DEFAULT_TYPE, issue: str) -> None:
+    try:
+        _, message = await get_user_ai(context).propose_user_fix(issue, user_id=update.effective_user.id)
+        await update.effective_message.reply_text(message, parse_mode="HTML")
+    except asyncio.CancelledError:
+        logger.info("user AI fix cancelled for %s", update.effective_user.id)
+        raise
+    except MaintenanceError as exc:
+        await update.effective_message.reply_text(f"🛠 AI fix error: {escape(str(exc))}")
+    except Exception as exc:
+        logger.exception("normal-user AI fix failed")
+        await update.effective_message.reply_text(f"🛠 AI fix failed: {type(exc).__name__}")
+
+
 async def user_ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not context.args:
         await update.effective_message.reply_text(
@@ -113,13 +156,16 @@ async def user_ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             parse_mode="HTML",
         )
         return
-    question = " ".join(context.args).strip()
-    try:
-        answer = await get_user_ai(context).chat(question, user_id=update.effective_user.id)
-    except MaintenanceError as exc:
-        await update.effective_message.reply_text(f"🤖 AI chat error: {escape(str(exc))}", parse_mode="HTML")
+    user_id = update.effective_user.id
+    tasks = _user_ai_tasks(context)
+    existing = tasks.get(user_id)
+    if existing and not existing.done():
+        await update.effective_message.reply_text("🤖 An AI request is already running for you. Use /aicancel to stop it.")
         return
-    await update.effective_message.reply_text(answer[:3900])
+    question = " ".join(context.args).strip()
+    await update.effective_message.reply_text("🤖 AI request started. You can continue using the bot while it works.")
+    task = asyncio.create_task(_run_user_ai_chat(update, context, question))
+    _track_user_ai_task(context, user_id, task)
 
 
 async def user_ai_fix(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -130,18 +176,28 @@ async def user_ai_fix(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             parse_mode="HTML",
         )
         return
-    issue = " ".join(context.args).strip()
-    await update.effective_message.reply_text("🧠 Investigating the problem and preparing a safe repair proposal…")
-    try:
-        _, message = await get_user_ai(context).propose_user_fix(issue, user_id=update.effective_user.id)
-    except MaintenanceError as exc:
-        await update.effective_message.reply_text(f"🛠 AI fix error: {escape(str(exc))}")
+    user_id = update.effective_user.id
+    tasks = _user_ai_tasks(context)
+    existing = tasks.get(user_id)
+    if existing and not existing.done():
+        await update.effective_message.reply_text("🛠 An AI request is already running for you. Use /aicancel to stop it.")
         return
-    await update.effective_message.reply_text(message, parse_mode="HTML")
+    issue = " ".join(context.args).strip()
+    await update.effective_message.reply_text("🧠 AI investigation started. Use /aicancel to stop it if needed.")
+    task = asyncio.create_task(_run_user_ai_fix(update, context, issue))
+    _track_user_ai_task(context, user_id, task)
 
 
 async def user_ai_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.effective_message.reply_text("🛑 AI requests are approval-gated. This command does not cancel an already-running provider request; no production change was made.")
+    user_id = update.effective_user.id
+    tasks = _user_ai_tasks(context)
+    task = tasks.get(user_id)
+    if task and not task.done():
+        task.cancel()
+        tasks.pop(user_id, None)
+        await update.effective_message.reply_text("🛑 Your AI request was cancelled. No production change was made.")
+        return
+    await update.effective_message.reply_text("ℹ️ You do not have a running AI request.")
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
