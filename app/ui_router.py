@@ -132,6 +132,20 @@ async def ui_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         text, keyboard = dashboard() if user else welcome()
         await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
         return
+    if action == "ui:ai":
+        if not user:
+            await query.edit_message_text("Register first with /start.")
+            return
+        await query.edit_message_text(
+            "🤖 <b>AI ASSISTANT</b>\\n\\n"
+            "Ask questions about the scanner, arbitrage results, settings, fees, liquidity, paper trading, or troubleshooting.\\n\\n"
+            "<b>Chat:</b> <code>/aichat your question</code>\\n"
+            "<b>Fix:</b> <code>/aifix describe the problem</code>\\n\\n"
+            "AI fixes are proposals only. Production changes require administrator approval.",
+            reply_markup=nav(("🏠 Dashboard", "ui:dashboard"), columns=1),
+            parse_mode="HTML",
+        )
+        return
     if action == "ui:help":
         text = screen("ℹ️ HOW IT WORKS", "A simple arbitrage workflow", ["1️⃣ Select at least two exchanges.", "2️⃣ Scanner compares live bid/ask prices.", "3️⃣ Filters remove weak signals.", "4️⃣ Transfer routes are verified when possible.", "5️⃣ Open Order Book for execution analysis.", "6️⃣ Use Paper Trade to simulate the result."])
         await query.edit_message_text(text, reply_markup=nav(("↩️ Dashboard", "ui:dashboard"), columns=1), parse_mode="HTML")
