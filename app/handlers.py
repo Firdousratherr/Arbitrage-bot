@@ -36,7 +36,7 @@ EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 EMAIL_STAGE, EXCHANGES_STAGE, VIP_STAGE = range(3)
 
 
-def build_handlers(db: Database, admin_ids: set[int], exchange_names: list[str]):
+def build_handlers(db: Database, admin_ids: set[int], exchange_names: list[str], _legacy_admin_secret_key: str | None = None):
     registration = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
