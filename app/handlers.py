@@ -36,7 +36,7 @@ EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 EMAIL_STAGE, EXCHANGES_STAGE, VIP_STAGE = range(3)
 
 
-def build_handlers(db: Database, admin_ids: set[int], exchange_names: list[str], admin_secret_key: str):
+def build_handlers(db: Database, admin_ids: set[int], exchange_names: list[str]):
     registration = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
@@ -373,7 +373,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if is_admin:
         lines.extend([
             "", "🛡️ <b>ADMIN</b>",
-            "/admin YOUR_ADMIN_SECRET",
+            "/admin — unlock admin tools for your authorized Telegram ID",
             "/genkey KEY DAYS|lifetime",
             "/listkeys [status]",
             "/revokekey KEY",
@@ -1020,18 +1020,8 @@ async def admin_access(update, context):
     if update.effective_user.id not in context.application.bot_data["admin_ids"]:
         await update.effective_message.reply_text("🛡️ Admin access required.")
         return
-    configured_secret = context.application.bot_data["admin_secret_key"]
-    if not configured_secret:
-        await update.effective_message.reply_text("❌ Admin secret is not configured on the bot.")
-        return
-    if len(context.args) != 1:
-        await update.effective_message.reply_text("Usage: /admin YOUR_ADMIN_SECRET")
-        return
-    if context.args[0] != configured_secret:
-        await update.effective_message.reply_text("❌ Invalid admin secret key.")
-        return
     context.user_data["admin_unlocked"] = True
-    await update.effective_message.reply_text("🛡️ <b>Admin session unlocked</b>\n🔐 Protected tools are now available.", parse_mode="HTML")
+    await update.effective_message.reply_text("🛡️ <b>Admin session unlocked</b>\n🔐 Your Telegram ID is authorized for protected admin tools.", parse_mode="HTML")
 
 
 def maintenance_service(context) -> MaintenanceAssistant:
@@ -1251,9 +1241,6 @@ def admin_only(db, admin_ids, handler):
     async def wrapped(update, context):
         if update.effective_user.id not in admin_ids:
             await update.effective_message.reply_text("Admin access required.")
-            return
-        if not context.user_data.get("admin_unlocked"):
-            await update.effective_message.reply_text("Use /admin SECRET_KEY first.")
             return
         await db.log_admin_action(update.effective_user.id, update.message.text.split()[0], " ".join(context.args)); return await handler(update, context)
     return wrapped
