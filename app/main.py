@@ -217,7 +217,7 @@ def run_app() -> None:
         exchanges.update(build_exchanges(settings.exchange_names, settings.exchange_credentials))
         active_exchange_names = list(exchanges)
         scanner = Scanner(db, exchanges, settings.scan_interval_seconds, settings.max_exchange_concurrency)
-        application.bot_data.update({"db": db, "admin_ids": settings.admin_id_set, "admin_secret_key": settings.admin_secret_key, "exchange_names": active_exchange_names, "exchanges": exchanges, "scanner": scanner, "maintenance": maintenance, "user_ai": user_ai})
+        application.bot_data.update({"db": db, "admin_ids": settings.admin_id_set, "exchange_names": active_exchange_names, "exchanges": exchanges, "scanner": scanner, "maintenance": maintenance, "user_ai": user_ai})
         scanner.task = asyncio.create_task(scanner.loop(alert_opportunities))
         if len(exchanges) < 2:
             logger.error("fewer than two exchanges are active; arbitrage results are impossible")
@@ -242,10 +242,10 @@ def run_app() -> None:
     # account, settings, admin, and paper-trading commands available.
     for handler in build_feature_handlers():
         application.add_handler(handler)
-    existing_handlers = build_handlers(db, settings.admin_id_set, settings.exchange_names, settings.admin_secret_key)
+    existing_handlers = build_handlers(db, settings.admin_id_set, settings.exchange_names)
     for handler in existing_handlers[1:]:
         application.add_handler(handler)
-    for handler in build_ui_handlers(db, settings.admin_id_set, settings.exchange_names, settings.admin_secret_key):
+    for handler in build_ui_handlers(db, settings.admin_id_set, settings.exchange_names):
         application.add_handler(handler)
 
     async def error_handler(update, context):
