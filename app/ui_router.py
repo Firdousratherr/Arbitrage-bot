@@ -329,7 +329,7 @@ async def ui_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
 
-def build_ui_handlers(db: Database, admin_ids: set[int], exchange_names: list[str], admin_secret_key: str):
+def build_ui_handlers(db: Database, admin_ids: set[int], exchange_names: list[str]):
     registration = ConversationHandler(
         entry_points=[CommandHandler("start", premium_start)],
         states={
