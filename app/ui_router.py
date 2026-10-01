@@ -196,6 +196,23 @@ async def ui_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         text, keyboard = settings_category(user_filters(user), category_map[action])
         await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
         return
+    if action == "ui:toggle_filters":
+        if not user:
+            await query.edit_message_text("Register first with /start.")
+            return
+        if not await db.active_vip(query.from_user.id):
+            await query.answer("Active VIP access is required.", show_alert=True)
+            return
+        preferences = user_filters(user)
+        preferences["filters_enabled"] = not bool(preferences.get("filters_enabled", True))
+        await db.set_user(query.from_user.id, filters=preferences)
+        await db.log_action(query.from_user.id, "scanner_filters", "ON" if preferences["filters_enabled"] else "OFF")
+        text, keyboard = settings_menu()
+        state = "ON" if preferences["filters_enabled"] else "OFF"
+        detail = ("User-defined scanner rules are active." if preferences["filters_enabled"] else
+                  "User-defined scanner rules are bypassed. Live API data, selected exchanges, and paused alerts still apply.")
+        await query.edit_message_text(f"🎯 <b>SCANNER FILTERS: {state}</b>\n\n{detail}\n\n" + text, reply_markup=keyboard, parse_mode="HTML")
+        return
     if action == "ui:toggle_pause":
         if not user:
             await query.edit_message_text("Register first with /start.")
