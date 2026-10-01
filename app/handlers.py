@@ -53,7 +53,7 @@ def build_handlers(db: Database, admin_ids: set[int], exchange_names: list[str],
         CommandHandler("vipkey", redeem_vip_key_command),
         CommandHandler("exchanges", exchanges), CommandHandler("setexchanges", exchanges),
         CommandHandler("filters", filters_menu), CommandHandler("myfilters", myfilters), CommandHandler("settings", myfilters),
-        CommandHandler("resetfilters", resetfilters), CommandHandler("loosemode", loosemode),
+        CommandHandler("resetfilters", resetfilters), CommandHandler("setfilters", filters_enabled), CommandHandler("loosemode", loosemode),
         CommandHandler("pause", pause), CommandHandler("resume", resume),
         CommandHandler("setminprofit", numeric_filter("min_profit")), CommandHandler("setmaxprofit", numeric_filter("max_profit")),
         CommandHandler("setminspread", numeric_filter("min_spread")), CommandHandler("setmaxspread", numeric_filter("max_spread")),
@@ -360,6 +360,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/loosemode on|off",
         "/setfeeadjusted on|off",
         "/pause or /resume",
+        "/setfilters on|off — enable/disable scanner filters",
         "/resetfilters — restore defaults",
         "",
         "🎮 <b>PAPER TRADING</b>",
@@ -439,6 +440,26 @@ async def myfilters(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = format_filters_message(filters)
     await update.message.reply_text(message, parse_mode="HTML")
 
+
+async def filters_enabled(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await require_vip(update, context):
+        return
+    if len(context.args) != 1 or context.args[0].lower() not in {"on", "off"}:
+        await update.effective_message.reply_text("Usage: /setfilters on|off")
+        return
+    enabled = context.args[0].lower() == "on"
+    db = get_db(context)
+    user = await db.get_user(update.effective_user.id)
+    preferences = user_filters(user)
+    preferences["filters_enabled"] = enabled
+    await db.set_user(update.effective_user.id, filters=preferences)
+    await db.log_action(update.effective_user.id, "scanner_filters", "ON" if enabled else "OFF")
+    await update.effective_message.reply_text(
+        f"🎯 Scanner filters are now <b>{"ON" if enabled else "OFF"}</b>.\n\n"
+        + ("User-defined scanner rules are active." if enabled else
+           "User-defined scanner rules are bypassed. Live API data, selected exchanges, and paused alerts still apply."),
+        parse_mode="HTML",
+    )
 
 async def resetfilters(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await require_vip(update, context): return
