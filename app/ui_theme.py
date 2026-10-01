@@ -104,7 +104,8 @@ def exchange_picker(selected: list[str], available: list[str]) -> tuple[str, Inl
     ), InlineKeyboardMarkup(exchange_rows)
 
 
-def settings_menu() -> tuple[str, InlineKeyboardMarkup]:
+def settings_menu(filters: dict | None = None) -> tuple[str, InlineKeyboardMarkup]:
+    filters = filters or {}
     return screen(
         "🎛️ CONTROL CENTER",
         "Organized scanner and execution settings",
