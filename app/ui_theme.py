@@ -119,6 +119,7 @@ def settings_menu() -> tuple[str, InlineKeyboardMarkup]:
             "Choose a category to view its current values.",
         ],
     ), nav(
+        (("🎯 Filters: ON" if filters.get("filters_enabled", True) else "🚫 Filters: OFF"), "ui:toggle_filters"),
         ("📈 Profit & Spread", "ui:profit"),
         ("💧 Liquidity & Size", "ui:liquidity"),
         ("🛡️ Execution & Fees", "ui:execution"),
