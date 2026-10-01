@@ -94,18 +94,7 @@ def _manual_rejection_lines(candidates: list, preferences: dict, limit: int = 20
     return lines
 
 
-async def enhanced_scan_command(update, context) -> None:
-    from .handlers import require_vip
-
-    if not await require_vip(update, context):
-        return
-    scanner = context.application.bot_data.get("scanner")
-    if not scanner:
-        await update.effective_message.reply_text("Scanner is still starting. Try again shortly.")
-        return
-
-    target = update.effective_message or update.callback_query.message
-    progress = await target.reply_text("🔎 <b>SCANNING MARKETS</b>\n\n🌐 Preparing selected exchanges…", parse_mode="HTML")
+async def _run_enhanced_scan(update, context, scanner, target, progress, preferences, selected, active_selected) -> None:
     animation = asyncio.create_task(_premium_scan_animation(progress, sorted(scanner.exchanges)))
     try:
         user = await _db(context).get_user(update.effective_user.id)
@@ -129,8 +118,13 @@ async def enhanced_scan_command(update, context) -> None:
 
         opportunities = await scanner.run_cycle(require_matching_user=False, exchange_names=active_selected)
         selected_candidates = [item for item in opportunities if item.buy_exchange in selected and item.sell_exchange in selected]
-        rejected = [item for item in selected_candidates if not matches(item, preferences)]
-        passed = [item for item in selected_candidates if matches(item, preferences)]
+        rejected = []
+        passed = []
+        for item in selected_candidates:
+            if matches(item, preferences):
+                passed.append(item)
+            else:
+                rejected.append(item)
         passed.sort(key=lambda item: item.metadata.get("rank_score", item.net_profit), reverse=True)
         visible = passed[:preferences["max_results"]]
 
@@ -151,7 +145,7 @@ async def enhanced_scan_command(update, context) -> None:
                 "filter": f"gap {item.raw_spread:.2f}% ({item.buy_exchange} → {item.sell_exchange}) — {match_reason(item, preferences) or 'filtered'}"
             },
         } for item in rejected[:50]]
-        set_manual_scan_diagnostics({
+        set_manual_scan_diagnostics(update.effective_user.id, {
             "summary": summary,
             "gaps": manual_gaps,
             "filter_rejections": {item.symbol: match_reason(item, preferences) or "filtered" for item in rejected[:50]},
@@ -180,7 +174,7 @@ async def enhanced_scan_command(update, context) -> None:
     except asyncio.CancelledError:
         raise
     except Exception as exc:
-        snapshot = get_manual_scan_snapshot() or get_last_scan_snapshot() or {}
+        snapshot = get_manual_scan_snapshot(update.effective_user.id) or get_last_scan_snapshot() or {}
         summary = snapshot.get("summary", {}) or {}
         statuses = summary.get("exchange_status", {}) or {}
         details = [f"{type(exc).__name__}: {exc}"]
@@ -198,12 +192,51 @@ async def enhanced_scan_command(update, context) -> None:
             pass
 
 
+async def enhanced_scan_command(update, context) -> None:
+    from .handlers import require_vip
+
+    if not await require_vip(update, context):
+        return
+    scanner = context.application.bot_data.get("scanner")
+    if not scanner:
+        await update.effective_message.reply_text("Scanner is still starting. Try again shortly.")
+        return
+
+    user = await _db(context).get_user(update.effective_user.id)
+    if not user:
+        await update.effective_message.reply_text("❌ Your account could not be loaded. Please run /status and try again.")
+        return
+
+    preferences = user_filters(user)
+    selected = set(json.loads(user["selected_exchanges"] or "[]"))
+    active_selected = selected & set(scanner.exchanges)
+    if len(active_selected) < 2:
+        await update.effective_message.reply_text(
+            format_error("Scan needs at least two active selected exchanges.", f"Selection: {', '.join(sorted(selected)) or 'none'}. Use /exchanges."),
+            parse_mode="HTML",
+        )
+        return
+
+    target = update.effective_message or update.callback_query.message
+    progress = await target.reply_text("🔎 <b>SCANNING MARKETS</b>\n\n🌐 Preparing selected exchanges…", parse_mode="HTML")
+
+    # The enhanced /scan handler is the real /scan route registered first in main.py.
+    # Keep the Telegram update handler short so sequential PTB processing remains responsive.
+    context.application.create_task(
+        _run_enhanced_scan(
+            update, context, scanner, target, progress,
+            preferences, selected, active_selected,
+        ),
+        update=update,
+        name=f"manual-scan-{update.effective_user.id}",
+    )
+
 async def scaninfo_command(update, context) -> None:
     from .handlers import require_vip
     if not await require_vip(update, context):
         return
 
-    snapshot = get_manual_scan_snapshot() or {}
+    snapshot = get_manual_scan_snapshot(update.effective_user.id) or {}
     if not snapshot.get("summary"):
         snapshot = get_last_scan_snapshot() or {}
     summary = snapshot.get("summary", {}) or {}
@@ -290,12 +323,21 @@ async def enhanced_details(update, context) -> None:
         metadata = json.loads(row["payload"] or "{}")
         quality = confidence_score(net_profit_pct=(result.net_profit / max(trade_size, 1e-9)) * 100, buy_volume=row["volume_buy"] or 0, sell_volume=row["volume_sell"] or 0, trade_size=trade_size, freshness_seconds=0, transfer_verified=bool(row["verified"]), coverage_complete=bool(metadata.get("coverage_complete")), executable_complete=result.complete)
         executable_pct = (result.net_profit / max(trade_size, 1e-9)) * 100
+        max_slippage = float(user_filters(user).get("max_slippage", 2.0) or 2.0)
+        observed_slippage = max(float(result.buy_slippage_pct), float(result.sell_slippage_pct))
+        slippage_ok = observed_slippage <= max_slippage
         transfer = metadata.get("matching_network")
         transfer_text = f"✅ Matching route: {transfer}" if transfer else "⚠️ Transfer route requires re-check"
         message = format_opportunity_details(row, buy_fill, sell_fill, float(buy_fee), float(sell_fee), result.gross_profit, result.net_profit, result.buy_slippage_pct, result.sell_slippage_pct, transfer_text, buy_book.get("asks", []), sell_book.get("bids", []))
         message += "\n\n🧠 <b>EXECUTION QUALITY</b>\n"
         message += f"💰 Requested trade   <b>${trade_size:,.2f}</b>\n🪙 Executable amount <b>{result.base_amount:,.8f}</b>\n💵 Gross P/L         <b>${result.gross_profit:,.4f}</b>\n✅ Net P/L           <b>${result.net_profit:,.4f}</b>\n🎯 Confidence        <b>{quality}/100</b>\n🏆 Execution rank    <b>{rank_score(row['net_profit'], quality, executable_pct):.2f}</b>\n"
-        message += "✅ Full requested size executable" if result.complete else "⚠️ Order-book depth cannot fill the full requested size"
+        message += f"📉 Max slippage      <b>{observed_slippage:.2f}% / {max_slippage:.2f}%</b>\n"
+        if not slippage_ok:
+            message += "⚠️ <b>Slippage limit exceeded</b> — execution is outside your configured limit"
+        elif result.complete:
+            message += "✅ Full requested size executable"
+        else:
+            message += "⚠️ Order-book depth cannot fill the full requested size"
     except Exception as exc:
         await query.edit_message_text(f"⚠️ Executable analysis unavailable: {type(exc).__name__}: {exc}")
         return

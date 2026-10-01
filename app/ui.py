@@ -44,6 +44,7 @@ def format_scan_count(count: int)->str:
             f"🎯 Detected: <b>{summary.get('opportunities_detected',0)}</b>",
             f"🚫 Filtered: <b>{summary.get('opportunities_filtered',0)}</b>",
             f"✅ Returned: <b>{summary.get('opportunities_returned',count)}</b>",
+            f"⏱️ Scan time: <b>{summary.get('scan_duration_ms', 0):g} ms</b>",
         ])
         if summary.get("opportunities_filtered") and not count:
             lines.append("💡 Positive spreads were found but rejected by configured filters.")
@@ -64,7 +65,10 @@ def format_opportunity_card(opportunity, identifier: str, card_number: int|str|N
         elif getattr(opportunity,"loose_mode",False):tag="⚠️ LOOSE-MODE OPPORTUNITY"
         elif getattr(opportunity,"net_profit",0)>=3.0:tag="🚨 HIGH-MARGIN ARBITRAGE"
         else:tag="🔴 LIVE ARBITRAGE"
-    metadata=getattr(opportunity,"metadata",{}) or {};tv=metadata.get("transfer_verification");bt=metadata.get("buy_transfer",{});st=metadata.get("sell_transfer",{})
+    metadata=getattr(opportunity,"metadata",{}) or {};tv=metadata.get("transfer_verification");bt=metadata.get("buy_transfer") or {};st=metadata.get("sell_transfer") or {}
+    quality=int(metadata.get("confidence",0) or 0)
+    stability=int(metadata.get("stability_observations",len(metadata.get("history") or [1])) or 1)
+    fee_note="✅ exchange fee metadata" if metadata.get("fee_metadata_available") else "⚠️ default fee fallback"
     if tv=="loose_mode":transfer_line="⚠️ Transfer checks skipped — verify manually"
     elif tv=="not_verified":transfer_line="🛡️ Unverified — manual check recommended"
     else:
@@ -73,7 +77,7 @@ def format_opportunity_card(opportunity, identifier: str, card_number: int|str|N
         gross=trade_size*opportunity.raw_spread/100;fees=trade_size*(opportunity.raw_spread-opportunity.net_profit)/100;net=trade_size*opportunity.net_profit/100;gross_text=f"${_compact_number(gross,4)}";fees_text=f"${_compact_number(fees,4)}";net_text=f"${_compact_number(net,4)}";size_text=f"${_compact_number(trade_size,4)}"
     else:gross_text=f"{opportunity.raw_spread:.2f}%";fees_text=f"{opportunity.raw_spread-opportunity.net_profit:.2f}%";net_text=f"{opportunity.net_profit:.2f}%";size_text="$1,000"
     coin=opportunity.symbol.split("/")[0];coin_amount=trade_size/opportunity.buy_price if trade_size and opportunity.buy_price>0 else 1000/opportunity.buy_price if opportunity.buy_price>0 else 0
-    lines=_panel(tag,f"<b>{_escape_html(opportunity.symbol)}</b> • live market data");lines.extend(["🟢 <b>BUY HERE</b>",f"   🌐 {_escape_html(opportunity.buy_exchange)}  •  <b>${_compact_number(opportunity.buy_price,8)}</b>","","🔴 <b>SELL HERE</b>",f"   🌐 {_escape_html(opportunity.sell_exchange)}  •  <b>${_compact_number(opportunity.sell_price,8)}</b>","",SECTION_SEPARATOR,"📊 Profit Breakdown",f"   📈 Gross       {gross_text}",f"   💸 Fees        − {fees_text}",f"   🚀 <b>Net        {net_text}</b>",f"   🎯 Spread      <b>{opportunity.net_profit:.2f}%</b>","","📋 <b>TRADE DETAILS</b>",f"   💵 Size        {size_text}",f"   🪙 Amount      {_compact_number(coin_amount,6)} {coin}",f"   🛡️ Transfer    {transfer_line}",BOTTOM]);return "\n".join(lines).replace("\n\n","\n")
+    lines=_panel(tag,f"<b>{_escape_html(opportunity.symbol)}</b> • live market data");lines.extend([f"⭐ Quality <b>{quality}/100</b> • Stability <b>{stability}</b>",f"💸 Fees {fee_note}","🟢 <b>BUY HERE</b>",f"   🌐 {_escape_html(opportunity.buy_exchange)}  •  <b>${_compact_number(opportunity.buy_price,8)}</b>","","🔴 <b>SELL HERE</b>",f"   🌐 {_escape_html(opportunity.sell_exchange)}  •  <b>${_compact_number(opportunity.sell_price,8)}</b>","",SECTION_SEPARATOR,"📊 Profit Breakdown",f"   📈 Gross       {gross_text}",f"   💸 Fees        − {fees_text}",f"   🚀 <b>Net        {net_text}</b>",f"   🎯 Spread      <b>{opportunity.net_profit:.2f}%</b>","","📋 <b>TRADE DETAILS</b>",f"   💵 Size        {size_text}",f"   🪙 Amount      {_compact_number(coin_amount,6)} {coin}",f"   🛡️ Transfer    {transfer_line}",BOTTOM]);return "\n".join(lines).replace("\n\n","\n")
 
 def opportunity_buttons(identifier: str)->InlineKeyboardMarkup:return InlineKeyboardMarkup([[InlineKeyboardButton("📖  Order Book & Analysis",callback_data=f"details:{identifier}")],[InlineKeyboardButton("🎮  Paper Trade",callback_data=f"paper:{identifier}")]])
 def format_background_alert(opportunity,identifier: str)->str:return format_opportunity_card(opportunity,identifier)
@@ -93,10 +97,76 @@ def format_paper_trade(opportunity, *, buy_price:float,sell_price:float,size:flo
     icon="🟢" if profit>=0 else "🔴";lines=_panel("🎮 PAPER TRADE OPENED","Simulation only • no real funds used");lines.extend([f"🪙 <b>{_escape_html(opportunity.symbol)}</b>",f"🟢 {_escape_html(opportunity.buy_exchange)}  ${_compact_number(buy_price,8)}","        ↓  simulated route",f"🔴 {_escape_html(opportunity.sell_exchange)}  ${_compact_number(sell_price,8)}","",SECTION_SEPARATOR,f"💵 Position size  ${_compact_number(size,6)}",f"📈 Gross result   ${_compact_number(expected_gross,6)}",f"{icon} <b>Net P/L         ${_compact_number(estimated_net,6)}</b>",BOTTOM]);return "\n".join(lines)
 
 def format_status_message(vip_status:str,vip_expiry:str|None,exchanges:list[str],loose_mode:bool,paused:bool,filters:dict)->str:
-    expiry=f" • until {vip_expiry[:10]}" if vip_expiry else "";lines=_panel("👤 ACCOUNT CENTER","Your arbitrage workspace");lines.extend([f"💎 VIP       {vip_status}{expiry}",f"🌐 Exchanges  {', '.join(exchanges) if exchanges else 'No exchanges selected'}",f"⏯ <b>Alerts</b>    {'PAUSED' if paused else 'LIVE'}",f"⚠️ <b>Loose mode</b> {'ON' if loose_mode else 'OFF'}","",SECTION_SEPARATOR,"🎛️ <b>ACTIVE FILTERS</b>",f"📈 Profit       {filters.get('min_profit',0)}% → {filters.get('max_profit',100)}%",f"📊 Spread       {filters.get('min_spread',0)}% → {filters.get('max_spread',100)}%",f"💧 Min volume   ${_compact_number(filters.get('min_volume',10000))}",f"⏱️ Cooldown     {filters.get('alert_cooldown',300)}s",BOTTOM]);return "\n".join(lines)
+    expiry=f" • until {vip_expiry[:10]}" if vip_expiry else ""
+    lines=_panel("👤 ACCOUNT CENTER","Your arbitrage workspace")
+    lines.extend([
+        f"💎 VIP           {vip_status}{expiry}",
+        f"🌐 Exchanges      {', '.join(exchanges) if exchanges else 'No exchanges selected'}",
+        f"⏯ Alerts         {'PAUSED' if paused else 'LIVE'}",
+        f"⚠️ Loose mode     {'ON' if loose_mode else 'OFF'}",
+        "",
+        SECTION_SEPARATOR,
+        "📈 <b>SCAN RULES</b>",
+        f"Profit           {filters.get('min_profit',0)}% → {filters.get('max_profit',100)}%",
+        f"Spread           {filters.get('min_spread',0)}% → {filters.get('max_spread',100)}%",
+        f"Volume           ≥ ${_compact_number(filters.get('min_volume',10000))}",
+        f"Quote            {filters.get('quote_currency','USDT')}",
+        "",
+        "🛡️ <b>EXECUTION</b>",
+        f"Trade size       ${_compact_number(filters.get('trade_size',1000),2)}",
+        f"Trade range      ${_compact_number(filters.get('min_trade_size',10),2)} → ${_compact_number(filters.get('max_trade_size',100000),2)}",
+        f"Max slippage     {filters.get('max_slippage',2)}%",
+        f"Network fee      ${_compact_number(filters.get('network_fee',0),2)}",
+        f"Daily cap        ${_compact_number(filters.get('daily_cap',100000),2)}",
+        "",
+        "🔔 <b>ALERTS</b>",
+        f"Cooldown         {filters.get('alert_cooldown',300)}s",
+        f"Max results      {filters.get('max_results',10)}",
+        f"Stability        {filters.get('min_stable_observations',1)} observation(s)",
+    ])
+    return "\n".join(lines)
+
 
 def format_filters_message(filters:dict)->str:
-    watchlist=', '.join(filters.get('watchlist',[])) if filters.get('watchlist') else 'All pairs';blacklist=', '.join(filters.get('blacklist',[])) if filters.get('blacklist') else 'None';lines=_panel("🎛 YOUR FILTERS","Tune what counts as an opportunity");lines.extend([f"📈 Profit range  {filters.get('min_profit',0)}% → {filters.get('max_profit',100)}%",f"📊 Spread range  {filters.get('min_spread',0)}% → {filters.get('max_spread',100)}%",f"💧 Volume        ≥ ${_compact_number(filters.get('min_volume',10000))}",f"👁 Watchlist      {watchlist}",f"🚫 Blacklist      {blacklist}",f"🕒 Cooldown       {filters.get('alert_cooldown',300)} sec",f"📋 Max results    {filters.get('max_results',10)}",f"⏸ Paused          {'Yes' if filters.get('paused') else 'No'}",f"⚠️ Loose mode     {'On' if filters.get('loose_mode') else 'Off'}","",THIN_SEPARATOR,"Use /setminprofit, /setmaxprofit, /setminspread, /setmaxspread,","/setminvolume, /watchlist, /blacklist and /setalertfreq.",BOTTOM]);return "\n".join(lines)
+    watchlist=", ".join(filters.get("watchlist",[])) if filters.get("watchlist") else "All pairs"
+    blacklist=", ".join(filters.get("blacklist",[])) if filters.get("blacklist") else "None"
+    lines=_panel("🎛 YOUR FILTERS","All scanner settings in one place")
+    lines.extend([
+        "📈 <b>PROFIT & SPREAD</b>",
+        f"📈 Profit range  {filters.get('min_profit',0)}% → {filters.get('max_profit',100)}%",
+        f"📊 Spread range  {filters.get('min_spread',0)}% → {filters.get('max_spread',100)}%",
+        f"Scanner filters {'ON' if filters.get('filters_enabled', True) else 'OFF'}",
+        f"Fee-adjusted    {'ON' if filters.get('fee_adjusted',True) else 'OFF'}",
+        "",
+        "🎯 <b>SIGNAL QUALITY</b>",
+        f"Stable observations {filters.get('min_stable_observations',1)}",
+        "",
+        "💧 <b>LIQUIDITY & SIZE</b>",
+        f"Volume          ≥ ${_compact_number(filters.get('min_volume',10000))}",
+        f"Trade size      ${_compact_number(filters.get('trade_size',1000),2)}",
+        f"Trade range     ${_compact_number(filters.get('min_trade_size',10),2)} → ${_compact_number(filters.get('max_trade_size',100000),2)}",
+        f"Quote           {filters.get('quote_currency','USDT')}",
+        "",
+        "🛡️ <b>EXECUTION</b>",
+        f"Max slippage    {filters.get('max_slippage',2)}%",
+        f"Network fee     ${_compact_number(filters.get('network_fee',0),2)}",
+        f"Daily cap       ${_compact_number(filters.get('daily_cap',100000),2)}",
+        "",
+        "👁 <b>SYMBOLS</b>",
+        f"Watchlist       {watchlist}",
+        f"Blacklist       {blacklist}",
+        "",
+        "🔔 <b>ALERTS</b>",
+        f"Cooldown        {filters.get('alert_cooldown',300)}s",
+        f"Max results     {filters.get('max_results',10)}",
+        f"Paused          {'Yes' if filters.get('paused') else 'No'}",
+        "",
+        "⚠️ <b>VERIFICATION</b>",
+        f"Loose mode      {'ON' if filters.get('loose_mode') else 'OFF'}",
+        "",
+        "Use /filters for the organized control menu.",
+    ])
+    return "\n".join(lines)
 
 def format_leaderboard(rows:list,period:str,user_rank:int|None,user_profit:float|None)->str:
     if not rows:return "🏆 <b>LEADERBOARD</b>\n"+SECTION_SEPARATOR+"\n📭 No paper trades yet."

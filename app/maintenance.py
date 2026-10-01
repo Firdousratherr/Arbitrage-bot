@@ -7,7 +7,9 @@ import logging
 import math
 import os
 import re
+import shutil
 import subprocess
+import tempfile
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any
@@ -187,9 +189,6 @@ class MaintenanceAssistant:
             for term in terms:
                 if re.search(rf"^\s*(?:async\s+)?def\s+{re.escape(term)}\b", text, re.IGNORECASE | re.MULTILINE):
                     score += 1000
-            for term in terms:
-                if re.search(rf"^\s*(?:async\s+)?def\s+{re.escape(term)}\b", text, re.IGNORECASE | re.MULTILINE):
-                    score += 1000
             if relative in changed_paths:
                 score += 12
             if score == 0:
@@ -247,6 +246,12 @@ class MaintenanceAssistant:
 
     def repository_context(self, query: str) -> str:
         matches = self.search_repository(query)
+        exact = [item for item in matches if item.get("score", 0) >= 1000]
+        others = [item for item in matches if item not in exact]
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", query.strip()):
+            matches = exact[:4] + others[:8]
+        else:
+            matches = matches[:12]
         paths = [item["path"] for item in matches]
         sections = ["Repository: " + str(self.repo_path), "Files discovered: " + str(len(self.list_repository_files()))]
         sections.append("Relevant search results:")
@@ -258,6 +263,15 @@ class MaintenanceAssistant:
             ]
             first_match = min(line_numbers or [1])
             last_match = max(line_numbers or [120])
+            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", query.strip()):
+                try:
+                    raw_source = self._safe_repository_path(item["path"]).read_text(encoding="utf-8", errors="replace")
+                    exact_match = re.search(rf"^\s*(?:async\s+)?def\s+{re.escape(query.strip())}\b", raw_source, re.IGNORECASE | re.MULTILINE)
+                    if exact_match:
+                        first_match = exact_match.group(0) and raw_source[:exact_match.start()].count("\n") + 1
+                        last_match = max(last_match, first_match)
+                except (OSError, MaintenanceError):
+                    pass
             first_line = max(1, first_match - 12)
             source_window = self.read_repository_file(item["path"], first_line, first_match + 60)
             if last_match > first_match + 60:
@@ -270,6 +284,12 @@ class MaintenanceAssistant:
             )
         sections.append("Git context:\n" + self._git_context(paths))
         return self._fit_prompt("\n\n".join(sections))
+
+    async def ask_user(self, prompt: str) -> str:
+        return await self._ask(self._fit_prompt(prompt, 10000))
+
+    def load_proposal(self, proposal_id: str) -> dict[str, Any] | None:
+        return self._load(proposal_id)
 
     async def diagnose(self) -> str:
         report = self.error_report()
@@ -336,34 +356,72 @@ class MaintenanceAssistant:
         self.proposal_dir.mkdir(parents=True, exist_ok=True)
         (self.proposal_dir / f"{proposal_id}.json").write_text(json.dumps(payload), encoding="utf-8")
         logger.info("maintenance proposal %s created model=%s files=%s", proposal_id, self.last_model, payload["affected_files"])
-        validation = self.validate(proposal_id)
+        validation = await asyncio.to_thread(self.validate, proposal_id)
         return proposal_id, self._proposal_message(payload, validation)
 
     def validate(self, proposal_id: str) -> str:
         proposal = self._load(proposal_id)
-        if not proposal: return "Patch proposal not found or expired. Run /fixerror again."
+        if not proposal:
+            return "Patch proposal not found or expired. Run /fixerror again."
         patch = proposal.get("patch", "")
-        if not patch: return "No patch was proposed because the AI did not have enough evidence."
+        if not patch:
+            return "No patch was proposed because the AI did not have enough evidence."
+
+        head_result = self._run(["git", "rev-parse", "HEAD"], cwd=self.repo_path)
+        status_result = self._run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=self.repo_path)
+        if head_result.returncode != 0 or status_result.returncode != 0:
+            return "Validation could not inspect repository state."
+        current_head = head_result.stdout.strip()
+        if status_result.stdout.strip():
+            proposal["status"] = "invalid"
+            proposal["validation"] = "Repository has tracked working-tree changes; commit or revert them before validation."
+            self._save(proposal)
+            return proposal["validation"]
+
         output = self.proposal_dir / f"{proposal_id}.patch"
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(patch + "\n", encoding="utf-8")
         proposal["working_tree_status"] = self.git_status()
         proposal["working_tree_diff"] = self.git_diff(proposal.get("affected_files", []))[:6000]
-        check = self._run(["git", "apply", "--check", str(output)], cwd=self.repo_path)
-        if check.returncode:
-            proposal["status"] = "invalid"
-            return f"Validation failed:\n{self._redact(check.stderr or check.stdout)[-1200:]}"
-        syntax = self._run(self.SAFE_COMMANDS["syntax"], cwd=self.repo_path)
-        if syntax.returncode:
-            result = "git apply --check: passed; Python syntax: failed"
-        else:
-            tests = self._run(self.SAFE_COMMANDS["tests"], cwd=self.repo_path)
-            result = "git apply --check: passed; Python syntax: passed; Tests: " + ("passed" if tests.returncode == 0 else "failed")
-        proposal["validation"] = result
-        proposal["status"] = "validated" if syntax.returncode == 0 and "Tests: passed" in result else "invalid"
-        self._save(proposal)
-        logger.info("maintenance proposal %s validation=%s", proposal_id, proposal["status"])
-        return result
+        proposal["validated_head"] = current_head
+
+        worktree = Path(tempfile.mkdtemp(prefix="ai-validate-"))
+        try:
+            add = self._run(["git", "worktree", "add", "--detach", str(worktree), current_head], cwd=self.repo_path)
+            if add.returncode:
+                result = "Validation failed: could not create an isolated Git worktree.\\n" + self._redact(add.stderr or add.stdout)[-1200:]
+                proposal["status"] = "invalid"
+                proposal["validation"] = result
+                self._save(proposal)
+                return result
+            check = self._run(["git", "apply", "--check", str(output)], cwd=worktree)
+            if check.returncode:
+                result = "Validation failed: git apply --check failed\\n" + self._redact(check.stderr or check.stdout)[-1200:]
+                proposal["status"] = "invalid"
+                proposal["validation"] = result
+                self._save(proposal)
+                return result
+            applied = self._run(["git", "apply", str(output)], cwd=worktree)
+            if applied.returncode:
+                result = "Validation failed: proposed patch could not be applied in the isolated worktree.\\n" + self._redact(applied.stderr or applied.stdout)[-1200:]
+                proposal["status"] = "invalid"
+                proposal["validation"] = result
+                self._save(proposal)
+                return result
+            syntax = self._run(self.SAFE_COMMANDS["syntax"], cwd=worktree, env_extra={"PYTHONPATH": str(worktree)})
+            if syntax.returncode:
+                result = "git apply: passed; Python syntax: failed"
+            else:
+                tests = self._run(self.SAFE_COMMANDS["tests"], cwd=worktree, env_extra={"PYTHONPATH": str(worktree)})
+                result = "git apply: passed; Python syntax: passed; Tests: " + ("passed" if tests.returncode == 0 else "failed")
+            proposal["validation"] = result
+            proposal["status"] = "validated" if syntax.returncode == 0 and "Tests: passed" in result else "invalid"
+            self._save(proposal)
+            logger.info("maintenance proposal %s isolated validation=%s head=%s", proposal_id, proposal["status"], current_head)
+            return result
+        finally:
+            self._run(["git", "worktree", "remove", "--force", str(worktree)], cwd=self.repo_path)
+            shutil.rmtree(worktree, ignore_errors=True)
 
     def approve(self, proposal_id: str) -> str:
         """Compatibility entry point: approval explicitly applies the validated proposal."""
@@ -379,22 +437,30 @@ class MaintenanceAssistant:
 
     def apply(self, proposal_id: str) -> str:
         proposal = self._load(proposal_id)
-        if not proposal: return "Patch proposal not found or expired."
+        if not proposal:
+            return "Patch proposal not found or expired."
         if proposal.get("status") != "validated":
-            return "Proposal must pass validation immediately before approval. Use /validatefix first."
+            return "Proposal must pass isolated validation immediately before approval. Use /validatefix first."
         patch_file = self.proposal_dir / f"{proposal_id}.patch"
-        before = self._run(["git", "diff", "--binary"], cwd=self.repo_path)
+        head_result = self._run(["git", "rev-parse", "HEAD"], cwd=self.repo_path)
+        status_result = self._run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=self.repo_path)
+        if head_result.returncode != 0 or status_result.returncode != 0:
+            return "Could not verify repository state before approval."
+        current_head = head_result.stdout.strip()
+        if current_head != proposal.get("validated_head") or status_result.stdout.strip():
+            return "Repository changed after validation. Re-run /validatefix before approving this proposal."
+
         applied = self._run(["git", "apply", str(patch_file)], cwd=self.repo_path)
         if applied.returncode:
-            return f"Patch application failed; no change was applied:\n{self._redact(applied.stderr)[-1200:]}"
-        check = self._run(self.SAFE_COMMANDS["syntax"], cwd=self.repo_path)
+            return f"Patch application failed; no change was applied:\n{self._redact(applied.stderr or applied.stdout)[-1200:]}"
+        check = self._run(self.SAFE_COMMANDS["syntax"], cwd=self.repo_path, env_extra={"PYTHONPATH": str(self.repo_path)})
         if check.returncode:
             self._rollback(patch_file)
             proposal["status"] = "rolled_back"
             self._save(proposal)
             logger.error("maintenance proposal %s rolled back after syntax failure", proposal_id)
             return "Patch caused a validation failure and was rolled back automatically."
-        tests = self._run(self.SAFE_COMMANDS["tests"], cwd=self.repo_path)
+        tests = self._run(self.SAFE_COMMANDS["tests"], cwd=self.repo_path, env_extra={"PYTHONPATH": str(self.repo_path)})
         if tests.returncode:
             self._rollback(patch_file)
             proposal["status"] = "rolled_back"
@@ -409,10 +475,10 @@ class MaintenanceAssistant:
             logger.error("maintenance proposal %s rolled back after health failure: %s", proposal_id, health["details"])
             return f"Patch was rolled back because health verification failed: {health['details']}"
         proposal["status"] = "applied"
-        proposal["rollback_point"] = bool(before.returncode == 0)
+        proposal["applied_head"] = current_head
         self._save(proposal)
         logger.info("maintenance proposal %s applied; restart may be required", proposal_id)
-        return f"Patch {proposal_id} applied and syntax validation passed. Restart the container to load code changes."
+        return f"Patch {proposal_id} applied and verified. Restart the container to load code changes."
 
     def health_check(self) -> dict[str, object]:
         checks = {
@@ -518,8 +584,12 @@ class MaintenanceAssistant:
         return value
 
     @staticmethod
-    def _run(command: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
-        try: return subprocess.run(command, cwd=cwd, capture_output=True, text=True, check=False, timeout=120)
+    def _run(command: list[str], cwd: Path | None = None, env_extra: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+        env = os.environ.copy()
+        if env_extra:
+            env.update(env_extra)
+        try:
+            return subprocess.run(command, cwd=cwd, env=env, capture_output=True, text=True, check=False, timeout=120)
         except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
             return subprocess.CompletedProcess(command, 1, "", str(exc))
 

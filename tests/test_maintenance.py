@@ -321,14 +321,16 @@ def test_apply_rolls_back_when_health_fails(tmp_path, monkeypatch):
     assistant.proposal_dir.mkdir(parents=True)
     patch = "--- a/app/main.py\n+++ b/app/main.py\n@@\n-old\n+new\n"
     item = proposal(patch)
-    item.update(id="rollback-me", status="validated")
+    item.update(id="rollback-me", status="validated", validated_head="test-head")
     assistant.proposals["rollback-me"] = item
     assistant._save(item)
     calls = []
 
-    def run(command, cwd=None):
+    def run(command, cwd=None, env_extra=None):
         calls.append(command)
-        if command[:3] == ["git", "apply", "--check"]:
+        if command[:2] == ["git", "rev-parse"]:
+            return __import__("subprocess").CompletedProcess(command, 0, "test-head\n", "")
+        if command[:3] == ["git", "status", "--porcelain"]:
             return __import__("subprocess").CompletedProcess(command, 0, "", "")
         if command[:2] == ["git", "apply"] and "--reverse" not in command:
             return __import__("subprocess").CompletedProcess(command, 0, "", "")

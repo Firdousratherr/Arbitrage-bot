@@ -9,7 +9,6 @@ class Settings(BaseSettings):
     telegram_bot_token: str
     admin_ids: str = ""
     admin_telegram_ids: str = ""
-    admin_secret_key: str = "8767"
     ai_api_url: str = ""
     ai_api_key: str = ""
     ai_model: str = ""

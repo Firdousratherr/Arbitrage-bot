@@ -6,11 +6,12 @@ import hashlib
 import json
 import logging
 from datetime import UTC, datetime
+from time import monotonic
 
 from .arbitrage_features import OpportunityHistory, confidence_score, rank_score
 from .db import Database
 from .exchanges.base import Opportunity, Ticker
-from .filters import matches, user_filters
+from .filters import clear_filter_rejections, matches, user_filters
 from .scan_diagnostics import set_last_scan_diagnostics
 
 logger = logging.getLogger(__name__)
@@ -27,10 +28,13 @@ class Scanner:
         self.task: asyncio.Task | None = None
         self.running = False
         self.history = OpportunityHistory(max_points=12)
+        self._cycle_lock = asyncio.Lock()
 
     async def _fetch(self, exchange, symbols: list[str] | None = None) -> list[Ticker]:
-        async with self.semaphore:
-            return await exchange.fetch_tickers(symbols)
+        # One coroutine is issued per exchange. CCXT already rate-limits each
+        # exchange instance independently, so a global semaphore only serialized
+        # unrelated exchanges and made a 15-exchange scan unnecessarily slow.
+        return await exchange.fetch_tickers(symbols)
 
     async def _load_market_symbols(self, active_exchanges: dict) -> tuple[dict[str, set[str]], dict[str, str]]:
         async def _one(name: str, exchange):
@@ -60,10 +64,18 @@ class Scanner:
             added += 1
         return added
 
-    async def run_cycle(self, *, require_matching_user: bool = True, exchange_names: set[str] | None = None) -> list[Opportunity]:
+    async def run_cycle(self, *args, **kwargs):
+        """Serialize background and manual scans so exchange I/O is not duplicated."""
+        async with self._cycle_lock:
+            return await self._run_cycle(*args, **kwargs)
+
+    async def _run_cycle(self, *, require_matching_user: bool = True, exchange_names: set[str] | None = None) -> list[Opportunity]:
+        cycle_started = monotonic()
+        clear_filter_rejections()
+        matching_users = await self.db.list_users("vip") if require_matching_user else []
         if exchange_names is None and require_matching_user:
             exchange_names = set()
-            for user in await self.db.list_users("vip"):
+            for user in matching_users:
                 exchange_names.update(json.loads(user["selected_exchanges"] or "[]"))
         active_exchanges = {name: exchange for name, exchange in self.exchanges.items() if exchange_names is None or name in exchange_names}
         if len(active_exchanges) < 2:
@@ -72,12 +84,25 @@ class Scanner:
             return []
 
         market_symbols, market_errors = await self._load_market_symbols(active_exchanges)
+        # A broken exchange must not block comparisons between the healthy exchanges.
+        # The previous all-exchange intersection turned one failed market-discovery
+        # request into a zero-opportunity scan. Only exchanges with usable market
+        # discovery participate in the common-market calculation; failed exchanges
+        # remain visible in diagnostics.
+        healthy_market_sets = [
+            market_symbols[name] for name in active_exchanges
+            if name not in market_errors and market_symbols[name]
+        ]
         all_market_sets = [market_symbols[name] for name in active_exchanges]
-        common_market_symbols = set.intersection(*all_market_sets) if all_market_sets and all(all_market_sets) else set()
+        common_market_symbols = (
+            set.intersection(*healthy_market_sets)
+            if healthy_market_sets else set()
+        )
         union_market_symbols = set().union(*all_market_sets) if all_market_sets else set()
         listing_difference_symbols = len(union_market_symbols - common_market_symbols)
 
         if not common_market_symbols:
+            cycle_duration_ms = round((monotonic() - cycle_started) * 1000, 1)
             summary = {
                 "selected_exchanges": list(active_exchanges),
                 "exchange_status": {
@@ -92,24 +117,42 @@ class Scanner:
                 "opportunities_detected": 0,
                 "opportunities_filtered": 0,
                 "opportunities_returned": 0,
-                "coverage_gap_symbols": 0,
                 "listing_difference_symbols": listing_difference_symbols,
+                "coverage_gap_symbols": 0,
+                "scan_duration_ms": cycle_duration_ms,
             }
             set_last_scan_diagnostics({"summary": summary, "gaps": []})
             logger.warning("scan stopped: no common active spot markets; listed=%s errors=%s", {name: len(symbols) for name, symbols in market_symbols.items()}, market_errors)
             return []
 
         requested_symbols = sorted(common_market_symbols)
+
+        # Only healthy market-discovery exchanges participate in the ticker fetch.
+        # A broken discovery endpoint should remain visible in diagnostics, but it
+        # must not be allowed to contaminate or stall the healthy comparison route.
+        ticker_exchanges = {
+            name: exchange
+            for name, exchange in active_exchanges.items()
+            if name not in market_errors and market_symbols.get(name)
+        }
         fetched = await asyncio.gather(
-            *(self._fetch(exchange, requested_symbols) for exchange in active_exchanges.values()),
+            *(self._fetch(exchange, requested_symbols) for exchange in ticker_exchanges.values()),
             return_exceptions=True,
         )
         by_symbol: dict[str, list[Ticker]] = {}
         successful_exchanges = 0
-        exchange_status: dict[str, dict] = {}
+        exchange_status: dict[str, dict] = {
+            name: {"status": "market discovery failed", "error": market_errors[name]}
+            for name in market_errors
+        }
 
-        for name, exchange, result in zip(active_exchanges.keys(), active_exchanges.values(), fetched):
+        for name, exchange, result in zip(ticker_exchanges.keys(), ticker_exchanges.values(), fetched):
             missing_symbols = getattr(exchange, "last_fetch_symbols", {}) or {}
+            fetch_error = getattr(exchange, "last_fetch_error", None)
+            if fetch_error:
+                exchange_status[name] = {"status": "fetch failed", "error": fetch_error}
+                logger.warning("%s exchange scan failed: %s", exchange.name, fetch_error)
+                continue
             if isinstance(result, Exception):
                 exchange_status[name] = {"status": "fetch failed", "error": f"{type(result).__name__}: {result}"}
                 logger.warning("%s exchange scan failed: %s", exchange.name, result)
@@ -136,13 +179,16 @@ class Scanner:
             if not recover:
                 return name, []
             try:
-                recovered = await recover(missing)
+                # Recovery is intentionally bounded. Bulk ticker feeds can omit bid/ask for thousands of symbols;
+                # probing every missing symbol with order-book requests makes a scan appear hung and can trigger
+                # exchange rate limits. Recover only a small sample; the normal bulk feed remains the primary path.
+                recovered = await recover(missing, max_symbols=50)
                 return name, recovered
             except Exception as exc:
                 logger.warning("%s targeted recovery failed: %s: %s", name, type(exc).__name__, exc)
                 return name, []
 
-        recovery_results = await asyncio.gather(*(_recover(name, exchange) for name, exchange in active_exchanges.items()))
+        recovery_results = await asyncio.gather(*(_recover(name, exchange) for name, exchange in ticker_exchanges.items()))
         for name, recovered in recovery_results:
             added = self._merge_tickers(by_symbol, recovered)
             if name in exchange_status:
@@ -157,7 +203,19 @@ class Scanner:
             for ticker in tickers:
                 if ticker.ask > 0 and ticker.bid > 0 and ticker.exchange in valid_by_exchange:
                     valid_by_exchange[ticker.exchange].add(symbol)
-        common_symbols = set.intersection(*valid_by_exchange.values()) if valid_by_exchange else set()
+
+        # A failed exchange has no ticker set, but it must not erase otherwise
+        # valid arbitrage routes between healthy exchanges. Build the executable
+        # common set from exchanges that actually returned usable ticker data.
+        healthy_names = [
+            name for name in active_exchanges
+            if exchange_status.get(name, {}).get("status") in {"ok", "partial"}
+            and valid_by_exchange.get(name)
+        ]
+        common_symbols = (
+            set.intersection(*(valid_by_exchange[name] for name in healthy_names))
+            if len(healthy_names) >= 2 else set()
+        )
 
         # Only report actionable data gaps for markets that are actually listed
         # on every selected exchange. A symbol listed on one exchange but absent
@@ -180,38 +238,72 @@ class Scanner:
         filtered_opportunities = 0
         observed_at = datetime.now(UTC).isoformat()
 
+        # Fee metadata is exchange-level/market metadata, not live per-symbol data.
+        # Loading it inside the symbol loop caused thousands of repeated CCXT calls and
+        # was the main source of scan latency. Fetch fee maps once per exchange instead.
+        fee_maps: dict[str, dict[str, float]] = {}
+        async def _load_fee_map(name: str, exchange) -> tuple[str, dict[str, float]]:
+            try:
+                bulk = getattr(exchange, "get_taker_fees", None)
+                if bulk:
+                    return name, await bulk(by_symbol.keys())
+                return name, {}
+            except Exception as exc:
+                logger.debug("%s bulk fee metadata failed: %s: %s", name, exc)
+                return name, {}
+
+        fee_results = await asyncio.gather(
+            *(_load_fee_map(name, exchange) for name, exchange in ticker_exchanges.items()),
+            return_exceptions=True,
+        )
+        for item in fee_results:
+            if isinstance(item, Exception):
+                continue
+            name, values = item
+            fee_maps[name] = values
+
         for symbol, tickers in by_symbol.items():
             valid_tickers = [ticker for ticker in tickers if ticker.ask > 0 and ticker.bid > 0]
             if len(valid_tickers) < 2:
                 continue
-            pairs = [(buy, sell) for buy in valid_tickers for sell in valid_tickers if buy.exchange != sell.exchange]
-            if not pairs:
-                continue
-            buy, sell = max(pairs, key=lambda pair: (pair[1].bid - pair[0].ask) / pair[0].ask)
+
+            # Choose the route using fee-adjusted executable top-of-book prices rather
+            # than headline prices alone. This avoids selecting a low-spread exchange
+            # with unusually high taker fees over a slightly wider but cheaper route.
+            def _fee_adjusted_buy(ticker: Ticker) -> float:
+                fee = fee_maps.get(ticker.exchange, {}).get(symbol, 0.001)
+                return ticker.ask * (1.0 + max(0.0, fee))
+
+            def _fee_adjusted_sell(ticker: Ticker) -> float:
+                fee = fee_maps.get(ticker.exchange, {}).get(symbol, 0.001)
+                return ticker.bid * (1.0 - min(max(0.0, fee), 0.99))
+
+            best_buy = min(valid_tickers, key=_fee_adjusted_buy)
+            best_sell = max(valid_tickers, key=_fee_adjusted_sell)
+            if best_buy.exchange == best_sell.exchange:
+                buys = sorted(valid_tickers, key=_fee_adjusted_buy)[:3]
+                sells = sorted(valid_tickers, key=_fee_adjusted_sell, reverse=True)[:3]
+                candidates = [(buy, sell) for buy in buys for sell in sells if buy.exchange != sell.exchange]
+                if not candidates:
+                    continue
+                buy, sell = max(
+                    candidates,
+                    key=lambda pair: _fee_adjusted_sell(pair[1]) - _fee_adjusted_buy(pair[0]),
+                )
+            else:
+                buy, sell = best_buy, best_sell
+
             raw_spread = ((sell.bid - buy.ask) / buy.ask) * 100
             if raw_spread <= 0:
                 continue
             positive_spread_symbols += 1
 
-            buy_fee_pct = 0.0
-            sell_fee_pct = 0.0
-            try:
-                buy_exchange = self.exchanges.get(buy.exchange)
-                sell_exchange = self.exchanges.get(sell.exchange)
-                if buy_exchange and sell_exchange:
-                    fees = await asyncio.gather(
-                        buy_exchange.get_taker_fee(symbol),
-                        sell_exchange.get_taker_fee(symbol),
-                        return_exceptions=True,
-                    )
-                    buy_fee_pct = float(fees[0]) * 100 if not isinstance(fees[0], Exception) else 0.1
-                    sell_fee_pct = float(fees[1]) * 100 if not isinstance(fees[1], Exception) else 0.1
-            except Exception:
-                logger.debug("fee calculation failed for %s, using defaults", symbol)
-                buy_fee_pct = 0.1
-                sell_fee_pct = 0.1
-
+            buy_fee_rate = fee_maps.get(buy.exchange, {}).get(symbol, 0.001)
+            sell_fee_rate = fee_maps.get(sell.exchange, {}).get(symbol, 0.001)
+            buy_fee_pct = buy_fee_rate * 100
+            sell_fee_pct = sell_fee_rate * 100
             net_profit = raw_spread - buy_fee_pct - sell_fee_pct
+            fee_metadata_available = symbol in fee_maps.get(buy.exchange, {}) and symbol in fee_maps.get(sell.exchange, {})
             if net_profit > 0:
                 fee_positive_spreads += 1
 
@@ -235,6 +327,8 @@ class Scanner:
                 "confidence": confidence,
                 "rank_score": rank_score(net_profit, confidence, None),
                 "headline_only": True,
+                "fee_metadata_available": fee_metadata_available,
+                "stability_observations": len(history),
             }
             opportunity = Opportunity(
                 symbol, buy.exchange, sell.exchange, buy.ask, sell.bid,
@@ -242,12 +336,13 @@ class Scanner:
                 metadata=metadata,
             )
             detected_opportunities += 1
-            if require_matching_user and not await self._has_matching_users(opportunity):
+            if require_matching_user and not self._has_matching_users(opportunity, matching_users):
                 filtered_opportunities += 1
                 continue
             opportunities.append(opportunity)
 
         opportunities.sort(key=lambda item: item.metadata.get("rank_score", item.net_profit), reverse=True)
+        cycle_duration_ms = round((monotonic() - cycle_started) * 1000, 1)
         summary = {
             "selected_exchanges": list(active_exchanges),
             "exchange_status": exchange_status,
@@ -263,6 +358,7 @@ class Scanner:
             "opportunities_before_filters": detected_opportunities,
             "coverage_gap_symbols": len(coverage_gaps),
             "listing_difference_symbols": listing_difference_symbols,
+            "scan_duration_ms": cycle_duration_ms,
         }
         set_last_scan_diagnostics({"summary": summary, "gaps": coverage_gaps})
 
@@ -282,9 +378,14 @@ class Scanner:
         )
         return opportunities
 
-    async def _has_matching_users(self, opportunity: Opportunity) -> bool:
-        for user in await self.db.list_users("vip"):
-            selected = json.loads(user["selected_exchanges"] or "[]")
+    def _has_matching_users(self, opportunity: Opportunity, users) -> bool:
+        for user in users:
+            try:
+                selected = json.loads(user["selected_exchanges"] or "[]")
+            except (TypeError, json.JSONDecodeError):
+                selected = []
+            if not isinstance(selected, list):
+                selected = []
             if opportunity.buy_exchange not in selected or opportunity.sell_exchange not in selected:
                 continue
             filters = user_filters(user)

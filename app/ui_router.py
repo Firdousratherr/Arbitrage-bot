@@ -9,9 +9,9 @@ from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes, Con
 from .db import DEFAULT_FILTERS, Database
 from .filters import user_filters
 from .handlers import EMAIL_STAGE, EXCHANGES_STAGE, VIP_STAGE, redeem_key
-from .feature_handlers import enhanced_scan_command
+from .feature_handlers import enhanced_scan_command, scaninfo_command
 from .ui import format_status_message, format_filters_message
-from .ui_theme import dashboard, welcome, exchange_picker, settings_menu, screen, nav
+from .ui_theme import dashboard, welcome, exchange_picker, settings_menu, settings_category, screen, nav
 
 EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
@@ -132,6 +132,22 @@ async def ui_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         text, keyboard = dashboard() if user else welcome()
         await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
         return
+    if action == "ui:ai":
+        if not user:
+            await query.edit_message_text("Register first with /start.")
+            return
+        await query.edit_message_text(
+            "🤖 <b>AI ASSISTANT</b>\\n\\n"
+            "Ask questions about the scanner, arbitrage results, settings, fees, liquidity, paper trading, or troubleshooting.\\n\\n"
+            "<b>Chat:</b> <code>/aichat your question</code>\n"
+            "<b>Fix:</b> <code>/aifix describe the problem</code>\n"
+            "<b>Cancel:</b> <code>/aicancel</code>\n\n"
+            "AI requests run in the background so the bot stays responsive. AI fixes are proposals only. Production changes require administrator approval.",
+
+            reply_markup=nav(("🏠 Dashboard", "ui:dashboard"), columns=1),
+            parse_mode="HTML",
+        )
+        return
     if action == "ui:help":
         text = screen("ℹ️ HOW IT WORKS", "A simple arbitrage workflow", ["1️⃣ Select at least two exchanges.", "2️⃣ Scanner compares live bid/ask prices.", "3️⃣ Filters remove weak signals.", "4️⃣ Transfer routes are verified when possible.", "5️⃣ Open Order Book for execution analysis.", "6️⃣ Use Paper Trade to simulate the result."])
         await query.edit_message_text(text, reply_markup=nav(("↩️ Dashboard", "ui:dashboard"), columns=1), parse_mode="HTML")
@@ -166,15 +182,78 @@ async def ui_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await query.edit_message_text(text, reply_markup=_premium_exchange_keyboard(context), parse_mode="HTML")
         return
     if action in {"ui:filters", "ui:settings"}:
-        text, keyboard = settings_menu()
+        text, keyboard = settings_menu(user_filters(user) if user else {})
         await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
         return
-    if action in {"ui:profit", "ui:volume", "ui:watchlist", "ui:blacklist", "ui:alerts", "ui:loose"}:
+    category_map = {
+        "ui:profit": "profit", "ui:liquidity": "liquidity", "ui:execution": "execution",
+        "ui:symbols": "symbols", "ui:alerts": "alerts", "ui:quality": "quality", "ui:verification": "verification",
+    }
+    if action in category_map:
         if not user:
             await query.edit_message_text("Register first with /start.")
             return
-        text = format_filters_message(user_filters(user))
-        await query.edit_message_text(text, reply_markup=nav(("↩️ Controls", "ui:filters"), ("🏠 Dashboard", "ui:dashboard")), parse_mode="HTML")
+        text, keyboard = settings_category(user_filters(user), category_map[action])
+        await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
+        return
+    if action == "ui:toggle_filters":
+        if not user:
+            await query.edit_message_text("Register first with /start.")
+            return
+        if not await db.active_vip(query.from_user.id):
+            await query.answer("Active VIP access is required.", show_alert=True)
+            return
+        preferences = user_filters(user)
+        preferences["filters_enabled"] = not bool(preferences.get("filters_enabled", True))
+        await db.set_user(query.from_user.id, filters=preferences)
+        await db.log_action(query.from_user.id, "scanner_filters", "ON" if preferences["filters_enabled"] else "OFF")
+        text, keyboard = settings_menu(preferences)
+        state = "ON" if preferences["filters_enabled"] else "OFF"
+        detail = ("User-defined scanner rules are active." if preferences["filters_enabled"] else
+                  "User-defined scanner rules are bypassed. Live API data, selected exchanges, and paused alerts still apply.")
+        await query.edit_message_text(f"🎯 <b>SCANNER FILTERS: {state}</b>\n\n{detail}\n\n" + text, reply_markup=keyboard, parse_mode="HTML")
+        return
+    if action == "ui:toggle_pause":
+        if not user:
+            await query.edit_message_text("Register first with /start.")
+            return
+        if not await db.active_vip(query.from_user.id):
+            await query.answer("Active VIP access is required.", show_alert=True)
+            return
+        preferences = user_filters(user)
+        preferences["paused"] = not bool(preferences.get("paused"))
+        await db.set_user(query.from_user.id, filters=preferences)
+        await db.log_action(query.from_user.id, "pause_alerts", "PAUSED" if preferences["paused"] else "RESUMED")
+        text, keyboard = settings_category(preferences, "alerts")
+        await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
+        return
+    if action == "ui:toggle_loose":
+        if not user:
+            await query.edit_message_text("Register first with /start.")
+            return
+        if not await db.active_vip(query.from_user.id):
+            await query.answer("Active VIP access is required.", show_alert=True)
+            return
+        preferences = user_filters(user)
+        preferences["loose_mode"] = not bool(preferences.get("loose_mode"))
+        await db.set_user(query.from_user.id, filters=preferences)
+        await db.log_action(query.from_user.id, "loose_mode", "ON" if preferences["loose_mode"] else "OFF")
+        text, keyboard = settings_category(preferences, "verification")
+        await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
+        return
+    if action == "ui:toggle_fee":
+        if not user:
+            await query.edit_message_text("Register first with /start.")
+            return
+        if not await db.active_vip(query.from_user.id):
+            await query.answer("Active VIP access is required.", show_alert=True)
+            return
+        preferences = user_filters(user)
+        preferences["fee_adjusted"] = not bool(preferences.get("fee_adjusted", True))
+        await db.set_user(query.from_user.id, filters=preferences)
+        await db.log_action(query.from_user.id, "fee_adjusted", "ON" if preferences["fee_adjusted"] else "OFF")
+        text, keyboard = settings_category(preferences, "profit")
+        await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
         return
     if action == "ui:reset":
         if not user:
@@ -182,7 +261,7 @@ async def ui_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             return
         await db.set_user(query.from_user.id, filters=DEFAULT_FILTERS)
         await db.log_action(query.from_user.id, "reset_filters")
-        text, keyboard = settings_menu()
+        text, keyboard = settings_menu(DEFAULT_FILTERS)
         await query.edit_message_text("♻️ <b>Filters reset</b>\n\n" + text, reply_markup=keyboard, parse_mode="HTML")
         return
     if action == "ui:status":
@@ -197,15 +276,67 @@ async def ui_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if action == "ui:scan":
         await enhanced_scan_command(update, context)
         return
+    if action == "ui:scaninfo":
+        await scaninfo_command(update, context)
+        return
+    if action == "ui:paper":
+        if not user:
+            await query.edit_message_text("Register first with /start.")
+            return
+        cursor = await db._db().execute("SELECT COUNT(*) count, COALESCE(SUM(profit), 0) total, COALESCE(MAX(profit), 0) best FROM paper_trades WHERE user_id=?", (query.from_user.id,))
+        row = await cursor.fetchone()
+        text = screen(
+            "🎮 PAPER TRADING",
+            "Simulation only — no real exchange orders",
+            [
+                f"💰 Total P/L  <b>${row['total']:.4f}</b>",
+                f"🧪 Trades     <b>{row['count']}</b>",
+                f"⭐ Best trade <b>${row['best']:.4f}</b>",
+                "",
+                "Use a Scan Result's <b>Paper Trade</b> button for an execution-aware simulation.",
+            ],
+        )
+        await query.edit_message_text(
+            text,
+            reply_markup=nav(
+                ("📊 Portfolio", "ui:portfolio"),
+                ("📈 Paper Stats", "ui:paperstats"),
+                ("🏆 Leaderboard", "ui:leaderboard"),
+                ("🏠 Dashboard", "ui:dashboard"),
+                columns=2,
+            ),
+            parse_mode="HTML",
+        )
+        return
     if action == "ui:portfolio":
         if not user:
             await query.edit_message_text("Register first with /start.")
             return
         cursor = await db._db().execute("SELECT COUNT(*) count, COALESCE(SUM(profit), 0) total, COALESCE(MAX(profit), 0) best FROM paper_trades WHERE user_id=?", (query.from_user.id,))
         row = await cursor.fetchone()
-        text = screen("📊 PAPER PORTFOLIO", "Your simulated trading dashboard", [f"💰 Balance  <b>${10000 + row['total']:.2f}</b>", f"📈 Total P/L <b>${row['total']:.4f}</b>", f"🧪 Trades   <b>{row['count']}</b>", f"⭐ Best     <b>${row['best']:.4f}</b>"])
-        await query.edit_message_text(text, reply_markup=nav(("🏠 Dashboard", "ui:dashboard"), ("🔎 Scan", "ui:scan")), parse_mode="HTML")
+        text = screen("📊 PAPER PORTFOLIO", "Your simulated trading dashboard", [
+            f"💰 Balance  <b>${10000 + row['total']:.2f}</b>",
+            f"📈 Total P/L <b>${row['total']:.4f}</b>",
+            f"🧪 Trades   <b>{row['count']}</b>",
+            f"⭐ Best     <b>${row['best']:.4f}</b>",
+        ])
+        await query.edit_message_text(text, reply_markup=nav(("🎮 Paper", "ui:paper"), ("🏠 Dashboard", "ui:dashboard")), parse_mode="HTML")
         return
+    if action == "ui:paperstats":
+        if not user:
+            await query.edit_message_text("Register first with /start.")
+            return
+        cursor = await db._db().execute("SELECT COUNT(*) count, COALESCE(SUM(profit), 0) total, COALESCE(MAX(profit), 0) best, COALESCE(AVG(profit > 0), 0) win_rate FROM paper_trades WHERE user_id=?", (query.from_user.id,))
+        row = await cursor.fetchone()
+        text = screen("📈 PAPER STATS", "Your simulation performance", [
+            f"🧪 Trades     <b>{row['count']}</b>",
+            f"🎯 Win rate   <b>{row['win_rate'] * 100:.1f}%</b>",
+            f"💰 Total P/L  <b>${row['total']:.4f}</b>",
+            f"⭐ Best trade <b>${row['best']:.4f}</b>",
+        ])
+        await query.edit_message_text(text, reply_markup=nav(("🎮 Paper", "ui:paper"), ("🏠 Dashboard", "ui:dashboard")), parse_mode="HTML")
+        return
+
     if action == "ui:leaderboard":
         cursor = await db._db().execute("SELECT u.username, SUM(p.profit) total FROM paper_trades p JOIN users u ON u.telegram_id=p.user_id WHERE u.leaderboard_hidden=0 GROUP BY p.user_id ORDER BY total DESC LIMIT 10")
         rows = await cursor.fetchall()
@@ -215,7 +346,7 @@ async def ui_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
 
-def build_ui_handlers(db: Database, admin_ids: set[int], exchange_names: list[str], admin_secret_key: str):
+def build_ui_handlers(db: Database, admin_ids: set[int], exchange_names: list[str]):
     registration = ConversationHandler(
         entry_points=[CommandHandler("start", premium_start)],
         states={

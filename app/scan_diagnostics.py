@@ -5,25 +5,27 @@ from threading import Lock
 
 _lock = Lock()
 _last_scan_diagnostics: dict = {"summary": {}, "gaps": []}
-_manual_scan_diagnostics: dict = {"summary": {}, "gaps": [], "filter_rejections": {}}
+_manual_scan_diagnostics: dict[int, dict] = {}
 _last_filter_rejections: dict[str, str] = {}
 
 
 def set_last_scan_diagnostics(diagnostics: dict | list[dict]) -> None:
-    global _last_scan_diagnostics
+    global _last_scan_diagnostics, _last_filter_rejections
     with _lock:
         if isinstance(diagnostics, list):
+            # List-form diagnostics are direct snapshots used by tests/manual
+            # diagnostics. Do not leak filter rejections from an earlier scan.
+            _last_filter_rejections = {}
             _last_scan_diagnostics = {"summary": {}, "gaps": deepcopy(diagnostics)}
         else:
             _last_scan_diagnostics = deepcopy(diagnostics)
 
 
-def set_manual_scan_diagnostics(diagnostics: dict) -> None:
-    """Store the most recent user-triggered /scan separately from the background loop."""
+def set_manual_scan_diagnostics(user_id: int, diagnostics: dict) -> None:
+    """Store manual /scan diagnostics per user."""
     global _manual_scan_diagnostics
     with _lock:
-        _manual_scan_diagnostics = deepcopy(diagnostics)
-
+        _manual_scan_diagnostics[user_id] = deepcopy(diagnostics)
 
 def set_filter_rejections(rejections: dict[str, str] | None) -> None:
     global _last_filter_rejections
@@ -47,7 +49,7 @@ def get_last_scan_snapshot() -> dict:
         return snapshot
 
 
-def get_manual_scan_snapshot() -> dict:
-    """Return the latest completed manual /scan snapshot, if one exists."""
+def get_manual_scan_snapshot(user_id: int) -> dict:
+    """Return the latest completed manual /scan snapshot for one user."""
     with _lock:
-        return deepcopy(_manual_scan_diagnostics)
+        return deepcopy(_manual_scan_diagnostics.get(user_id, {}))

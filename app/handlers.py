@@ -11,10 +11,12 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Upda
 from telegram.ext import (CallbackQueryHandler, CommandHandler, ContextTypes, ConversationHandler,
                           MessageHandler, filters as telegram_filters)
 
+from .arbitrage_features import calculate_executable_trade
 from .db import DEFAULT_FILTERS, Database
 from .exchanges.base import Opportunity
-from .filters import matches, parse_float, user_filters
-from .maintenance import MaintenanceAssistant
+from .filters import matches, parse_float, trade_size_is_valid, user_filters
+from .maintenance import MaintenanceAssistant, MaintenanceError
+from .user_ai import UserAIAssistant
 from .scanner import opportunity_id
 from .ui import (
     format_error,
@@ -34,7 +36,7 @@ EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 EMAIL_STAGE, EXCHANGES_STAGE, VIP_STAGE = range(3)
 
 
-def build_handlers(db: Database, admin_ids: set[int], exchange_names: list[str], admin_secret_key: str):
+def build_handlers(db: Database, admin_ids: set[int], exchange_names: list[str], _legacy_admin_secret_key: str | None = None):
     registration = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
@@ -49,19 +51,20 @@ def build_handlers(db: Database, admin_ids: set[int], exchange_names: list[str],
         CommandHandler("admin", admin_access),
         CommandHandler("help", help_command), CommandHandler("status", status),
         CommandHandler("vipkey", redeem_vip_key_command),
-        CommandHandler("scan", scan_command),
         CommandHandler("exchanges", exchanges), CommandHandler("setexchanges", exchanges),
         CommandHandler("filters", filters_menu), CommandHandler("myfilters", myfilters), CommandHandler("settings", myfilters),
-        CommandHandler("resetfilters", resetfilters), CommandHandler("loosemode", loosemode),
+        CommandHandler("resetfilters", resetfilters), CommandHandler("setfilters", filters_enabled), CommandHandler("loosemode", loosemode),
         CommandHandler("pause", pause), CommandHandler("resume", resume),
         CommandHandler("setminprofit", numeric_filter("min_profit")), CommandHandler("setmaxprofit", numeric_filter("max_profit")),
         CommandHandler("setminspread", numeric_filter("min_spread")), CommandHandler("setmaxspread", numeric_filter("max_spread")),
-        CommandHandler("setminvolume", numeric_filter("min_volume")), CommandHandler("settradesize", numeric_filter("trade_size")),
+        CommandHandler("setminvolume", numeric_filter("min_volume")), CommandHandler("setmintradesize", set_min_trade_size), CommandHandler("setmaxtradesize", set_max_trade_size), CommandHandler("settradesize", set_trade_size),
         CommandHandler("setalertfreq", integer_filter("alert_cooldown")), CommandHandler("setmaxresults", positive_integer_filter("max_results")),
-        CommandHandler("setquotecurrency", quote_currency), CommandHandler("setemail", setemail),
+        CommandHandler("setstability", bounded_integer_filter("min_stable_observations", 1, 12)),
+        CommandHandler("setquotecurrency", quote_currency), CommandHandler("setmaxslippage", set_max_slippage), CommandHandler("setnetworkfee", set_network_fee), CommandHandler("setdailycap", set_daily_cap), CommandHandler("setemail", setemail),
         CommandHandler("watchlist", list_filter("watchlist")), CommandHandler("blacklist", list_filter("blacklist")),
         CommandHandler("papertrade", papertrade), CommandHandler("paperstats", paperstats), CommandHandler("portfolio", portfolio),
         CommandHandler("leaderboard", leaderboard), CommandHandler("setfeeadjusted", fee_adjusted),
+        CommandHandler("aichat", user_ai_chat), CommandHandler("aifix", user_ai_fix), CommandHandler("aicancel", user_ai_cancel),
     ]
     commands.append(CommandHandler("aistatus", admin_only(db, admin_ids, aistatus)))
     admin_commands = [
@@ -96,6 +99,105 @@ def build_handlers(db: Database, admin_ids: set[int], exchange_names: list[str],
 
 def get_db(context: ContextTypes.DEFAULT_TYPE) -> Database:
     return context.application.bot_data["db"]
+
+
+def get_user_ai(context: ContextTypes.DEFAULT_TYPE) -> UserAIAssistant:
+    return context.application.bot_data["user_ai"]
+
+
+def _user_ai_tasks(context):
+    return context.application.bot_data.setdefault("user_ai_tasks", {})
+
+
+def _track_user_ai_task(context, user_id: int, task: asyncio.Task) -> None:
+    tasks = _user_ai_tasks(context)
+    tasks[user_id] = task
+
+    def _cleanup(done_task: asyncio.Task) -> None:
+        if tasks.get(user_id) is done_task:
+            tasks.pop(user_id, None)
+
+    task.add_done_callback(_cleanup)
+
+
+async def _run_user_ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE, question: str) -> None:
+    try:
+        answer = await get_user_ai(context).chat(question, user_id=update.effective_user.id)
+        await update.effective_message.reply_text(answer[:3900])
+    except asyncio.CancelledError:
+        logger.info("user AI chat cancelled for %s", update.effective_user.id)
+        raise
+    except MaintenanceError as exc:
+        await update.effective_message.reply_text(f"🤖 AI chat error: {escape(str(exc))}", parse_mode="HTML")
+    except Exception as exc:
+        logger.exception("normal-user AI chat failed")
+        await update.effective_message.reply_text(f"🤖 AI chat failed: {type(exc).__name__}")
+
+
+async def _run_user_ai_fix(update: Update, context: ContextTypes.DEFAULT_TYPE, issue: str) -> None:
+    try:
+        _, message = await get_user_ai(context).propose_user_fix(issue, user_id=update.effective_user.id)
+        await update.effective_message.reply_text(message, parse_mode="HTML")
+    except asyncio.CancelledError:
+        logger.info("user AI fix cancelled for %s", update.effective_user.id)
+        raise
+    except MaintenanceError as exc:
+        await update.effective_message.reply_text(f"🛠 AI fix error: {escape(str(exc))}")
+    except Exception as exc:
+        logger.exception("normal-user AI fix failed")
+        await update.effective_message.reply_text(f"🛠 AI fix failed: {type(exc).__name__}")
+
+
+async def user_ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not context.args:
+        await update.effective_message.reply_text(
+            "🤖 <b>AI CHAT</b>\n\nUse: <code>/aichat your question</code>\n\n"
+            "Ask about scanner settings, arbitrage results, fees, liquidity, paper trading, or troubleshooting.",
+            parse_mode="HTML",
+        )
+        return
+    user_id = update.effective_user.id
+    tasks = _user_ai_tasks(context)
+    existing = tasks.get(user_id)
+    if existing and not existing.done():
+        await update.effective_message.reply_text("🤖 An AI request is already running for you. Use /aicancel to stop it.")
+        return
+    question = " ".join(context.args).strip()
+    await update.effective_message.reply_text("🤖 AI request started. You can continue using the bot while it works.")
+    task = asyncio.create_task(_run_user_ai_chat(update, context, question))
+    _track_user_ai_task(context, user_id, task)
+
+
+async def user_ai_fix(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not context.args:
+        await update.effective_message.reply_text(
+            "🛠 <b>AI FIX</b>\n\nUse: <code>/aifix describe the problem</code>\n\n"
+            "AI will investigate and create a repair proposal. Normal users cannot apply or deploy it.",
+            parse_mode="HTML",
+        )
+        return
+    user_id = update.effective_user.id
+    tasks = _user_ai_tasks(context)
+    existing = tasks.get(user_id)
+    if existing and not existing.done():
+        await update.effective_message.reply_text("🛠 An AI request is already running for you. Use /aicancel to stop it.")
+        return
+    issue = " ".join(context.args).strip()
+    await update.effective_message.reply_text("🧠 AI investigation started. Use /aicancel to stop it if needed.")
+    task = asyncio.create_task(_run_user_ai_fix(update, context, issue))
+    _track_user_ai_task(context, user_id, task)
+
+
+async def user_ai_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    tasks = _user_ai_tasks(context)
+    task = tasks.get(user_id)
+    if task and not task.done():
+        task.cancel()
+        tasks.pop(user_id, None)
+        await update.effective_message.reply_text("🛑 Your AI request was cancelled. No production change was made.")
+        return
+    await update.effective_message.reply_text("ℹ️ You do not have a running AI request.")
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -223,71 +325,72 @@ async def require_vip(update: Update, context) -> bool:
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    db = get_db(context)
     is_admin = update.effective_user.id in context.application.bot_data["admin_ids"]
     lines = [
-        "🤖 CRYPTO ARBITRAGE SCANNER",
+        "🤖 <b>CRYPTO ARBITRAGE SCANNER</b>",
         "━━━━━━━━━━━━━━",
-        "📌 Getting Started",
-        "/start      — register",
-        "/exchanges  — pick exchanges",
-        "/status     — your account",
+        "📌 <b>MAIN</b>",
+        "/start — register or open your account",
+        "/menu — open the command center",
+        "/help — show available commands",
+        "/status — account status",
+        "/scan — run a live scan",
+        "/scaninfo — scanner diagnostics",
+        "/exchanges — manage exchange route",
+        "/filters — open organized controls",
         "",
-        "🔍 Scanning",
-        "/scan       — run a scan now",
-        "/myfilters  — view active filters",
-        "/setminprofit PERCENT    — minimum profit filter",
-        "/setmaxprofit PERCENT    — maximum profit filter",
-        "/setminspread PERCENT    — minimum spread filter",
-        "/setmaxspread PERCENT    — maximum spread filter",
-        "/setminvolume AMOUNT     — minimum 24h volume",
-        "/setalertfreq SECONDS    — alert cooldown",
-        "/setmaxresults N         — show at most N results",
-        "/settradesize AMOUNT     — trade size for paper trading",
-        "/setquotecurrency USDT|USDC|BTC — quote currency",
-        "/watchlist add|remove SYMBOL — limit symbols",
-        "/blacklist add|remove SYMBOL — ignore symbols",
-        "/loosemode on|off        — skip transfer verification",
-        "/setfeeadjusted on|off   — use fee-adjusted filtering",
-        "/pause and /resume       — pause or resume alerts",
+        "🎛️ <b>SETTINGS</b>",
+        "/setminprofit PERCENT",
+        "/setmaxprofit PERCENT",
+        "/setminspread PERCENT",
+        "/setmaxspread PERCENT",
+        "/setminvolume AMOUNT",
+        "/setmintradesize AMOUNT",
+        "/setmaxtradesize AMOUNT",
+        "/settradesize AMOUNT",
+        "/setmaxslippage PERCENT — execution guard",
+        "/setnetworkfee USD",
+        "/setdailycap USD",
+        "/setalertfreq SECONDS",
+        "/setmaxresults N",
+        "/setstability N — require repeated observations before alerting",
+        "/setquotecurrency USDT|USDC|BTC",
+        "/watchlist add|remove SYMBOL",
+        "/blacklist add|remove SYMBOL",
+        "/loosemode on|off",
+        "/setfeeadjusted on|off",
+        "/pause or /resume",
+        "/setfilters on|off — enable/disable scanner filters",
+        "/resetfilters — restore defaults",
         "",
-        "🏆 Fun",
-        "/papertrade ID SIZE      — record a simulated trade",
-        "/paperstats              — view simulated trading results",
-        "/portfolio               — view your simulated portfolio",
-        "/leaderboard [alltime]   — view paper-trade rankings",
+        "🎮 <b>PAPER TRADING</b>",
+        "/papertrade ID SIZE — execution-aware simulation",
+        "/paperstats",
+        "/portfolio",
+        "/leaderboard [alltime|hide|show]",
+        "",
+        "Use /menu for the organized dashboard; low-level setting commands stay out of the main menu.",
     ]
     if is_admin:
         lines.extend([
-            "",
-            "🛡️ Admin Tools",
-            "/admin 8767 — unlock admin tools for this session",
-            "/genkey KEY DAYS|lifetime — create a VIP key",
-            "/listkeys [status]   — list VIP keys",
-            "/revokekey KEY       — revoke a key",
-            "/extendvip USER_ID DAYS — extend VIP access",
-            "/grantvip USER_ID [DAYS] — grant VIP access",
-            "/revokevip USER_ID   — remove VIP access",
-            "/userinfo USER_ID_OR_USERNAME — inspect a user",
-            "/listusers [all|vip|pending|banned] — list users",
-            "/ban USER_ID REASON  — ban a user",
-            "/unban USER_ID       — remove a ban",
-            "/broadcast MESSAGE   — message VIP users",
-            "/stats — view bot statistics",
-            "/health — check exchange connectivity",
-            "/exchangestats — per-exchange ticker counts from the last scan",
-            "/exportusers — download CSV export",
-            "/memstatus — view process memory",
-            "/diagnose — summarize recent errors with AI",
-            "/aiprobe — raw HTTP check of the AI provider (bypasses SDK, shows real status/headers/body)",
-            "/fixerror ISSUE — propose a patch",
-            "/patchstatus — list pending patches",
-            "/validatefix PATCH_ID — validate patch",
-            "/approvefix PATCH_ID — apply validated patch",
-            "/rejectfix PATCH_ID — reject patch",
+            "", "🛡️ <b>ADMIN</b>",
+            "/admin — unlock admin tools for your authorized Telegram ID",
+            "/genkey KEY DAYS|lifetime",
+            "/listkeys [status]",
+            "/revokekey KEY",
+            "/extendvip USER_ID DAYS",
+            "/grantvip USER_ID [DAYS]",
+            "/revokevip USER_ID",
+            "/userinfo USER_ID_OR_USERNAME",
+            "/listusers [all|vip|pending|banned]",
+            "/ban USER_ID REASON",
+            "/unban USER_ID",
+            "/broadcast MESSAGE",
+            "/stats", "/health", "/exchangestats", "/exportusers", "/memstatus",
+            "/diagnose", "/aiprobe", "/fixerror ISSUE", "/patchstatus",
+            "/validatefix PATCH_ID", "/approvefix PATCH_ID", "/rejectfix PATCH_ID",
         ])
     await update.message.reply_text("\n".join(lines), parse_mode="HTML")
-
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = await get_db(context).get_user(update.effective_user.id)
@@ -314,9 +417,21 @@ async def exchanges(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def filters_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await require_vip(update, context): return
-    await update.message.reply_text("🎛️ FILTER GUIDE\n\nUse /myfilters to view current values.\n/setminprofit 1\n/setmaxprofit 50\n/setminspread 0.5\n/setmaxspread 20\n/setminvolume 50000\n/setmaxresults 10\n/setquotecurrency USDT\n/watchlist add BTC/USDT\n/blacklist add DOGE/USDT\n\nUse /resetfilters to restore defaults. Values affect future scans and alerts.")
-
+    if not await require_vip(update, context):
+        return
+    await update.message.reply_text(
+        "🎛️ <b>CONTROL CENTER</b>\n\n"
+        "Use /myfilters to see every current value. The /menu button opens the same settings in organized categories.\n\n"
+        "📈 Profit: /setminprofit /setmaxprofit /setminspread /setmaxspread\n"
+        "💧 Liquidity: /setminvolume /setmintradesize /setmaxtradesize /settradesize\n"
+        "🛡️ Execution: /setmaxslippage /setnetworkfee /setdailycap\n"
+        "👁 Symbols: /watchlist /blacklist\n"
+        "🔔 Alerts: /setalertfreq /setmaxresults /pause /resume\n"
+        "🎯 Quality: /setstability\n"
+        "⚠️ Verification: /loosemode /setfeeadjusted\n\n"
+        "Use /resetfilters to restore all settings.",
+        parse_mode="HTML",
+    )
 
 async def myfilters(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await require_vip(update, context): return
@@ -324,6 +439,28 @@ async def myfilters(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     filters = user_filters(user)
     message = format_filters_message(filters)
     await update.message.reply_text(message, parse_mode="HTML")
+
+
+async def filters_enabled(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await require_vip(update, context):
+        return
+    if len(context.args) != 1 or context.args[0].lower() not in {"on", "off"}:
+        await update.effective_message.reply_text("Usage: /setfilters on|off")
+        return
+    enabled = context.args[0].lower() == "on"
+    db = get_db(context)
+    user = await db.get_user(update.effective_user.id)
+    preferences = user_filters(user)
+    preferences["filters_enabled"] = enabled
+    await db.set_user(update.effective_user.id, filters=preferences)
+    await db.log_action(update.effective_user.id, "scanner_filters", "ON" if enabled else "OFF")
+    state = "ON" if enabled else "OFF"
+    detail = ("User-defined scanner rules are active." if enabled else
+              "User-defined scanner rules are bypassed. Live API data, selected exchanges, and paused alerts still apply.")
+    await update.effective_message.reply_text(
+        f"🎯 Scanner filters are now <b>{state}</b>.\n\n{detail}",
+        parse_mode="HTML",
+    )
 
 
 async def resetfilters(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -355,6 +492,25 @@ def integer_filter(name: str):
         except ValueError: await update.message.reply_text("❌ Enter a whole number."); return
         if value < 0:
             await update.message.reply_text("❌ Enter zero or a positive whole number.")
+            return
+        await update_filter(update, context, name, value)
+    return handler
+
+
+def bounded_integer_filter(name: str, minimum: int, maximum: int):
+    async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await require_vip(update, context):
+            return
+        if len(context.args) != 1:
+            await update.message.reply_text(f"Usage: /{update.message.text.split()[0][1:]} WHOLE_NUMBER")
+            return
+        try:
+            value = int(context.args[0])
+        except ValueError:
+            await update.message.reply_text("❌ Enter a whole number.")
+            return
+        if value < minimum or value > maximum:
+            await update.message.reply_text(f"❌ Enter a whole number from {minimum} to {maximum}.")
             return
         await update_filter(update, context, name, value)
     return handler
@@ -599,6 +755,66 @@ def _transfer_status(metadata: dict, action: str) -> str:
     return ", ".join(available[:4]) if available else "not available"
 
 
+async def _create_paper_trade(context, user_id: int, row, size: float):
+    db = get_db(context)
+    user = await db.get_user(user_id)
+    preferences = user_filters(user)
+    ok, reason = trade_size_is_valid(preferences, size)
+    if not ok:
+        raise ValueError(reason)
+    daily_cap = float(preferences.get("daily_cap", 100000.0) or 100000.0)
+    start_of_day = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    cursor = await db._db().execute(
+        "SELECT COALESCE(SUM(size), 0) AS total FROM paper_trades WHERE user_id=? AND created_at>=?",
+        (user_id, start_of_day),
+    )
+    row_today = await cursor.fetchone()
+    used_today = float(row_today["total"] or 0.0)
+    if used_today + size > daily_cap:
+        raise ValueError(f"daily paper-trade cap is ${daily_cap:,.2f}; used today: ${used_today:,.2f}")
+    exchanges = context.application.bot_data.get("exchanges", {})
+    buy_exchange = exchanges.get(row["buy_exchange"])
+    sell_exchange = exchanges.get(row["sell_exchange"])
+    if not buy_exchange or not sell_exchange:
+        raise ValueError("live exchange data is unavailable")
+    buy_book, sell_book = await asyncio.gather(
+        buy_exchange.fetch_order_book(row["symbol"], 20),
+        sell_exchange.fetch_order_book(row["symbol"], 20),
+    )
+    buy_fee, sell_fee = await asyncio.gather(
+        buy_exchange.get_taker_fee(row["symbol"]),
+        sell_exchange.get_taker_fee(row["symbol"]),
+    )
+    result = calculate_executable_trade(
+        buy_book.get("asks", []),
+        sell_book.get("bids", []),
+        size,
+        buy_fee_rate=float(buy_fee),
+        sell_fee_rate=float(sell_fee),
+    )
+    max_slippage = float(preferences.get("max_slippage", 2.0) or 2.0)
+    observed_slippage = max(float(result.buy_slippage_pct), float(result.sell_slippage_pct))
+    if observed_slippage > max_slippage:
+        raise ValueError(f"slippage {observed_slippage:.2f}% exceeds your {max_slippage:.2f}% limit")
+    if not result.complete:
+        raise ValueError("the selected trade size cannot be fully executed from current order-book depth")
+    network_fee = float(preferences.get("network_fee", 0.0) or 0.0)
+    profit = result.net_profit - network_fee
+    period = datetime.now(UTC).strftime("%G-%V")
+    created_at = datetime.now(UTC).isoformat()
+    await db._db().execute(
+        "INSERT INTO paper_trades(user_id, opportunity_id, size, profit, created_at, period) VALUES (?, ?, ?, ?, ?, ?)",
+        (user_id, row["id"], size, profit, created_at, period),
+    )
+    await db._db().commit()
+    opportunity = type("OpportunityShim", (), {
+        "symbol": row["symbol"],
+        "buy_exchange": row["buy_exchange"],
+        "sell_exchange": row["sell_exchange"],
+    })()
+    return opportunity, result, network_fee, profit
+
+
 async def paper_trade_callback(update, context):
     query = update.callback_query
     await query.answer()
@@ -606,36 +822,40 @@ async def paper_trade_callback(update, context):
     if not await db.active_vip(query.from_user.id):
         await query.answer("Active VIP access required.", show_alert=True)
         return
-    await query.edit_message_text("⏳ Preparing paper trade…")
+    await query.edit_message_text("⏳ Checking live order-book liquidity for paper trade…")
     row = await db.get_opportunity(query.data.split(":", 1)[1])
     if not row:
         await query.edit_message_text("⚠️ Opportunity expired\nRun /scan for fresh data.")
         return
     user = await db.get_user(query.from_user.id)
-    size = user_filters(user)["trade_size"]
-    expected_gross = size * (row["raw_spread"] / 100)
-    profit = size * (row["net_profit"] / 100)
-    period = datetime.now(UTC).strftime("%G-%V")
-    await db._db().execute(
-        "INSERT INTO paper_trades(user_id, opportunity_id, size, profit, created_at, period) VALUES (?, ?, ?, ?, ?, ?)",
-        (query.from_user.id, row["id"], size, profit, datetime.now(UTC).isoformat(), period),
-    )
-    await db._db().commit()
+    size = float(user_filters(user).get("trade_size", 1000.0))
+    try:
+        opportunity, result, network_fee, profit = await _create_paper_trade(
+            context, query.from_user.id, row, size
+        )
+    except Exception as exc:
+        await query.edit_message_text(f"⚠️ Paper trade not created\n{type(exc).__name__}: {exc}")
+        return
     message = format_paper_trade(
-        _opportunity_from_row(row),
-        buy_price=row["buy_price"],
-        sell_price=row["sell_price"],
+        opportunity,
+        buy_price=result.spent_quote / max(result.base_amount, 1e-12),
+        sell_price=result.sell_proceeds / max(result.base_amount, 1e-12),
         size=size,
-        expected_gross=expected_gross,
+        expected_gross=result.gross_profit,
         estimated_net=profit,
         profit=profit,
     )
+    message += (
+        f"\n🌐 Network fee   ${network_fee:,.4f}"
+        f"\n📉 Max slippage  {max(result.buy_slippage_pct, result.sell_slippage_pct):.2f}%"
+    )
     await query.edit_message_text(
         message,
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data=f"back:{row['id']}")]]),
-        parse_mode="HTML"
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("⬅️ Back", callback_data=f"back:{row['id']}")]]
+        ),
+        parse_mode="HTML",
     )
-
 
 def _book_fill(levels, size: float, *, ascending: bool) -> tuple[float, float]:
     """Return a size-weighted fill price and slippage against the first level."""
@@ -668,11 +888,88 @@ def _format_order_book(levels, side: str) -> str:
     return "\n".join(rows) or "unavailable"
 
 
+async def _set_numeric_setting(update, context, name: str, label: str, minimum: float = 0.0) -> None:
+    if not await require_vip(update, context):
+        return
+    if len(context.args) != 1:
+        await update.message.reply_text("Usage: /" + update.message.text.split()[0][1:] + " NUMBER")
+        return
+    try:
+        value = parse_float(context.args[0], minimum)
+    except ValueError:
+        await update.message.reply_text(f"❌ {label} must be a number >= {minimum:g}.")
+        return
+    db = get_db(context)
+    user = await db.get_user(update.effective_user.id)
+    preferences = user_filters(user)
+    if name == "min_trade_size" and value > float(preferences.get("max_trade_size", 100000.0)):
+        await update.message.reply_text("❌ Minimum trade size cannot be greater than the maximum trade size.")
+        return
+    if name == "max_trade_size" and value < float(preferences.get("min_trade_size", 10.0)):
+        await update.message.reply_text("❌ Maximum trade size cannot be less than the minimum trade size.")
+        return
+    preferences[name] = value
+    if name in {"min_trade_size", "max_trade_size"}:
+        current = float(preferences.get("trade_size", 1000.0))
+        ok, reason = trade_size_is_valid(preferences, current)
+        if not ok:
+            await update.message.reply_text(f"❌ Current trade size ${current:,.2f} is outside the new range; set /settradesize first.")
+            return
+    await db.set_user(update.effective_user.id, filters=preferences)
+    await db.log_action(update.effective_user.id, "changed_filter", f"{name}={value}")
+    await update.message.reply_text(f"✅ {label}: {value:,.2f}")
+
+
+async def set_trade_size(update, context):
+    if not await require_vip(update, context):
+        return
+    if len(context.args) != 1:
+        await update.message.reply_text("Usage: /settradesize AMOUNT")
+        return
+    try:
+        value = parse_float(context.args[0], 0.01)
+    except ValueError:
+        await update.message.reply_text("❌ Trade size must be greater than zero.")
+        return
+    user = await get_db(context).get_user(update.effective_user.id)
+    preferences = user_filters(user)
+    ok, reason = trade_size_is_valid(preferences, value)
+    if not ok:
+        await update.message.reply_text(f"❌ {reason}. Adjust /setmintradesize or /setmaxtradesize.")
+        return
+    await get_db(context).set_user(update.effective_user.id, filters={**preferences, "trade_size": value})
+    await update.message.reply_text(f"✅ Trade size set to ${value:,.2f}")
+
+
+async def set_min_trade_size(update, context):
+    await _set_numeric_setting(update, context, "min_trade_size", "Minimum trade size", 0.01)
+
+
+async def set_max_trade_size(update, context):
+    await _set_numeric_setting(update, context, "max_trade_size", "Maximum trade size", 0.01)
+
+
+async def set_max_slippage(update, context):
+    await _set_numeric_setting(update, context, "max_slippage", "Maximum slippage (%)", 0.0)
+
+
+async def set_network_fee(update, context):
+    await _set_numeric_setting(update, context, "network_fee", "Network fee per trade ($)", 0.0)
+
+
+async def set_daily_cap(update, context):
+    await _set_numeric_setting(update, context, "daily_cap", "Daily paper-trade cap ($)", 0.01)
+
 async def papertrade(update, context):
-    if not await require_vip(update, context): return
-    if len(context.args) != 2: await update.message.reply_text("🧪 Usage: /papertrade OPPORTUNITY_ID SIZE"); return
-    db = get_db(context); row = await db.get_opportunity(context.args[0])
-    if not row: await update.message.reply_text("Opportunity not found or expired."); return
+    if not await require_vip(update, context):
+        return
+    if len(context.args) != 2:
+        await update.message.reply_text("🧪 Usage: /papertrade OPPORTUNITY_ID SIZE")
+        return
+    row = await get_db(context).get_opportunity(context.args[0])
+    if not row:
+        await update.message.reply_text("Opportunity not found or expired.")
+        return
     try:
         size = float(context.args[1])
     except ValueError:
@@ -681,20 +978,22 @@ async def papertrade(update, context):
     if size <= 0:
         await update.message.reply_text("❌ SIZE must be greater than zero.")
         return
-    expected_gross = size * (row["raw_spread"] / 100)
-    profit = size * (row["net_profit"] / 100); period = datetime.now(UTC).strftime("%G-%V")
-    await db._db().execute("INSERT INTO paper_trades(user_id, opportunity_id, size, profit, created_at, period) VALUES (?, ?, ?, ?, ?, ?)", (update.effective_user.id, context.args[0], size, profit, datetime.now(UTC).isoformat(), period)); await db._db().commit()
+    try:
+        opportunity, result, network_fee, profit = await _create_paper_trade(context, update.effective_user.id, row, size)
+    except Exception as exc:
+        await update.message.reply_text(f"⚠️ Paper trade not created\n{type(exc).__name__}: {exc}")
+        return
     message = format_paper_trade(
-        type("OpportunityShim", (), {"symbol": row["symbol"], "buy_exchange": row["buy_exchange"], "sell_exchange": row["sell_exchange"]})(),
-        buy_price=row["buy_price"],
-        sell_price=row["sell_price"],
+        opportunity,
+        buy_price=result.spent_quote / max(result.base_amount, 1e-12),
+        sell_price=result.sell_proceeds / max(result.base_amount, 1e-12),
         size=size,
-        expected_gross=expected_gross,
+        expected_gross=result.gross_profit,
         estimated_net=profit,
         profit=profit,
     )
-    await update.message.reply_text(message)
-
+    message += f"\n🌐 Network fee   ${network_fee:,.4f}\n📉 Max slippage  {max(result.buy_slippage_pct, result.sell_slippage_pct):.2f}%"
+    await update.message.reply_text(message, parse_mode="HTML")
 
 async def paperstats(update, context):
     if not await require_vip(update, context): return
@@ -703,24 +1002,38 @@ async def paperstats(update, context):
 
 
 async def leaderboard(update, context):
-    if not await require_vip(update, context): return
-    if context.args and context.args[0].lower() != "alltime":
-        await update.message.reply_text("Usage: /leaderboard or /leaderboard alltime")
+    if not await require_vip(update, context):
         return
+    if context.args:
+        command = context.args[0].lower()
+        if command in {"hide", "show"}:
+            hidden = command == "hide"
+            db = get_db(context)
+            await db.set_user(update.effective_user.id, leaderboard_hidden=hidden)
+            await db.log_action(update.effective_user.id, "leaderboard_visibility", command.upper())
+            await update.message.reply_text("✅ Your leaderboard visibility is now " + ("hidden." if hidden else "visible."))
+            return
+        if command != "alltime":
+            await update.message.reply_text("Usage: /leaderboard | /leaderboard alltime | /leaderboard hide | /leaderboard show")
+            return
     period = "alltime" if context.args and context.args[0].lower() == "alltime" else datetime.now(UTC).strftime("%G-%V")
-    where = "1=1" if period == "alltime" else "period=?"; args = () if period == "alltime" else (period,)
-    cursor = await get_db(context)._db().execute(f"SELECT u.username, u.telegram_id, SUM(p.profit) total FROM paper_trades p JOIN users u ON u.telegram_id=p.user_id WHERE u.leaderboard_hidden=0 AND {where} GROUP BY p.user_id ORDER BY total DESC LIMIT 10", args); rows = await cursor.fetchall()
-    user_rank = None
-    user_profit = None
-    cursor = await get_db(context)._db().execute(f"SELECT ROW_NUMBER() OVER (ORDER BY total DESC) rank, COALESCE(SUM(p.profit), 0) total FROM paper_trades p WHERE p.user_id = ? AND {where}", (update.effective_user.id, *args))
+    where = "1=1" if period == "alltime" else "period=?"
+    args = () if period == "alltime" else (period,)
+    db = get_db(context)
+    cursor = await db._db().execute(
+        f"SELECT u.username, u.telegram_id, SUM(p.profit) total FROM paper_trades p JOIN users u ON u.telegram_id=p.user_id WHERE u.leaderboard_hidden=0 AND {where} GROUP BY p.user_id ORDER BY total DESC LIMIT 10",
+        args,
+    )
+    rows = await cursor.fetchall()
+    cursor = await db._db().execute(
+        f"SELECT rank, total FROM (SELECT p.user_id, SUM(p.profit) total, DENSE_RANK() OVER (ORDER BY SUM(p.profit) DESC) rank FROM paper_trades p WHERE {where} GROUP BY p.user_id) ranked WHERE user_id=?",
+        (*args, update.effective_user.id),
+    )
     user_row = await cursor.fetchone()
-    if user_row and user_row["total"]:
-        user_rank = user_row["rank"]
-        user_profit = user_row["total"]
+    user_rank = user_row["rank"] if user_row else None
+    user_profit = user_row["total"] if user_row else None
     period_name = "All-Time" if period == "alltime" else "Weekly"
-    message = format_leaderboard(list(rows), period_name, user_rank, user_profit)
-    await update.message.reply_text(message, parse_mode="HTML")
-
+    await update.message.reply_text(format_leaderboard(list(rows), period_name, user_rank, user_profit), parse_mode="HTML")
 
 async def leaderboard_callback(update, context):
     await update.callback_query.answer()
@@ -730,14 +1043,8 @@ async def admin_access(update, context):
     if update.effective_user.id not in context.application.bot_data["admin_ids"]:
         await update.effective_message.reply_text("🛡️ Admin access required.")
         return
-    if len(context.args) != 1:
-        await update.effective_message.reply_text("Usage: /admin 8767")
-        return
-    if context.args[0] != context.application.bot_data["admin_secret_key"]:
-        await update.effective_message.reply_text("❌ Invalid admin secret key.")
-        return
     context.user_data["admin_unlocked"] = True
-    await update.effective_message.reply_text("🛡️ <b>Admin session unlocked</b>\n🔐 Protected tools are now available.", parse_mode="HTML")
+    await update.effective_message.reply_text("🛡️ <b>Admin session unlocked</b>\n🔐 Your Telegram ID is authorized for protected admin tools.", parse_mode="HTML")
 
 
 def maintenance_service(context) -> MaintenanceAssistant:
@@ -810,7 +1117,8 @@ async def validatefix(update, context):
     if len(context.args) != 1:
         await update.effective_message.reply_text("Usage: /validatefix PATCH_ID")
         return
-    await update.effective_message.reply_text(maintenance_service(context).validate(context.args[0]))
+    result = await asyncio.to_thread(maintenance_service(context).validate, context.args[0])
+    await update.effective_message.reply_text(result)
 
 
 async def rejectfix(update, context):
@@ -824,7 +1132,8 @@ async def approvefix(update, context):
     if len(context.args) != 1:
         await update.effective_message.reply_text("Usage: /approvefix PATCH_ID\nThis applies a previously validated patch.")
         return
-    await update.effective_message.reply_text(maintenance_service(context).approve(context.args[0]))
+    result = await asyncio.to_thread(maintenance_service(context).approve, context.args[0])
+    await update.effective_message.reply_text(result)
 
 
 async def maintenance_callback(update, context):
@@ -839,7 +1148,12 @@ async def maintenance_callback(update, context):
     if action not in actions:
         await query.edit_message_text("Unknown maintenance action.")
         return
-    await query.edit_message_text(actions[action](proposal_id))
+    handler = actions[action]
+    if action in {"validate", "approve"}:
+        result = await asyncio.to_thread(handler, proposal_id)
+    else:
+        result = handler(proposal_id)
+    await query.edit_message_text(result)
 
 
 async def _animate_scan_progress(message) -> None:
@@ -861,32 +1175,9 @@ async def _animate_scan_progress(message) -> None:
         logger.debug("scan progress animation stopped", exc_info=True)
 
 
-async def scan_command(update, context):
-    if not await require_vip(update, context):
-        return
-    scanner = context.application.bot_data.get("scanner")
-    if not scanner:
-        await update.effective_message.reply_text("Scanner is still starting. Try again shortly.")
-        return
-
-    progress_msg = await update.effective_message.reply_text("🔎 <b>Scanning exchanges</b>…", parse_mode="HTML")
+async def _run_manual_scan(update, context, scanner, progress_msg, preferences, selected, active_selected):
     animation_task = asyncio.create_task(_animate_scan_progress(progress_msg))
     try:
-        user = await get_db(context).get_user(update.effective_user.id)
-        preferences = user_filters(user)
-        selected = set(json.loads(user["selected_exchanges"] or "[]"))
-        active_selected = selected & set(scanner.exchanges)
-
-        if len(active_selected) < 2:
-            await update.effective_message.reply_text(
-                format_error(
-                    "Scan needs at least two active selected exchanges.",
-                    f"Your selection: {', '.join(sorted(selected)) or 'none'}. Use /exchanges."
-                ),
-                parse_mode="HTML"
-            )
-            return
-
         opportunities = await scanner.run_cycle(require_matching_user=False, exchange_names=active_selected)
         selected_candidates = [
             opportunity for opportunity in opportunities
@@ -894,6 +1185,33 @@ async def scan_command(update, context):
         ]
         visible = [opportunity for opportunity in selected_candidates if matches(opportunity, preferences)]
         visible = sorted(visible, key=lambda opportunity: opportunity.net_profit, reverse=True)[:preferences["max_results"]]
+
+        await update.effective_message.reply_text(format_scan_count(len(visible)), parse_mode="HTML")
+
+        db = get_db(context)
+        for index, item in enumerate(visible, 1):
+            identifier = opportunity_id(item)
+            await db.save_opportunity(identifier, item)
+            message = format_opportunity_card(
+                item, identifier, card_number=index,
+                trade_size=preferences.get("trade_size", 1000),
+            )
+            await update.effective_message.reply_text(
+                message,
+                reply_markup=opportunity_buttons(identifier),
+                parse_mode="HTML",
+            )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.exception("manual scan failed")
+        try:
+            await update.effective_message.reply_text(
+                format_error("Scan failed", "Check /diagnose or try again shortly."),
+                parse_mode="HTML",
+            )
+        except Exception:
+            logger.exception("failed to report manual scan error")
     finally:
         animation_task.cancel()
         await asyncio.gather(animation_task, return_exceptions=True)
@@ -902,28 +1220,50 @@ async def scan_command(update, context):
         except Exception:
             pass
 
-    count_msg = format_scan_count(len(visible))
-    await update.effective_message.reply_text(count_msg, parse_mode="HTML")
 
-    db = get_db(context)
-    for index, item in enumerate(visible, 1):
-        identifier = opportunity_id(item)
-        await db.save_opportunity(identifier, item)
-        message = format_opportunity_card(item, identifier, card_number=index, trade_size=preferences.get("trade_size", 1000))
+async def scan_command(update, context):
+    if not await require_vip(update, context):
+        return
+    scanner = context.application.bot_data.get("scanner")
+    if not scanner:
+        await update.effective_message.reply_text("Scanner is still starting. Try again shortly.")
+        return
+
+    user = await get_db(context).get_user(update.effective_user.id)
+    preferences = user_filters(user)
+    selected = set(json.loads(user["selected_exchanges"] or "[]"))
+    active_selected = selected & set(scanner.exchanges)
+
+    if len(active_selected) < 2:
         await update.effective_message.reply_text(
-            message,
-            reply_markup=opportunity_buttons(identifier),
+            format_error(
+                "Scan needs at least two active selected exchanges.",
+                f"Your selection: {', '.join(sorted(selected)) or 'none'}. Use /exchanges."
+            ),
             parse_mode="HTML"
         )
+        return
+
+    progress_msg = await update.effective_message.reply_text(
+        "🔎 <b>Scanning exchanges</b>…",
+        parse_mode="HTML",
+    )
+
+    # Keep the update handler short. PTB normally processes updates sequentially;
+    # awaiting a long exchange scan here makes every later command appear frozen.
+    context.application.create_task(
+        _run_manual_scan(
+            update, context, scanner, progress_msg,
+            preferences, selected, active_selected,
+        ),
+        update=update,
+    )
 
 
 def admin_only(db, admin_ids, handler):
     async def wrapped(update, context):
         if update.effective_user.id not in admin_ids:
             await update.effective_message.reply_text("Admin access required.")
-            return
-        if not context.user_data.get("admin_unlocked"):
-            await update.effective_message.reply_text("Use /admin SECRET_KEY first.")
             return
         await db.log_admin_action(update.effective_user.id, update.message.text.split()[0], " ".join(context.args)); return await handler(update, context)
     return wrapped
@@ -978,21 +1318,29 @@ async def extend_vip(update, context):
 
 
 async def health(update, context):
-    results = []
-    for name, exchange in context.application.bot_data.get("exchanges", {}).items():
+    exchanges = context.application.bot_data.get("exchanges", {})
+    async def _check(name, exchange):
         try:
-            await exchange.fetch_tickers(["BTC/USDT"])
+            await asyncio.wait_for(exchange.fetch_tickers(["BTC/USDT"]), timeout=8)
             error = getattr(exchange, "last_fetch_error", None)
             stats = getattr(exchange, "last_fetch_stats", None) or {}
             if error:
-                results.append(f"{name}: ❌ unavailable — {error}")
-            elif stats.get("usable", 0) > 0:
-                results.append(f"{name}: ✅ ok ({stats['usable']} ticker usable)")
-            else:
-                results.append(f"{name}: ⚠️ request returned no usable BTC/USDT data")
+                return f"{name}: ❌ unavailable — {error}"
+            if stats.get("usable", 0) > 0:
+                latency = stats.get("latency_ms")
+                latency_text = f", {latency:.0f}ms" if latency is not None else ""
+                return f"{name}: ✅ ok ({stats['usable']} ticker usable{latency_text})"
+            return f"{name}: ⚠️ request returned no usable BTC/USDT data"
+        except asyncio.TimeoutError:
+            return f"{name}: ❌ timeout after 8s"
         except Exception as exc:
-            results.append(f"{name}: ❌ unavailable ({type(exc).__name__}: {exc})")
-    await update.message.reply_text("🩺 <b>Exchange health</b>\n━━━━━━━━━━━━━━\n" + "\n".join(results), parse_mode="HTML")
+            return f"{name}: ❌ unavailable ({type(exc).__name__}: {exc})"
+
+    results = await asyncio.gather(*(_check(name, exchange) for name, exchange in exchanges.items()))
+    await update.message.reply_text(
+        "🩺 <b>Exchange health</b>\n━━━━━━━━━━━━━━\n" + "\n".join(results),
+        parse_mode="HTML",
+    )
 
 
 async def exchangestats(update, context):
@@ -1013,9 +1361,9 @@ async def exchangestats(update, context):
         elif stats["usable"] == 0:
             lines.append(f"{name}: ⚠️ {stats['raw']} tickers received, all {stats['dropped_bid_ask']} dropped for missing/zero bid-ask")
         elif stats.get("fallback_used"):
-            lines.append(f"{name}: ✅ {stats['usable']} usable via order-book fallback (bulk dropped {stats['raw']} for missing bid-ask)")
+            lines.append(f"{name}: ✅ {stats['usable']} usable via order-book fallback (bulk dropped {stats['raw']} for missing bid-ask, {stats.get('latency_ms', 0):.0f}ms)")
         else:
-            lines.append(f"{name}: ✅ {stats['usable']}/{stats['raw']} usable (dropped {stats['dropped_bid_ask']} for missing bid-ask)")
+            lines.append(f"{name}: ✅ {stats['usable']}/{stats['raw']} usable (dropped {stats['dropped_bid_ask']} for missing bid-ask, {stats.get('latency_ms', 0):.0f}ms)")
     await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 
 

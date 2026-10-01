@@ -16,6 +16,11 @@ DEFAULT_FILTERS = {
     "max_spread": 100.0,
     "min_volume": 10000.0,
     "trade_size": 1000.0,
+    "min_trade_size": 10.0,
+    "max_trade_size": 100000.0,
+    "max_slippage": 2.0,
+    "network_fee": 0.0,
+    "daily_cap": 100000.0,
     "fee_adjusted": True,
     "quote_currency": "USDT",
     "watchlist": [],
@@ -24,6 +29,8 @@ DEFAULT_FILTERS = {
     "max_results": 10,
     "paused": False,
     "loose_mode": False,
+    "filters_enabled": True,
+    "min_stable_observations": 1,
 }
 
 
@@ -92,6 +99,39 @@ class Database:
         )
         await self.connection.commit()
 
+        # Additive migrations keep existing production databases compatible with newer bot versions.
+        await self._ensure_columns("users", {
+            "selected_exchanges": "TEXT NOT NULL DEFAULT '[]'",
+            "registration_date": "TEXT",
+            "vip_status": "TEXT NOT NULL DEFAULT 'pending'",
+            "vip_expiry": "TEXT",
+            "vip_key_used": "TEXT",
+            "last_active": "TEXT",
+            "filters": "TEXT NOT NULL DEFAULT '{}'",
+            "banned": "INTEGER NOT NULL DEFAULT 0",
+            "ban_reason": "TEXT",
+            "leaderboard_hidden": "INTEGER NOT NULL DEFAULT 0",
+        })
+        await self._ensure_columns("vip_keys", {
+            "redeemed_by": "INTEGER",
+            "redeemed_at": "TEXT",
+            "expiry_date": "TEXT",
+            "status": "TEXT NOT NULL DEFAULT 'unused'",
+        })
+        cursor = await self._db().execute("PRAGMA table_info(users)")
+        columns = {row[1] for row in await cursor.fetchall()}
+        if "created_at" in columns and "registration_date" in columns:
+            await self._db().execute("UPDATE users SET registration_date = created_at WHERE registration_date IS NULL")
+        if "filters" in columns:
+            await self._db().execute("UPDATE users SET filters = ? WHERE filters IS NULL OR filters = ''", (json.dumps(DEFAULT_FILTERS),))
+        await self.connection.commit()
+
+    async def _ensure_columns(self, table: str, definitions: dict[str, str]) -> None:
+        cursor = await self._db().execute(f"PRAGMA table_info({table})")
+        columns = {row[1] for row in await cursor.fetchall()}
+        for name, definition in definitions.items():
+            if name not in columns:
+                await self._db().execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
     async def close(self) -> None:
         if self.connection:
             await self.connection.close()
