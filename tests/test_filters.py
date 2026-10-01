@@ -124,3 +124,10 @@ def test_corrupted_user_filters_use_defaults():
     result = user_filters(User())
     assert result["min_profit"] == 0.5
     assert result["min_stable_observations"] == 1
+
+
+def test_matches_bypasses_user_filters_when_disabled():
+    opportunity = _opportunity()
+    filters = _filters(min_profit=99.0, min_volume=99999999.0, blacklist=["BTC/USDT"], quote_currency="USDC")
+    filters["filters_enabled"] = False
+    assert matches(opportunity, filters)
