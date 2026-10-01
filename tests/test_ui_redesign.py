@@ -161,3 +161,9 @@ if __name__ == "__main__":
     test_leaderboard_format()
     test_portfolio_format()
     print("\n✅ All UI redesign tests passed!")
+
+
+def test_filters_message_shows_scanner_filter_state():
+    from app.ui import format_filters_message
+    assert "Scanner filters ON" in format_filters_message({"filters_enabled": True})
+    assert "Scanner filters OFF" in format_filters_message({"filters_enabled": False})
