@@ -454,18 +454,14 @@ async def filters_enabled(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     preferences["filters_enabled"] = enabled
     await db.set_user(update.effective_user.id, filters=preferences)
     await db.log_action(update.effective_user.id, "scanner_filters", "ON" if enabled else "OFF")
+    state = "ON" if enabled else "OFF"
+    detail = ("User-defined scanner rules are active." if enabled else
+              "User-defined scanner rules are bypassed. Live API data, selected exchanges, and paused alerts still apply.")
     await update.effective_message.reply_text(
-        state = 'ON' if enabled else 'OFF'
-        await update.effective_message.reply_text(
-            f"🎯 Scanner filters are now <b>{state}</b>.\\n\\n"
-            + ("User-defined scanner rules are active." if enabled else
-               "User-defined scanner rules are bypassed. Live API data, selected exchanges, and paused alerts still apply."),
-            parse_mode="HTML",
-        )
-        + ("User-defined scanner rules are active." if enabled else
-           "User-defined scanner rules are bypassed. Live API data, selected exchanges, and paused alerts still apply."),
+        f"🎯 Scanner filters are now <b>{state}</b>.\n\n{detail}",
         parse_mode="HTML",
     )
+
 
 async def resetfilters(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await require_vip(update, context): return
