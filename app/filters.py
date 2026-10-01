@@ -122,4 +122,7 @@ def match_reason(opportunity, filters: dict[str, Any]) -> str | None:
 
 
 def matches(opportunity, filters: dict[str, Any]) -> bool:
+    """Return whether an opportunity passes user scanner filters."""
+    if not bool(filters.get("filters_enabled", True)):
+        return True
     return match_reason(opportunity, filters) is None
