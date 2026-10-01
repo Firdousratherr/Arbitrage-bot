@@ -182,7 +182,7 @@ async def ui_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await query.edit_message_text(text, reply_markup=_premium_exchange_keyboard(context), parse_mode="HTML")
         return
     if action in {"ui:filters", "ui:settings"}:
-        text, keyboard = settings_menu()
+        text, keyboard = settings_menu(user_filters(user) if user else {})
         await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
         return
     category_map = {
@@ -207,7 +207,7 @@ async def ui_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         preferences["filters_enabled"] = not bool(preferences.get("filters_enabled", True))
         await db.set_user(query.from_user.id, filters=preferences)
         await db.log_action(query.from_user.id, "scanner_filters", "ON" if preferences["filters_enabled"] else "OFF")
-        text, keyboard = settings_menu()
+        text, keyboard = settings_menu(preferences)
         state = "ON" if preferences["filters_enabled"] else "OFF"
         detail = ("User-defined scanner rules are active." if preferences["filters_enabled"] else
                   "User-defined scanner rules are bypassed. Live API data, selected exchanges, and paused alerts still apply.")
@@ -261,7 +261,7 @@ async def ui_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             return
         await db.set_user(query.from_user.id, filters=DEFAULT_FILTERS)
         await db.log_action(query.from_user.id, "reset_filters")
-        text, keyboard = settings_menu()
+        text, keyboard = settings_menu(DEFAULT_FILTERS)
         await query.edit_message_text("♻️ <b>Filters reset</b>\n\n" + text, reply_markup=keyboard, parse_mode="HTML")
         return
     if action == "ui:status":
