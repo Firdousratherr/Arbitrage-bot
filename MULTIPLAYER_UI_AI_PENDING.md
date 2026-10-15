@@ -1,0 +1,1 @@
+Temporary trigger file. The optimization workflow removes this marker during its verified commit.

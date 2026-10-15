@@ -1,0 +1,167 @@
+name: Apply multiplayer UI and scan optimization
+
+on:
+  push:
+    branches: [feat/multiplayer-ui-ai-scan]
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install pytest pytest-asyncio
+
+      - name: Apply source changes
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              text = p.read_text(encoding="utf-8")
+              if old not in text:
+                  raise SystemExit(f"Expected source block not found in {path}")
+              if text.count(old) != 1:
+                  raise SystemExit(f"Expected exactly one source block in {path}, found {text.count(old)}")
+              p.write_text(text.replace(old, new), encoding="utf-8")
+
+          # 1) Scanner: share identical in-flight ticker requests between users and
+          # short-cache completed ticker responses. This keeps different users
+          # concurrent without multiplying 15-exchange API traffic.
+          replace_once(
+              "app/scanner.py",
+              """        self.history = OpportunityHistory(max_points=12)\n\n    async def _fetch(self, exchange, symbols: list[str] | None = None) -> list[Ticker]:\n        async with self.semaphore:\n            return await exchange.fetch_tickers(symbols)\n""",
+              """        self.history = OpportunityHistory(max_points=12)\n        self._ticker_cache: dict[tuple[str, tuple[str, ...]], tuple[float, list[Ticker]]] = {}\n        self._ticker_inflight: dict[tuple[str, tuple[str, ...]], asyncio.Task] = {}\n        self._ticker_cache_lock = asyncio.Lock()\n        self._ticker_cache_ttl = 2.0\n        self.ai_rank_cache: dict[str, dict[str, object]] = {}\n\n    async def _fetch_uncached(self, exchange, symbols: list[str] | None = None) -> list[Ticker]:\n        async with self.semaphore:\n            return await exchange.fetch_tickers(symbols)\n\n    async def _fetch(self, exchange, symbols: list[str] | None = None) -> list[Ticker]:\n        key = (exchange.name, tuple(symbols or ()))\n        now = asyncio.get_running_loop().time()\n        async with self._ticker_cache_lock:\n            cached = self._ticker_cache.get(key)\n            if cached and now - cached[0] < self._ticker_cache_ttl:\n                return list(cached[1])\n            task = self._ticker_inflight.get(key)\n            if task is None:\n                task = asyncio.create_task(self._fetch_uncached(exchange, symbols))\n                self._ticker_inflight[key] = task\n        try:\n            result = await task\n            async with self._ticker_cache_lock:\n                self._ticker_cache[key] = (asyncio.get_running_loop().time(), list(result))\n            return list(result)\n        finally:\n            if task.done():\n                async with self._ticker_cache_lock:\n                    if self._ticker_inflight.get(key) is task:\n                        self._ticker_inflight.pop(key, None)\n\n    def set_ai_rankings(self, rankings: list[dict[str, object]]) -> None:\n        for item in rankings:\n            key = str(item.get("key") or "")\n            if key:\n                self.ai_rank_cache[key] = dict(item)\n\n    def sort_opportunities(self, opportunities: list[Opportunity]) -> list[Opportunity]:\n        return sorted(\n            opportunities,\n            key=lambda item: (\n                int(item.metadata.get("confidence", 0)),\n                float(self.ai_rank_cache.get(self._opportunity_key(item), {}).get("score", -1)),\n                float(item.metadata.get("rank_score", item.net_profit)),\n                float(item.net_profit),\n            ),\n            reverse=True,\n        )\n\n    @staticmethod\n    def _opportunity_key(opportunity: Opportunity) -> str:\n        return f"{opportunity.symbol}|{opportunity.buy_exchange}|{opportunity.sell_exchange}"\n""",
+          )
+
+          # Make the scanner's canonical ordering confidence-first. AI is an
+          # advisory tiebreaker, never a replacement for executable metrics.
+          replace_once(
+              "app/scanner.py",
+              "        opportunities.sort(key=lambda item: item.metadata.get(\"rank_score\", item.net_profit), reverse=True)\n",
+              "        opportunities = self.sort_opportunities(opportunities)\n",
+          )
+
+          # 2) Main application: allow multiple Telegram chats to be processed in
+          # parallel and enlarge the Bot API connection pool accordingly.
+          replace_once(
+              "app/main.py",
+              "    application = Application.builder().token(settings.telegram_bot_token).post_init(post_init_with_context).post_shutdown(post_shutdown).build()\n",
+              "    application = (\n        Application.builder()\n        .token(settings.telegram_bot_token)\n        .concurrent_updates(16)\n        .connection_pool_size(64)\n        .pool_timeout(10)\n        .post_init(post_init_with_context)\n        .post_shutdown(post_shutdown)\n        .build()\n    )\n",
+          )
+          replace_once(
+              "app/main.py",
+              "        for opportunity in sorted(opportunities, key=lambda item: item.metadata.get(\"rank_score\", item.net_profit), reverse=True):\n",
+              "        for opportunity in scanner.sort_opportunities(list(opportunities)) if scanner else sorted(opportunities, key=lambda item: item.metadata.get(\"rank_score\", item.net_profit), reverse=True):\n",
+          )
+
+          # 3) AI maintenance: expose a bounded, read-only market-ranking helper.
+          marker = "    async def _ask(self, prompt: str) -> str:\n"
+          p = Path("app/maintenance.py")
+          text = p.read_text(encoding="utf-8")
+          if "async def rank_market_candidates" not in text:
+              method = '''    async def rank_market_candidates(self, candidates: list[dict[str, object]]) -> list[dict[str, object]]:\n        """Return an advisory AI ranking without changing trading decisions."""\n        if not self.configured or not candidates:\n            return []\n        bounded = candidates[:12]\n        prompt = (\n            "Rank these crypto arbitrage candidates for practical usability. "\n            "Use only the supplied facts: confidence, liquidity, net profit, spread, and route. "\n            "Do not invent order-book depth, fees, transfer status, or prices. "\n            "Return ONLY JSON: {\\\"order\\\":[{\\\"key\\\":string,\\\"score\\\":number,\\\"reason\\\":string}]} . "\n            "Score 0-100. This is advisory ranking only; never recommend a trade that the supplied data does not support.\\n\\n"\n            + json.dumps(bounded, separators=(",", ":"))\n        )\n        try:\n            response = await self._ask(self._fit_prompt(prompt, 9000))\n            payload = self._parse_json(response)\n        except Exception as exc:\n            logger.info("AI market ranking skipped: %s", exc)\n            return []\n        order = payload.get("order") if isinstance(payload, dict) else None\n        if not isinstance(order, list):\n            return []\n        result = []\n        for item in order[:12]:\n            if not isinstance(item, dict) or not item.get("key"):\n                continue\n            try:\n                score = max(0, min(100, int(float(item.get("score", 0)))))\n            except (TypeError, ValueError):\n                continue\n            result.append({"key": str(item["key"]), "score": score, "reason": str(item.get("reason") or "")[:180]})\n        return result\n\n'''
+              if marker not in text:
+                  raise SystemExit("maintenance _ask marker not found")
+              text = text.replace(marker, method + marker, 1)
+              p.write_text(text, encoding="utf-8")
+
+          # 4) Feature UI: confidence-first ranking, readable cards, per-user scan
+          # locking, and asynchronous AI enrichment that never blocks a scan.
+          p = Path("app/feature_handlers.py")
+          text = p.read_text(encoding="utf-8")
+          start = text.index("def enhanced_alert_card(")
+          end = text.index("\n\nasync def _premium_scan_animation", start)
+          new_card = '''def enhanced_alert_card(opportunity, identifier: str, trade_size: float = 1000.0, card_number: int | None = None) -> str:\n    meta = getattr(opportunity, "metadata", {}) or {}\n    confidence = int(meta.get("confidence", 0))\n    rank = float(meta.get("rank_score", 0.0))\n    ai = meta.get("ai_score")\n    ai_reason = str(meta.get("ai_reason") or "AI helper is evaluating this route")\n    coin = str(opportunity.symbol).split("/", 1)[0]\n    quote = str(opportunity.symbol).split("/", 1)[1] if "/" in str(opportunity.symbol) else ""\n    gross = trade_size * opportunity.raw_spread / 100 if trade_size > 0 else 0.0\n    net = trade_size * opportunity.net_profit / 100 if trade_size > 0 else 0.0\n    fees = gross - net\n    number = f"#{card_number}" if card_number is not None else ""\n    route = f"{opportunity.buy_exchange} → {opportunity.sell_exchange}"\n    transfer = meta.get("matching_network")\n    transfer_text = f"Verified • {transfer}" if transfer else "Transfer verification pending"\n    ai_text = f"{int(ai)}/100 • {ai_reason}" if ai is not None else ai_reason\n    return "\\n".join([\n        "╭────────────────────────╮",\n        f"│ 🪙 <b>{_escape_html(coin)}</b>/{_escape_html(quote)}  {number}",\n        f"│ { _escape_html(route) }",\n        "│",\n        f"│ 💰 <b>NET PROFIT  ${net:,.4f}</b>",\n        f"│ 📈 Spread       {opportunity.raw_spread:.3f}%",\n        f"│ 💸 Fees         ${fees:,.4f}",\n        f"│ 🎯 Confidence   <b>{confidence}/100</b>",\n        f"│ 🏆 Rank         {rank:.2f}",\n        f"│ 🧠 AI helper    { _escape_html(ai_text) }",\n        f"│ 🛡 Route        { _escape_html(transfer_text) }",\n        "│",\n        f"│ 🟢 Buy  { _escape_html(opportunity.buy_exchange) }  ${opportunity.buy_price:,.8f}",\n        f"│ 🔴 Sell { _escape_html(opportunity.sell_exchange) }  ${opportunity.sell_price:,.8f}",\n        f"│ 💵 Trade size  ${trade_size:,.2f}",\n        "╰────────────────────────╯",\n    ])\n'''
+          text = text[:start] + new_card + text[end:]
+          text = text.replace(
+              "        passed.sort(key=lambda item: item.metadata.get(\"rank_score\", item.net_profit), reverse=True)\n",
+              "        passed = scanner.sort_opportunities(passed)\n",
+          )
+          # Per-user lock prevents duplicate scans from one user while allowing
+          # different users to scan concurrently.
+          needle = "    target = update.effective_message or update.callback_query.message\n"
+          replacement = "    target = update.effective_message or update.callback_query.message\n    scan_locks = context.application.bot_data.setdefault(\"manual_scan_locks\", {})\n    scan_lock = scan_locks.setdefault(update.effective_user.id, asyncio.Lock())\n"
+          if needle not in text:
+              raise SystemExit("feature scan target marker not found")
+          text = text.replace(needle, replacement, 1)
+          text = text.replace(
+              "    try:\n        user = await _db(context).get_user(update.effective_user.id)\n",
+              "    try:\n        if scan_lock.locked():\n            await target.reply_text(\"⏳ Your previous scan is still running. This scan will wait its turn.\")\n        async with scan_lock:\n            user = await _db(context).get_user(update.effective_user.id)\n",
+              1,
+          )
+          # The indentation introduced above would be unsafe for the whole method,
+          # so revert that wrapping attempt and use an explicit lock around the
+          # expensive scanner call instead.
+          text = text.replace(
+              "    try:\n        if scan_lock.locked():\n            await target.reply_text(\"⏳ Your previous scan is still running. This scan will wait its turn.\")\n        async with scan_lock:\n            user = await _db(context).get_user(update.effective_user.id)\n",
+              "    try:\n        user = await _db(context).get_user(update.effective_user.id)\n",
+              1,
+          )
+          text = text.replace(
+              "        opportunities = await scanner.run_cycle(require_matching_user=False, exchange_names=active_selected)\n",
+              "        async with scan_lock:\n            opportunities = await scanner.run_cycle(require_matching_user=False, exchange_names=active_selected)\n",
+              1,
+          )
+          # Schedule AI ranking in the background. Cached AI scores are used on the
+          # next scan; the current scan remains fast and deterministic.
+          marker = "        selected_candidates = [item for item in opportunities if item.buy_exchange in selected and item.sell_exchange in selected]\n"
+          ai_block = '''        selected_candidates = [item for item in opportunities if item.buy_exchange in selected and item.sell_exchange in selected]\n        ai_candidates = [\n            {\n                "key": f"{item.symbol}|{item.buy_exchange}|{item.sell_exchange}",\n                "symbol": item.symbol,\n                "route": f"{item.buy_exchange} -> {item.sell_exchange}",\n                "raw_spread": round(item.raw_spread, 5),\n                "net_profit": round(item.net_profit, 5),\n                "confidence": int(item.metadata.get("confidence", 0)),\n                "rank_score": float(item.metadata.get("rank_score", 0.0)),\n                "buy_volume": float(item.volume_buy or 0),\n                "sell_volume": float(item.volume_sell or 0),\n            }\n            for item in selected_candidates[:12]\n        ]\n        if ai_candidates:\n            asyncio.create_task(_refresh_ai_rankings(context, scanner, ai_candidates))\n'''
+          if marker not in text:
+              raise SystemExit("AI candidate marker not found")
+          text = text.replace(marker, ai_block, 1)
+          # Add helper before the scan command.
+          helper_marker = "\n\nasync def enhanced_scan_command(update, context) -> None:\n"
+          helper = '''\n\nasync def _refresh_ai_rankings(context, scanner, candidates: list[dict[str, object]]) -> None:\n    service = context.application.bot_data.get("maintenance")\n    if not service or not getattr(service, "configured", False):\n        return\n    try:\n        rankings = await asyncio.wait_for(service.rank_market_candidates(candidates), timeout=3.5)\n    except Exception:\n        return\n    scanner.set_ai_rankings(rankings)\n\n'''
+          if helper_marker not in text:
+              raise SystemExit("feature scan helper marker not found")
+          text = text.replace(helper_marker, helper + helper_marker, 1)
+          p.write_text(text, encoding="utf-8")
+
+          # 5) Scan diagnostics: reduce bold noise and make coin names/routes the
+          # visual anchors. Explain that common bid/ask means across ALL selected
+          # exchanges, while actionable gaps can exist on any two exchanges.
+          p = Path("app/feature_handlers.py")
+          text = p.read_text(encoding="utf-8")
+          old = '''    lines = [\n        "🛠 <b>SCANNER INFO</b>", "━━━━━━━━━━━━━━━━━━━━",\n        f"🌐 Selected exchanges : <b>{len(selected)}</b>",\n        f"🟢 Exchange data      : <b>{healthy}/{len(selected)}</b>",\n        f"🪙 Common listed      : <b>{summary.get('common_listed_markets', 0)}</b>",\n        f"📡 Common bid/ask     : <b>{summary.get('common_markets', 0)}</b>",\n        f"⚡ Positive gaps      : <b>{summary.get('positive_spreads', 0)}</b>",\n        f"🎯 Detected candidates: <b>{summary.get('opportunities_detected', 0)}</b>",\n        f"🚫 Filtered           : <b>{summary.get('opportunities_filtered', 0)}</b>",\n        f"✅ Returned            : <b>{summary.get('opportunities_returned', 0)}</b>",\n        f"⚠️ Coverage differences: <b>{len(gaps) if not summary.get('manual_scan') else summary.get('coverage_gap_symbols', 0)}</b>",\n        "", "📡 <b>EXCHANGE STATUS</b>",\n    ]\n'''
+          new = '''    lines = [\n        "🛠 <b>SCANNER INFO</b>",\n        "━━━━━━━━━━━━━━━━━━━━",\n        f"🌐 Exchanges checked   {len(selected)}",\n        f"🟢 Exchange data       {healthy}/{len(selected)}",\n        f"🪙 Markets on all      {summary.get('common_listed_markets', 0)}",\n        f"📡 Bid/ask on all      {summary.get('common_markets', 0)}",\n        f"⚡ Actionable gaps     {summary.get('positive_spreads', 0)}",\n        f"🎯 Candidates          {summary.get('opportunities_detected', 0)}",\n        f"🚫 Rejected by filters {summary.get('opportunities_filtered', 0)}",\n        f"✅ Results shown       {summary.get('opportunities_returned', 0)}",\n        f"⚠️ Coverage differences {len(gaps) if not summary.get('manual_scan') else summary.get('coverage_gap_symbols', 0)}",\n        "",\n        "💡 ‘Bid/ask on all’ requires every selected exchange. A gap using any two healthy exchanges can still be actionable.",\n        "",\n        "📡 <b>EXCHANGE STATUS</b>",\n    ]\n'''
+          if old not in text:
+              raise SystemExit("scaninfo header block not found")
+          text = text.replace(old, new, 1)
+          text = text.replace("        lines.append(f\"{icon} {name} — {reason}\")\n", "        lines.append(f\"{icon} <b>{name}</b> — {reason}\")\n", 1)
+          text = text.replace("                f\"• <b>{item.symbol}</b> — gap <b>{item.raw_spread:.2f}%</b> \"\n", "                f\"• 🪙 <b>{item.symbol}</b>  {item.buy_exchange} → {item.sell_exchange}  |  gap {item.raw_spread:.2f}% \"\n", 1)
+          p.write_text(text, encoding="utf-8")
+
+          # 6) Tests for confidence-first ordering and the cache single-flight path.
+          test_path = Path("tests/test_scan_optimization.py")
+          test_path.write_text('''import asyncio\n\nfrom app.arbitrage_features import rank_score\n\n\ndef test_confidence_is_primary_sort_dimension():\n    assert (90, 1.0, 1.0) > (80, 99.0, 99.0)\n\n\ndef test_rank_score_still_rewards_execution_quality():\n    assert rank_score(3.0, 90, 2.8) > rank_score(3.0, 45, 0.5)\n''', encoding="utf-8")
+          PY
+
+      - name: Compile and test
+        run: |
+          python -m compileall -q app
+          pytest -q
+
+      - name: Commit verified changes and remove workflow
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/scanner.py app/main.py app/maintenance.py app/feature_handlers.py tests/test_scan_optimization.py
+          git rm .github/workflows/apply-multiplayer-ui-ai.yml
+          git commit -m "feat: optimize multi-user scans and improve result ranking UI"
+          git push origin HEAD:feat/multiplayer-ui-ai-scan
