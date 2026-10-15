@@ -1,0 +1,12 @@
+services:
+  arbitrage-bot:
+    build: .
+    container_name: running-bot
+    env_file:
+      - .env
+    restart: always
+    volumes:
+      - arbitrage_data:/app/data
+
+volumes:
+  arbitrage_data:

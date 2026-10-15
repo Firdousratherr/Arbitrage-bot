@@ -1,7 +1,0 @@
-python-telegram-bot<22,>=20.8
-ccxt>=4.4.0
-aiosqlite>=0.20.0
-python-dotenv>=1.0.1
-pydantic-settings>=2.6.0
-psutil>=6.1.0
-groq>=0.15.0
