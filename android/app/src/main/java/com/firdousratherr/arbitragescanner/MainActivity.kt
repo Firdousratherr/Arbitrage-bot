@@ -25,6 +25,7 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -35,8 +36,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
+import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 
@@ -79,6 +82,7 @@ private fun ScannerHome() {
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var lastUpdated by remember { mutableStateOf("Not updated yet") }
+    val scope = rememberCoroutineScope()
 
     suspend fun refresh() {
         loading = true
@@ -94,7 +98,7 @@ private fun ScannerHome() {
                     val code = connection.responseCode
                     val stream = if (code in 200..299) connection.inputStream else connection.errorStream
                     val body = stream.bufferedReader().use { it.readText() }
-                    if (code !in 200..299) error("API returned HTTP $code")
+                    if (code !in 200..299) throw IOException("API returned HTTP $code")
                     val root = JSONObject(body)
                     val array = root.getJSONArray("items")
                     (0 until array.length()).map { index ->
@@ -148,7 +152,7 @@ private fun ScannerHome() {
             Spacer(Modifier.height(12.dp))
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
                 Text("Opportunities", fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
-                Button(onClick = { /* LaunchedEffect refreshes; manual retry state is added in the next UI pass. */ }) {
+                Button(onClick = { scope.launch { refresh() } }) {
                     Text("Auto refresh")
                 }
             }
@@ -165,7 +169,7 @@ private fun ScannerHome() {
                     Spacer(Modifier.height(4.dp))
                     Text(error ?: "", color = Muted)
                     Spacer(Modifier.height(8.dp))
-                    Button(onClick = { /* retry is wired in the next UI pass */ }) { Text("Retry on next refresh") }
+                    Button(onClick = { scope.launch { refresh() } }) { Text("Retry now") }
                 }
             } else if (rows.isEmpty()) {
                 Text("No opportunities returned yet. Check that the API is running and has completed a scan.", color = Muted)
