@@ -5,6 +5,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
 WORKDIR /srv/arbitrage
+ENV PYTHONPATH=/srv/arbitrage
 COPY pyproject.toml README.md ./
 COPY app ./app
 COPY mobile_api ./mobile_api
