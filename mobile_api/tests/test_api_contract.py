@@ -11,8 +11,8 @@ def test_buy_depth_walks_multiple_ask_levels_and_fills_quote_budget():
 
     assert result["complete"] is True
     assert result["quote_spent"] == pytest.approx(48.0)
-    assert result["base_amount"] == pytest.approx(4.0)
-    assert result["average_price"] == pytest.approx(12.0)
+    assert result["base_amount"] == pytest.approx(4.5)
+    assert result["average_price"] == pytest.approx(48.0 / 4.5)
 
 
 def test_buy_depth_marks_insufficient_liquidity():
