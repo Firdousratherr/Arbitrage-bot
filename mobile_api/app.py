@@ -129,7 +129,7 @@ def _network_rows(currency_info: dict[str, Any] | None, currency: str) -> list[d
             "contract": str(contract).strip() if contract else None,
             "deposit_enabled": value.get("deposit") if isinstance(value.get("deposit"), bool) else None,
             "withdraw_enabled": value.get("withdraw") if isinstance(value.get("withdraw"), bool) else None,
-            "withdrawal_fee": cost if isinstance(cost, (int, float)) else None,
+            "withdrawal_fee": cost if isinstance(cost, (int, float)) and cost >= 0 else None,
         })
     return rows[:50]
 
@@ -176,6 +176,9 @@ def _verified_routes(
                 "deposit_to_sell_exchange_enabled": True,
                 "contract_match": True,
                 "buy_exchange_withdrawal_fee": source.get("withdrawal_fee"),
+                "withdrawal_fee_asset": source.get("currency"),
+                "withdrawal_fee_unit": "base_asset",
+                "withdrawal_fee_known": isinstance(source.get("withdrawal_fee"), (int, float)) and source.get("withdrawal_fee") >= 0,
                 "sell_exchange_deposit_confirmed_by_api": True,
                 "verified": True,
             })
@@ -419,7 +422,36 @@ async def opportunity_details(
         raise HTTPException(status_code=502, detail="One exchange returned an empty side of the order book.")
 
     buy_depth = consume_asks_for_quote(asks, trade_size_quote)
-    sell_depth = consume_bids_for_base(bids, float(buy_depth["base_amount"]))
+    base_acquired = float(buy_depth["base_amount"])
+    if base_acquired <= 0:
+        raise HTTPException(status_code=502, detail="The buy order book contains no usable ask liquidity.")
+
+    base_currency = normalized.split("/")[0]
+    try:
+        buy_networks, sell_networks = await asyncio.gather(
+            _fetch_transfer_networks(buy_adapter, base_currency),
+            _fetch_transfer_networks(sell_adapter, base_currency),
+        )
+    except Exception:
+        buy_networks, sell_networks = [], []
+    transfer_routes = _verified_routes(buy_networks, sell_networks)
+    selected_route = None
+    if transfer_routes:
+        known_fee_routes = [route for route in transfer_routes if route.get("withdrawal_fee_known")]
+        selected_route = min(
+            known_fee_routes or transfer_routes,
+            key=lambda route: float(route["buy_exchange_withdrawal_fee"]) if route.get("withdrawal_fee_known") else float("inf"),
+        )
+
+    withdrawal_fee_base = None
+    base_for_sale = base_acquired
+    if selected_route and selected_route.get("withdrawal_fee_known"):
+        withdrawal_fee_base = float(selected_route["buy_exchange_withdrawal_fee"])
+        base_for_sale = max(0.0, base_acquired - withdrawal_fee_base)
+    if base_for_sale <= 0:
+        raise HTTPException(status_code=422, detail="The verified route withdrawal fee consumes the entire estimated base amount.")
+
+    sell_depth = consume_bids_for_base(bids, base_for_sale)
     buy_vwap = float(buy_depth["average_price"])
     sell_vwap = float(sell_depth["average_price"])
     both_books_complete = bool(buy_depth["complete"] and sell_depth["complete"])
@@ -437,23 +469,24 @@ async def opportunity_details(
         )
         profit_after_trading_fees = gross_pnl - trading_fee_amount
 
-    base_currency = normalized.split("/")[0]
-    try:
-        buy_networks, sell_networks = await asyncio.gather(
-            _fetch_transfer_networks(buy_adapter, base_currency),
-            _fetch_transfer_networks(sell_adapter, base_currency),
-        )
-    except Exception:
-        buy_networks, sell_networks = [], []
-    transfer_routes = _verified_routes(buy_networks, sell_networks)
-    trade_size_complete = both_books_complete
+    full_route_net_profit = None
+    if fees_known and both_books_complete and selected_route and withdrawal_fee_base is not None:
+        # The selected route's withdrawal fee has already been removed from the
+        # base amount sold above. Unknown chain/bridge costs still prevent a claim
+        # that the number is guaranteed or universally executable.
+        full_route_net_profit = profit_after_trading_fees
 
     warning_messages = [
         "Order-book values are a snapshot and can change before an order fills.",
-        "Trading fees are included only when both venues expose a readable fee rate.",
-        "Full route profit remains unknown until withdrawal fees and other transfer costs are confirmed.",
+        "Trading-fee estimates use reported market/exchange fee metadata only.",
     ]
-    if not trade_size_complete:
+    if withdrawal_fee_base is None:
+        warning_messages.append("Withdrawal fee is unknown or no strict route was verified; the sell quantity is not transfer-fee-adjusted.")
+        warning_messages.append("Full-route net profit is unknown until the selected transfer route exposes its withdrawal fee.")
+    else:
+        warning_messages.append("Known withdrawal fee was deducted from the base quantity before estimating sale proceeds.")
+    warning_messages.append("Other transfer costs, timing risk, exchange limits and price movement are not guaranteed to be captured.")
+    if not both_books_complete:
         warning_messages.append("Available order-book depth could not fill the requested trade size on both legs.")
     if not fees_known:
         warning_messages.append("At least one trading fee rate is unavailable; after-fee profit is not calculated.")
@@ -487,7 +520,8 @@ async def opportunity_details(
         "gross_pnl_before_fees": gross_pnl if both_books_complete else None,
         "known_trading_fee_estimate": trading_fee_amount,
         "profit_after_known_trading_fees": profit_after_trading_fees,
-        "full_route_net_profit": None,
+        "withdrawal_fee_deducted_base": withdrawal_fee_base,
+        "full_route_net_profit": full_route_net_profit,
         "order_book_depth_verified": both_books_complete,
         "transfer_route_verified": bool(transfer_routes),
         "verified_transfer_routes": transfer_routes,
