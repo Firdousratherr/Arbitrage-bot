@@ -141,8 +141,8 @@ private fun readPaperTrades(context: Context): List<PaperTradeRow> {
 private fun savePaperTrade(context: Context, detail: JSONObject): List<PaperTradeRow> {
     val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
     val arr = try { JSONArray(prefs.getString("paper_trades", "[]") ?: "[]") } catch (_: Exception) { JSONArray() }
-    val profit: Any = if (detail.has("profit_after_known_trading_fees") && !detail.isNull("profit_after_known_trading_fees"))
-        detail.optDouble("profit_after_known_trading_fees") else JSONObject.NULL
+    val profit: Any = if (detail.has("profit_after_known_fees") && !detail.isNull("profit_after_known_fees"))
+        detail.optDouble("profit_after_known_fees") else JSONObject.NULL
     val symbol = detail.optString("symbol", "Unknown")
     arr.put(JSONObject()
         .put("id", System.currentTimeMillis().toString() + symbol)
@@ -512,7 +512,7 @@ private fun PaperScreen(rows: List<PaperTradeRow>, onClear: () -> Unit) {
                         Text(trade.symbol, fontWeight = FontWeight.Bold)
                         Text(trade.route, color = Muted, fontSize = 11.sp)
                         Text("Size: " + fmt(trade.size) + " " + trade.quote, fontSize = 12.sp)
-                        Text(trade.profit?.let { "P&L after known fees: " + fmt(it) + " " + trade.quote } ?: "P&L unknown: depth or fee data incomplete.", color = if (trade.profit != null) Accent else Warning, fontSize = 11.sp)
+                        Text(trade.profit?.let { "P&L after reported fees: " + fmt(it) + " " + trade.quote } ?: "P&L unknown: depth or fee data incomplete.", color = if (trade.profit != null) Accent else Warning, fontSize = 11.sp)
                         Text(trade.savedAt, color = Muted, fontSize = 10.sp)
                     }
                 }
@@ -618,7 +618,7 @@ private fun DetailScreen(row: OpportunityRow, payload: JSONObject?, loading: Boo
                             MetricRow("Sell taker fee", feeText(sell))
                             MetricRow("Gross P&L", optionalMoney(payload, "gross_pnl_before_fees"))
                             MetricRow("Known trading-fee estimate", optionalMoney(payload, "known_trading_fee_estimate"))
-                            MetricRow("P&L after known trading fees", optionalMoney(payload, "profit_after_known_trading_fees"))
+                            MetricRow("P&L after known fees", optionalMoney(payload, "profit_after_known_fees"))
                             MetricRow("Full-route net profit", "Unknown")
                             Text("Withdrawal and transfer costs are not included in full-route profit.", color = Warning, fontSize = 10.sp)
                         }
