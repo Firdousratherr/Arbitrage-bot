@@ -496,6 +496,14 @@ async def opportunity_details(
         "sell_exchange": sell_name,
         "quote_currency": normalized.split("/")[1] if "/" in normalized else None,
         "requested_trade_size_quote": trade_size_quote,
+        "buy_slippage_pct": (
+            max(0.0, (buy_vwap - float(asks[0][0])) / float(asks[0][0]) * 100.0)
+            if buy_depth["complete"] and float(asks[0][0]) > 0 else None
+        ),
+        "sell_slippage_pct": (
+            max(0.0, (float(bids[0][0]) - sell_vwap) / float(bids[0][0]) * 100.0)
+            if sell_depth["complete"] and float(bids[0][0]) > 0 else None
+        ),
         "buy": {
             "best_ask": float(asks[0][0]),
             "volume_weighted_average_price": buy_vwap,
