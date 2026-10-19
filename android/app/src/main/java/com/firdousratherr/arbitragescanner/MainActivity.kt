@@ -59,6 +59,7 @@ private val Warning = Color(0xFFFFC879)
 data class OpportunityRow(
     val symbol: String, val buyExchange: String, val sellExchange: String,
     val buyAsk: Double, val sellBid: Double, val spread: Double, val estimate: Double,
+    val buyVolume: Double, val sellVolume: Double,
     val warning: String, val observedAt: String, val ageSeconds: Double?, val coverageComplete: Boolean
 ) {
     val key: String get() = "$symbol|$buyExchange|$sellExchange"
@@ -87,6 +88,21 @@ class MainActivity : ComponentActivity() {
 private fun normalizeUrl(value: String) = if (value.trim().endsWith("/")) value.trim() else value.trim() + "/"
 private fun enc(value: String) = URLEncoder.encode(value, "UTF-8")
 private fun fmt(value: Double) = String.format(Locale.US, "%,.8f", value).trimEnd('0').trimEnd('.').ifBlank { "0" }
+private fun compactVolume(value: Double): String = when {
+    value <= 0 -> "unknown"
+    value >= 1_000_000_000 -> String.format(Locale.US, "%.2fB", value / 1_000_000_000)
+    value >= 1_000_000 -> String.format(Locale.US, "%.2fM", value / 1_000_000)
+    value >= 1_000 -> String.format(Locale.US, "%.2fK", value / 1_000)
+    else -> String.format(Locale.US, "%.0f", value)
+}
+private fun ageLabel(seconds: Double?): String {
+    if (seconds == null) return "unknown"
+    return when {
+        seconds < 60 -> seconds.toInt().toString() + "s"
+        seconds < 3600 -> (seconds / 60).toInt().toString() + "m"
+        else -> (seconds / 3600).toInt().toString() + "h"
+    }
+}
 
 private suspend fun getJson(baseUrl: String, path: String): JSONObject = withContext(Dispatchers.IO) {
     val connection = URL(normalizeUrl(baseUrl) + path.trimStart('/')).openConnection() as HttpURLConnection
@@ -114,6 +130,8 @@ private fun parseRow(item: JSONObject) = OpportunityRow(
     sellBid = item.optDouble("sell_bid", 0.0),
     spread = item.optDouble("gross_spread_pct", 0.0),
     estimate = item.optDouble("provisional_fee_adjusted_spread_pct", 0.0),
+    buyVolume = item.optDouble("buy_quote_volume_24h", 0.0),
+    sellVolume = item.optDouble("sell_quote_volume_24h", 0.0),
     warning = item.optJSONArray("warnings")?.optString(0) ?: "Provisional estimate.",
     observedAt = item.optString("observed_at", ""),
     ageSeconds = if (item.has("data_age_seconds") && !item.isNull("data_age_seconds")) item.optDouble("data_age_seconds") else null,
@@ -477,6 +495,8 @@ private fun OpportunityCard(row: OpportunityRow, isSaved: Boolean, onOpen: () ->
                 Column(horizontalAlignment = Alignment.End) { Text("SELL BID", color = Muted, fontSize = 9.sp); Text(fmt(row.sellBid), fontSize = 12.sp) }
             }
             Text("Provisional fee-adjusted spread: " + String.format(Locale.US, "%.3f%%", row.estimate), color = Accent, fontSize = 11.sp, modifier = Modifier.padding(top = 6.dp))
+            Text("24h quote volume (lower leg): " + compactVolume(minOf(row.buyVolume, row.sellVolume)), color = Muted, fontSize = 10.sp)
+            Text("Scan data age: " + ageLabel(row.ageSeconds), color = Muted, fontSize = 10.sp)
             Text(if (row.coverageComplete) "Tap for depth and fee detail" else "Coverage incomplete · tap for details", color = Muted, fontSize = 10.sp)
         }
     }
@@ -582,6 +602,7 @@ private fun DetailScreen(row: OpportunityRow, payload: JSONObject?, loading: Boo
             TextButton(onClick = onToggleSaved) { Text(if (isSaved) "★" else "☆", fontSize = 20.sp) }
         }
         Text("Depth-aware estimate · not a profit guarantee", color = Warning, fontSize = 11.sp)
+        Text("Ticker observation: " + row.observedAt, color = Muted, fontSize = 10.sp)
         Spacer(Modifier.height(7.dp))
         if (loading && payload == null) Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = Accent) }
         else if (payload == null) Column {
