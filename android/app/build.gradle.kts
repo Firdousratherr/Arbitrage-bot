@@ -1,3 +1,5 @@
+import java.net.URI
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -71,7 +73,7 @@ tasks.register("verifyReleaseConfiguration") {
     description = "Rejects release builds without a real HTTPS API and configured signing key."
     doLast {
         val apiUri = try {
-            java.net.URI(releaseApiBaseUrl)
+            URI(releaseApiBaseUrl)
         } catch (exception: Exception) {
             throw GradleException("MOBILE_API_BASE_URL must be a valid HTTPS URL.", exception)
         }
