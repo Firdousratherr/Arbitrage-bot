@@ -214,63 +214,60 @@ async def _scan_cycle() -> tuple[list[Opportunity], dict[str, dict[str, Any]]]:
             by_symbol.setdefault(ticker.symbol, []).append(ticker)
 
     observed_at = datetime.now(UTC).isoformat()
-    best_by_symbol: list[Opportunity] = []
+    opportunities: list[Opportunity] = []
     for symbol, tickers in by_symbol.items():
         if len(tickers) < 2:
             continue
-        # Keep the route with the strongest gross top-of-book spread for this pair.
-        best: tuple[Ticker, Ticker, float] | None = None
+        market_info = (getattr(exchanges[tickers[0].exchange].client, "markets", {}) or {}).get(symbol)
+        quote_currency = _quote_currency(symbol, market_info)
         for buy in tickers:
             for sell in tickers:
                 if buy.exchange == sell.exchange or buy.ask <= 0 or sell.bid <= 0:
                     continue
-                spread = ((sell.bid - buy.ask) / buy.ask) * 100.0
-                if spread <= 0:
+                raw_spread = ((sell.bid - buy.ask) / buy.ask) * 100.0
+                if raw_spread <= 0:
                     continue
-                if best is None or spread > best[2]:
-                    best = (buy, sell, spread)
-        if best is None:
-            continue
-        buy, sell, raw_spread = best
-        buy_rate, buy_fee_source = trading_fee_rate(exchanges[buy.exchange].client, symbol)
-        sell_rate, sell_fee_source = trading_fee_rate(exchanges[sell.exchange].client, symbol)
-        fees_known = buy_rate is not None and sell_rate is not None
-        fee_adjusted = None
-        if fees_known:
-            fee_adjusted = raw_spread - (float(buy_rate) + float(sell_rate)) * 100.0
-        metadata = {
-            "observed_at": observed_at,
-            "headline_only": True,
-            "coverage_complete": True,
-            "provisional_fee_adjusted_spread_pct": fee_adjusted,
-            "buy_taker_fee_rate": buy_rate,
-            "sell_taker_fee_rate": sell_rate,
-            "buy_fee_source": buy_fee_source,
-            "sell_fee_source": sell_fee_source,
-            "fee_data_complete": fees_known,
-            "selected_exchange_count": len(exchanges),
-        }
-        best_by_symbol.append(Opportunity(
-            symbol=symbol,
-            buy_exchange=buy.exchange,
-            sell_exchange=sell.exchange,
-            buy_price=buy.ask,
-            sell_price=sell.bid,
-            raw_spread=raw_spread,
-            # The dataclass requires a float. When fee data is unknown, net_profit
-            # is not exposed as a profit estimate; API sorting places it after known estimates.
-            net_profit=fee_adjusted if fee_adjusted is not None else 0.0,
-            volume_buy=buy.quote_volume,
-            volume_sell=sell.quote_volume,
-            metadata=metadata,
-        ))
+                buy_rate, buy_fee_source = trading_fee_rate(exchanges[buy.exchange].client, symbol)
+                sell_rate, sell_fee_source = trading_fee_rate(exchanges[sell.exchange].client, symbol)
+                fees_known = buy_rate is not None and sell_rate is not None
+                fee_adjusted = None
+                if fees_known:
+                    fee_adjusted = raw_spread - (float(buy_rate) + float(sell_rate)) * 100.0
+                metadata = {
+                    "observed_at": observed_at,
+                    "headline_only": True,
+                    "coverage_complete": True,
+                    "route_listed_on_both_venues": True,
+                    "quote_currency": quote_currency,
+                    "provisional_fee_adjusted_spread_pct": fee_adjusted,
+                    "buy_taker_fee_rate": buy_rate,
+                    "sell_taker_fee_rate": sell_rate,
+                    "buy_fee_source": buy_fee_source,
+                    "sell_fee_source": sell_fee_source,
+                    "fee_data_complete": fees_known,
+                    "selected_exchange_count": len(exchanges),
+                }
+                opportunities.append(Opportunity(
+                    symbol=symbol,
+                    buy_exchange=buy.exchange,
+                    sell_exchange=sell.exchange,
+                    buy_price=buy.ask,
+                    sell_price=sell.bid,
+                    raw_spread=raw_spread,
+                    # When either fee is unknown, do not expose the required float
+                    # placeholder as if it were a profit estimate.
+                    net_profit=fee_adjusted if fee_adjusted is not None else 0.0,
+                    volume_buy=buy.quote_volume,
+                    volume_sell=sell.quote_volume,
+                    metadata=metadata,
+                ))
 
     def sort_key(item: Opportunity):
         estimate = item.metadata.get("provisional_fee_adjusted_spread_pct")
         return (estimate is not None, float(estimate) if estimate is not None else float("-inf"), item.raw_spread)
 
-    best_by_symbol.sort(key=sort_key, reverse=True)
-    return best_by_symbol, diagnostics
+    opportunities.sort(key=sort_key, reverse=True)
+    return opportunities, diagnostics
 
 
 async def _scan_loop() -> None:
@@ -374,6 +371,8 @@ def _opportunity_payload(item: Opportunity) -> dict[str, Any]:
         "observed_at": observed_at,
         "data_age_seconds": age,
         "coverage_complete": bool(metadata.get("coverage_complete", False)),
+        "route_listed_on_both_venues": bool(metadata.get("route_listed_on_both_venues", False)),
+        "quote_currency": metadata.get("quote_currency"),
         "transfer_verified": False,
         "order_book_depth_verified": False,
         "estimate_type": "headline_only",
