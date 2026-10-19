@@ -36,9 +36,9 @@ jobs:
           cache: pip
           cache-dependency-path: mobile-api/requirements.txt
       - name: Install mobile API dependencies
-        run: python -m pip install -r requirements.txt
+        run: python -m pip install -r requirements.txt pytest-asyncio
       - name: Run mobile API tests
-        run: pytest -q
+        run: PYTHONPATH=. python -m pytest -q
 
   android-debug-apk:
     name: Build Android debug APK
@@ -53,6 +53,10 @@ jobs:
           java-version: "17"
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: ''
+      - name: Install required Android platform packages
+        run: sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
       - name: Build debug APK
         uses: gradle/gradle-command-action@v2
         with:
