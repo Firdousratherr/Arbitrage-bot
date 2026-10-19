@@ -114,12 +114,16 @@ class MarketScanner:
         self.estimated_taker_fee = max(0.0, min(float(estimated_taker_fee), 0.03))
         self.min_24h_quote_volume = max(0.0, float(min_24h_quote_volume))
         self.stale_after = max(30, int(stale_after))
-        self.exchanges = exchange_clients if exchange_clients is not None else self._create_exchanges()
         self.markets_by_exchange: dict[str, dict[str, dict[str, Any]]] = {}
         self.status_by_exchange: dict[str, dict[str, Any]] = {
             name: {"exchange": name, "status": "starting", "market_count": 0, "ticker_count": 0, "error": None}
             for name in self.exchange_ids
         }
+        self.exchanges = exchange_clients if exchange_clients is not None else self._create_exchanges()
+        for name in self.exchanges:
+            self.status_by_exchange.setdefault(name, {
+                "exchange": name, "status": "starting", "market_count": 0, "ticker_count": 0, "error": None
+            })
         self.tickers_by_exchange: dict[str, dict[str, dict[str, Any]]] = {}
         self.opportunities: list[dict[str, Any]] = []
         self.updated_at: str | None = None
@@ -363,21 +367,23 @@ class MarketScanner:
             for symbol, venues in venues_by_symbol.items():
                 if len(venues) < 2:
                     continue
-                buy_name, buy_ticker = min(venues, key=lambda pair: pair[1]["ask"])
-                sell_name, sell_ticker = max(venues, key=lambda pair: pair[1]["bid"])
-                if buy_name == sell_name or buy_ticker["ask"] <= 0:
-                    continue
-                raw_spread = (sell_ticker["bid"] - buy_ticker["ask"]) / buy_ticker["ask"] * 100
-                if raw_spread <= 0:
-                    continue
-                candidates.append({
-                    "symbol": symbol,
-                    "buy_exchange": buy_name,
-                    "sell_exchange": sell_name,
-                    "buy_ask": buy_ticker["ask"],
-                    "sell_bid": sell_ticker["bid"],
-                    "raw_spread": raw_spread,
-                })
+                cross_routes = []
+                for buy_name, buy_ticker in venues:
+                    for sell_name, sell_ticker in venues:
+                        if buy_name == sell_name or buy_ticker["ask"] <= 0:
+                            continue
+                        raw_spread = (sell_ticker["bid"] - buy_ticker["ask"]) / buy_ticker["ask"] * 100
+                        if raw_spread > 0:
+                            cross_routes.append({
+                                "symbol": symbol,
+                                "buy_exchange": buy_name,
+                                "sell_exchange": sell_name,
+                                "buy_ask": buy_ticker["ask"],
+                                "sell_bid": sell_ticker["bid"],
+                                "raw_spread": raw_spread,
+                            })
+                if cross_routes:
+                    candidates.append(max(cross_routes, key=lambda item: item["raw_spread"]))
             candidates.sort(key=lambda item: item["raw_spread"], reverse=True)
             selected = candidates[:self.max_candidates]
             priced = await asyncio.gather(*(self._price_candidate(item) for item in selected))
