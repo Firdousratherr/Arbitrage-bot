@@ -38,3 +38,5 @@ jobs:
           python -m pip install -r mobile_api/requirements.txt pytest
       - name: Run mobile API contract tests
         run: pytest -q mobile_api/tests
+      - name: Build isolated mobile API container
+        run: docker build --file Dockerfile.mobile --tag arbitrage-mobile-api:ci .
