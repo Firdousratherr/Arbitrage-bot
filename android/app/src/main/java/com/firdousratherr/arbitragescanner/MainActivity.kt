@@ -627,6 +627,8 @@ private fun DetailScreen(row: OpportunityRow, payload: JSONObject?, loading: Boo
                             MetricRow("Best bid", fmt(sell?.optDouble("best_bid", 0.0) ?: 0.0))
                             MetricRow("Weighted sell price", fmt(sell?.optDouble("volume_weighted_average_price", 0.0) ?: 0.0))
                             MetricRow("Quote received", fmt(sell?.optDouble("quote_received", 0.0) ?: 0.0))
+                            MetricRow("Buy-side slippage", optionalPercent(payload, "buy_slippage_pct"))
+                            MetricRow("Sell-side slippage", optionalPercent(payload, "sell_slippage_pct"))
                             MetricRow("Requested size fully filled", if (payload.optBoolean("order_book_depth_verified")) "Yes" else "No / incomplete")
                         }
                     }
@@ -683,6 +685,7 @@ private fun MetricRow(label: String, value: String) {
     }
 }
 private fun optionalMoney(o: JSONObject, key: String) = if (o.has(key) && !o.isNull(key)) fmt(o.optDouble(key)) else "Unknown"
+private fun optionalPercent(o: JSONObject, key: String) = if (o.has(key) && !o.isNull(key)) String.format(Locale.US, "%.3f%%", o.optDouble(key)) else "Unknown"
 private fun feeText(o: JSONObject?): String {
     if (o == null || !o.has("taker_fee_rate") || o.isNull("taker_fee_rate")) return "Unknown"
     return String.format(Locale.US, "%.4f%% (%s)", o.optDouble("taker_fee_rate") * 100.0, o.optString("fee_source"))
