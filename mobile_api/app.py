@@ -469,12 +469,9 @@ async def opportunity_details(
         )
         profit_after_trading_fees = gross_pnl - trading_fee_amount
 
+    # Do not publish a "full route net profit" yet: other transfer/network
+    # charges and route-specific operational costs are not fully represented.
     full_route_net_profit = None
-    if fees_known and both_books_complete and selected_route and withdrawal_fee_base is not None:
-        # The selected route's withdrawal fee has already been removed from the
-        # base amount sold above. Unknown chain/bridge costs still prevent a claim
-        # that the number is guaranteed or universally executable.
-        full_route_net_profit = profit_after_trading_fees
 
     warning_messages = [
         "Order-book values are a snapshot and can change before an order fills.",
@@ -520,6 +517,7 @@ async def opportunity_details(
         "gross_pnl_before_fees": gross_pnl if both_books_complete else None,
         "known_trading_fee_estimate": trading_fee_amount,
         "profit_after_known_trading_fees": profit_after_trading_fees,
+        "profit_after_known_fees": profit_after_trading_fees,
         "withdrawal_fee_deducted_base": withdrawal_fee_base,
         "full_route_net_profit": full_route_net_profit,
         "order_book_depth_verified": both_books_complete,
