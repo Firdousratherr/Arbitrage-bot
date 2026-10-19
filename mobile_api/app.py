@@ -26,7 +26,7 @@ ORDERBOOK_RECOVERY_PER_EXCHANGE = max(0, min(100, int(os.getenv("MOBILE_API_ORDE
 MAX_FALLBACK_SYMBOLS = max(50, min(500, int(os.getenv("MOBILE_API_FALLBACK_SYMBOLS", "200"))))
 QUOTE_CURRENCIES = {
     value.strip().upper()
-    for value in os.getenv("MOBILE_API_QUOTE_CURRENCIES", "USDT,USDC,USD,BTC,ETH").split(",")
+    for value in os.getenv("MOBILE_API_QUOTE_CURRENCIES", "USDT,USDC,USD").split(",")
     if value.strip()
 }
 EXCHANGE_NAMES = [
@@ -45,6 +45,8 @@ last_scan_error: str | None = None
 market_diagnostics: dict[str, dict[str, Any]] = {}
 scan_task: asyncio.Task | None = None
 _request_times: dict[str, deque[float]] = {}
+_network_cache: dict[tuple[str, str], tuple[float, list[dict[str, Any]]]] = {}
+NETWORK_CACHE_TTL_SECONDS = max(60, int(os.getenv("MOBILE_API_NETWORK_CACHE_TTL_SECONDS", "300")))
 
 
 def _public_credentials_provider(_exchange: str) -> dict[str, str]:
@@ -137,10 +139,11 @@ async def _collect_exchange(name: str, adapter: Any, semaphore: asyncio.Semaphor
 
         tickers, missing = _build_tickers(name, raw, spot_symbols)
         recovered_count = 0
-        candidates = [
-            symbol for symbol in missing
-            if symbol in spot_symbols
-        ][:ORDERBOOK_RECOVERY_PER_EXCHANGE]
+        candidates = sorted(
+            (symbol for symbol in missing if symbol in spot_symbols),
+            key=lambda symbol: float((raw.get(symbol) or {}).get("quoteVolume") or 0),
+            reverse=True,
+        )[:ORDERBOOK_RECOVERY_PER_EXCHANGE]
         if candidates:
             recovery_semaphore = asyncio.Semaphore(min(MAX_EXCHANGE_CONCURRENCY, 4))
             async def recover(symbol: str) -> Ticker | None:
@@ -417,6 +420,11 @@ def _network_rows(currency_info: dict[str, Any] | None, currency: str) -> list[d
 
 
 async def _fetch_transfer_networks(adapter: Any, currency: str) -> list[dict[str, Any]]:
+    cache_key = (str(adapter.name).lower(), currency.upper())
+    now = time.monotonic()
+    cached = _network_cache.get(cache_key)
+    if cached and now - cached[0] < NETWORK_CACHE_TTL_SECONDS:
+        return [dict(item) for item in cached[1]]
     try:
         await asyncio.wait_for(adapter.client.load_markets(), timeout=8)
         currencies = await asyncio.wait_for(adapter.client.fetch_currencies(), timeout=8)
@@ -426,7 +434,13 @@ async def _fetch_transfer_networks(adapter: Any, currency: str) -> list[dict[str
                 if isinstance(value, dict) and str(value.get("code", "")).upper() == currency.upper():
                     info = value
                     break
-        return _network_rows(info, currency)
+        rows = _network_rows(info, currency)
+        _network_cache[cache_key] = (now, rows)
+        if len(_network_cache) > 1500:
+            expired = [key for key, (timestamp, _) in _network_cache.items() if now - timestamp >= NETWORK_CACHE_TTL_SECONDS]
+            for key in expired:
+                _network_cache.pop(key, None)
+        return [dict(item) for item in rows]
     except Exception as exc:
         logger.info("Transfer metadata unavailable for %s/%s (%s)", adapter.name, currency, type(exc).__name__)
         return []
@@ -510,7 +524,8 @@ async def list_opportunities(
     sort_by: str = Query(default="provisional_profit", pattern="^(provisional_profit|gross_spread|volume|symbol)$"),
 ):
     age = _scan_age_seconds()
-    stale = age is None or age > max(90, SCAN_INTERVAL_SECONDS * 3)
+    healthy_exchanges = sum(1 for value in market_diagnostics.values() if value.get("status") in {"ok", "partial"})
+    stale = age is None or age > max(90, SCAN_INTERVAL_SECONDS * 3) or healthy_exchanges < 2
     if not last_scan_at:
         if last_scan_error:
             raise HTTPException(status_code=503, detail="Scanner has not completed a successful cycle yet.")
@@ -654,7 +669,7 @@ async def opportunity_details(
 
     warning_messages = [
         "Order-book values are a snapshot and can change before an order fills.",
-        "Trading-fee estimates use reported market/exchange fee metadata only.",
+        "Trading-fee estimates use reported market/exchange fee metadata only; fee currency treatment can differ by venue/account.",
     ]
     if withdrawal_fee_base is None:
         warning_messages.append("Withdrawal fee is unknown or no strict route was verified; the sell quantity is not transfer-fee-adjusted.")
