@@ -63,7 +63,7 @@ def make_scanner():
 
 def test_order_book_walk_respects_budget_and_depth():
     base, spent = _walk_buy([[10, 2], [11, 2]], 25)
-    assert base == 2.5
+    assert abs(base - (2.0 + 5.0 / 11.0)) < 1e-9
     assert spent == 25
     sold, proceeds = _walk_sell([[12, 1], [11, 2]], 2)
     assert sold == 2
