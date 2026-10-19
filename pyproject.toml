@@ -17,7 +17,8 @@ dependencies = [
 arbitrage-bot = "app.main:run"
 
 [tool.setuptools.packages.find]
-include = ["app*"]
+where = [".", "src"]
+include = ["app*", "arbitrage_terminal*", "mobile_api*"]
 
 [tool.ruff]
 line-length = 100
