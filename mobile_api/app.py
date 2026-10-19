@@ -515,6 +515,7 @@ async def opportunity_details(
             "fee_source": sell_fee_source,
         },
         "gross_pnl_before_fees": gross_pnl if both_books_complete else None,
+        "gross_pnl_before_trading_fees": gross_pnl if both_books_complete else None,
         "known_trading_fee_estimate": trading_fee_amount,
         "profit_after_known_trading_fees": profit_after_trading_fees,
         "profit_after_known_fees": profit_after_trading_fees,
