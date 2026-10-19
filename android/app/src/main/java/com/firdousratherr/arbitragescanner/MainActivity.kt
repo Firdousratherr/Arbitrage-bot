@@ -616,9 +616,10 @@ private fun DetailScreen(row: OpportunityRow, payload: JSONObject?, loading: Boo
                             Text("Fees and P&L", fontWeight = FontWeight.Bold)
                             MetricRow("Buy taker fee", feeText(buy))
                             MetricRow("Sell taker fee", feeText(sell))
-                            MetricRow("Gross P&L", optionalMoney(payload, "gross_pnl_before_fees"))
+                            MetricRow("Gross P&L before trading fees", optionalMoney(payload, "gross_pnl_before_trading_fees"))
                             MetricRow("Known trading-fee estimate", optionalMoney(payload, "known_trading_fee_estimate"))
                             MetricRow("P&L after known fees", optionalMoney(payload, "profit_after_known_fees"))
+                            MetricRow("Reported withdrawal fee deducted", if (payload.has("withdrawal_fee_deducted_base") && !payload.isNull("withdrawal_fee_deducted_base")) fmt(payload.optDouble("withdrawal_fee_deducted_base")) + " " + row.symbol.substringBefore("/") else "Unknown")
                             MetricRow("Full-route net profit", "Unknown")
                             Text("Withdrawal and transfer costs are not included in full-route profit.", color = Warning, fontSize = 10.sp)
                         }
@@ -632,7 +633,7 @@ private fun DetailScreen(row: OpportunityRow, payload: JSONObject?, loading: Boo
                             Text("Unknown network/contract data is never treated as approval.", color = Muted, fontSize = 10.sp)
                             if (routes != null) for (i in 0 until routes.length()) {
                                 val route = routes.optJSONObject(i) ?: continue
-                                Text("✓ " + route.optString("network") + " · withdrawal fee " + route.optString("buy_exchange_withdrawal_fee", "unknown"), color = Positive, fontSize = 11.sp)
+                                Text("✓ " + route.optString("network") + " · withdrawal fee " + route.optString("buy_exchange_withdrawal_fee", "unknown") + " " + route.optString("withdrawal_fee_asset", ""), color = Positive, fontSize = 11.sp)
                             }
                         }
                     }
