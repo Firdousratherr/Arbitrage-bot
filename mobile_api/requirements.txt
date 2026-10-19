@@ -1,0 +1,5 @@
+# Install from repository root:
+# python -m pip install -e .
+# python -m pip install -r mobile_api/requirements.txt
+fastapi>=0.115,<1
+uvicorn[standard]>=0.30,<1
