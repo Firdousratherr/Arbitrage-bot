@@ -278,7 +278,7 @@ private fun ScannerApp() {
             val size = (tradeSize.toDoubleOrNull() ?: 100.0).coerceIn(0.01, 100000.0)
             detail = getJson(baseUrl, "api/v1/opportunity-details?symbol=" + enc(row.symbol) +
                 "&buy_exchange=" + enc(row.buyExchange) + "&sell_exchange=" + enc(row.sellExchange) +
-                "&trade_size_usdt=" + size)
+                "&trade_size_quote=" + size)
         } catch (e: Exception) { detailError = e.message ?: "Detail request failed" }
         finally { detailLoading = false }
     }
