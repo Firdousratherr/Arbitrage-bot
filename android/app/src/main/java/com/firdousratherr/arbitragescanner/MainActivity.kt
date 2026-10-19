@@ -429,7 +429,7 @@ private fun DashboardScreen(
         Spacer(Modifier.height(4.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
             OutlinedTextField(spread, onSpread, Modifier.weight(1f), label = { Text("Min spread %") }, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal))
-            OutlinedTextField(volume, onVolume, Modifier.weight(1f), label = { Text("Min 24h volume") }, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+            OutlinedTextField(volume, onVolume, Modifier.weight(1f), label = { Text("Min quote volume") }, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
         }
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
             OutlinedTextField(buyExchange, onBuyExchange, Modifier.weight(1f), label = { Text("Buy exchange (optional)") }, singleLine = true)
