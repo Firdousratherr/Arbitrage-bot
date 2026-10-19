@@ -1,0 +1,67 @@
+name: Mobile Scanner CI
+
+on:
+  push:
+    branches:
+      - feat/arbihunt-style-android-app
+    paths:
+      - "mobile-api/**"
+      - "android/**"
+      - ".github/workflows/mobile-build.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "mobile-api/**"
+      - "android/**"
+      - ".github/workflows/mobile-build.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mobile-api-tests:
+    name: Mobile API unit tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile-api
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: mobile-api/requirements.txt
+      - name: Install mobile API dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Run mobile API tests
+        run: pytest -q
+
+  android-debug-apk:
+    name: Build Android debug APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+      - name: Build debug APK
+        uses: gradle/gradle-command-action@v2
+        with:
+          gradle-version: "8.10.2"
+          arguments: :app:assembleDebug
+          build-root-directory: android
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: arbiscope-debug-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
