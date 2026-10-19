@@ -59,7 +59,7 @@ private val Warning = Color(0xFFFFC879)
 data class OpportunityRow(
     val symbol: String, val buyExchange: String, val sellExchange: String,
     val buyAsk: Double, val sellBid: Double, val spread: Double, val estimate: Double,
-    val buyVolume: Double, val sellVolume: Double,
+    val buyVolume: Double, val sellVolume: Double, val quoteCurrency: String,
     val warning: String, val observedAt: String, val ageSeconds: Double?, val coverageComplete: Boolean
 ) {
     val key: String get() = "$symbol|$buyExchange|$sellExchange"
@@ -132,6 +132,7 @@ private fun parseRow(item: JSONObject) = OpportunityRow(
     estimate = item.optDouble("provisional_fee_adjusted_spread_pct", 0.0),
     buyVolume = item.optDouble("buy_quote_volume_24h", 0.0),
     sellVolume = item.optDouble("sell_quote_volume_24h", 0.0),
+    quoteCurrency = item.optString("quote_currency", ""),
     warning = item.optJSONArray("warnings")?.optString(0) ?: "Provisional estimate.",
     observedAt = item.optString("observed_at", ""),
     ageSeconds = if (item.has("data_age_seconds") && !item.isNull("data_age_seconds")) item.optDouble("data_age_seconds") else null,
@@ -495,7 +496,7 @@ private fun OpportunityCard(row: OpportunityRow, isSaved: Boolean, onOpen: () ->
                 Column(horizontalAlignment = Alignment.End) { Text("SELL BID", color = Muted, fontSize = 9.sp); Text(fmt(row.sellBid), fontSize = 12.sp) }
             }
             Text("Provisional fee-adjusted spread: " + String.format(Locale.US, "%.3f%%", row.estimate), color = Accent, fontSize = 11.sp, modifier = Modifier.padding(top = 6.dp))
-            Text("24h quote volume (lower leg): " + compactVolume(minOf(row.buyVolume, row.sellVolume)), color = Muted, fontSize = 10.sp)
+            Text("24h quote volume (lower leg): " + compactVolume(minOf(row.buyVolume, row.sellVolume)) + if (row.quoteCurrency.isNotBlank()) " " + row.quoteCurrency else "", color = Muted, fontSize = 10.sp)
             Text("Scan data age: " + ageLabel(row.ageSeconds), color = Muted, fontSize = 10.sp)
             Text(if (row.coverageComplete) "Tap for depth and fee detail" else "Coverage incomplete · tap for details", color = Muted, fontSize = 10.sp)
         }
