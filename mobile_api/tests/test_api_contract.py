@@ -1,3 +1,7 @@
+import pytest
+
+pytest.importorskip("fastapi")
+
 from types import SimpleNamespace
 
 from mobile_api.app import _opportunity_payload
