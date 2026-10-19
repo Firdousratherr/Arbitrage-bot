@@ -195,7 +195,7 @@ async def _collect_exchange(name: str, adapter: Any, semaphore: asyncio.Semaphor
         }
 
 
-async def _scan_cycle() -> list[Opportunity]:
+async def _scan_cycle() -> tuple[list[Opportunity], dict[str, dict[str, Any]]]:
     """Compare each pair of venues where a matching spot market exists.
 
     Unlike the Telegram scanner's user-selected-exchange intersection, this scan
@@ -270,7 +270,7 @@ async def _scan_cycle() -> list[Opportunity]:
         return (estimate is not None, float(estimate) if estimate is not None else float("-inf"), item.raw_spread)
 
     best_by_symbol.sort(key=sort_key, reverse=True)
-    return best_by_symbol
+    return best_by_symbol, diagnostics
 
 
 async def _scan_loop() -> None:
@@ -278,13 +278,12 @@ async def _scan_loop() -> None:
     while True:
         started = time.monotonic()
         try:
-            results = await _scan_cycle()
+            results, diagnostics = await _scan_cycle()
             latest_opportunities = results
+            market_diagnostics = diagnostics
             last_scan_at = datetime.now(UTC).isoformat()
-            market_diagnostics = {
-                name: value for name, value in market_diagnostics.items()
-            } if not results and not market_diagnostics else market_diagnostics
-            last_scan_error = None
+            successful_exchanges = sum(1 for value in diagnostics.values() if value.get("status") in {"ok", "partial"})
+            last_scan_error = None if successful_exchanges >= 2 else "fewer than two exchanges returned usable spot ticker data"
         except asyncio.CancelledError:
             raise
         except Exception as exc:
