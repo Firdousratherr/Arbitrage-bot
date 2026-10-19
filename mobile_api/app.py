@@ -118,7 +118,6 @@ def _network_rows(currency_info: dict[str, Any] | None, currency: str) -> list[d
             value.get("contract")
             or info.get("contractAddress")
             or info.get("contract_address")
-            or info.get("contractAddressUrl")
         )
         cost = value.get("fee")
         if cost is None:
@@ -379,7 +378,7 @@ async def opportunity_details(
     symbol: str = Query(min_length=3, max_length=40),
     buy_exchange: str = Query(min_length=1, max_length=40),
     sell_exchange: str = Query(min_length=1, max_length=40),
-    trade_size_usdt: float = Query(default=100, gt=0, le=100000),
+    trade_size_quote: float = Query(default=100, gt=0, le=100000),
 ):
     normalized = symbol.strip().upper()
     buy_name = buy_exchange.strip().lower()
@@ -419,7 +418,7 @@ async def opportunity_details(
     if not asks or not bids:
         raise HTTPException(status_code=502, detail="One exchange returned an empty side of the order book.")
 
-    buy_depth = consume_asks_for_quote(asks, trade_size_usdt)
+    buy_depth = consume_asks_for_quote(asks, trade_size_quote)
     sell_depth = consume_bids_for_base(bids, float(buy_depth["base_amount"]))
     buy_vwap = float(buy_depth["average_price"])
     sell_vwap = float(sell_depth["average_price"])
@@ -466,7 +465,7 @@ async def opportunity_details(
         "buy_exchange": buy_name,
         "sell_exchange": sell_name,
         "quote_currency": normalized.split("/")[1] if "/" in normalized else None,
-        "requested_trade_size_quote": trade_size_usdt,
+        "requested_trade_size_quote": trade_size_quote,
         "buy": {
             "best_ask": float(asks[0][0]),
             "volume_weighted_average_price": buy_vwap,
