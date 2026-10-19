@@ -215,6 +215,10 @@ private fun ScannerApp() {
     var spreadApplied by remember { mutableStateOf("0") }
     var volumeDraft by remember { mutableStateOf("0") }
     var volumeApplied by remember { mutableStateOf("0") }
+    var buyExchangeDraft by remember { mutableStateOf("") }
+    var sellExchangeDraft by remember { mutableStateOf("") }
+    var buyExchangeApplied by remember { mutableStateOf("") }
+    var sellExchangeApplied by remember { mutableStateOf("") }
     var sortBy by remember { mutableStateOf("provisional_profit") }
     var sortMenu by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf("Not checked") }
@@ -228,7 +232,8 @@ private fun ScannerApp() {
             val path = "api/v1/opportunities?limit=200" +
                 "&min_spread_pct=" + (spreadApplied.toDoubleOrNull() ?: 0.0).coerceAtLeast(0.0) +
                 "&min_volume=" + (volumeApplied.toDoubleOrNull() ?: 0.0).coerceAtLeast(0.0) +
-                "&search=" + enc(searchApplied) + "&sort_by=" + sortBy
+                "&search=" + enc(searchApplied) + "&buy_exchange=" + enc(buyExchangeApplied) +
+                "&sell_exchange=" + enc(sellExchangeApplied) + "&sort_by=" + sortBy
             val root = getJson(baseUrl, path)
             val arr = root.optJSONArray("items") ?: JSONArray()
             val parsed = (0 until arr.length()).mapNotNull { arr.optJSONObject(it)?.let(::parseRow) }
@@ -261,7 +266,7 @@ private fun ScannerApp() {
         } catch (e: Exception) { if (exchangeRows.isEmpty()) status = e.message ?: "Status unavailable" }
     }
 
-    LaunchedEffect(tab, baseUrl, searchApplied, spreadApplied, volumeApplied, sortBy, saved, threshold) {
+    LaunchedEffect(tab, baseUrl, searchApplied, spreadApplied, volumeApplied, buyExchangeApplied, sellExchangeApplied, sortBy, saved, threshold) {
         while (true) {
             refresh()
             if (tab == "Exchanges") refreshExchanges()
@@ -317,12 +322,15 @@ private fun ScannerApp() {
                 "Home" -> DashboardScreen(
                     rows, saved, loading, stale, updated, error,
                     searchDraft, { searchDraft = it }, spreadDraft, { spreadDraft = it },
-                    volumeDraft, { volumeDraft = it }, sortBy, sortMenu,
+                    volumeDraft, { volumeDraft = it }, buyExchangeDraft, { buyExchangeDraft = it },
+                    sellExchangeDraft, { sellExchangeDraft = it }, sortBy, sortMenu,
                     { sortMenu = it }, { sortBy = it },
                     {
                         searchApplied = searchDraft
                         spreadApplied = spreadDraft
                         volumeApplied = volumeDraft
+                        buyExchangeApplied = buyExchangeDraft.trim()
+                        sellExchangeApplied = sellExchangeDraft.trim()
                         scope.launch { refresh() }
                     },
                     { scope.launch { refresh(); refreshExchanges() } },
@@ -376,7 +384,9 @@ private fun ScannerApp() {
 private fun DashboardScreen(
     rows: List<OpportunityRow>, saved: Set<String>, loading: Boolean, stale: Boolean, updated: String, error: String?,
     search: String, onSearch: (String) -> Unit, spread: String, onSpread: (String) -> Unit,
-    volume: String, onVolume: (String) -> Unit, sortBy: String, sortMenu: Boolean,
+    volume: String, onVolume: (String) -> Unit,
+    buyExchange: String, onBuyExchange: (String) -> Unit, sellExchange: String, onSellExchange: (String) -> Unit,
+    sortBy: String, sortMenu: Boolean,
     onSortMenu: (Boolean) -> Unit, onSort: (String) -> Unit, onApply: () -> Unit, onRefresh: () -> Unit,
     onOpen: (OpportunityRow) -> Unit, onToggleSaved: (OpportunityRow) -> Unit
 ) {
@@ -401,6 +411,10 @@ private fun DashboardScreen(
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
             OutlinedTextField(spread, onSpread, Modifier.weight(1f), label = { Text("Min spread %") }, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal))
             OutlinedTextField(volume, onVolume, Modifier.weight(1f), label = { Text("Min 24h volume") }, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+            OutlinedTextField(buyExchange, onBuyExchange, Modifier.weight(1f), label = { Text("Buy exchange (optional)") }, singleLine = true)
+            OutlinedTextField(sellExchange, onSellExchange, Modifier.weight(1f), label = { Text("Sell exchange (optional)") }, singleLine = true)
         }
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
             Box {
