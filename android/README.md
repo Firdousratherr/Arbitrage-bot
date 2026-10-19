@@ -24,13 +24,22 @@ For a physical Android device, use the computer's LAN IP in Settings and make su
 
 ## Release build
 
-A release build requires the production mobile API to be deployed over HTTPS and configured explicitly:
+Release builds are deliberately blocked until both a real HTTPS API URL and signing credentials are configured. The sample API hostname is deliberately non-working and cannot pass release verification.
+
+Set these variables in the secure build environment; never commit them or print their values in CI logs:
+
+- `ANDROID_KEYSTORE_PATH`: path to the release keystore file.
+- `ANDROID_KEYSTORE_PASSWORD`: keystore password.
+- `ANDROID_KEY_ALIAS`: key alias.
+- `ANDROID_KEY_PASSWORD`: key password.
+
+Then build with the real HTTPS API URL:
 
 ```bash
 gradle assembleRelease -PMOBILE_API_BASE_URL=https://your-real-api-domain/
 ```
 
-Configure a release signing key in a secure build environment before distribution. Do not commit keystores, credentials or secrets. The sample API hostname is deliberately non-working until a real endpoint is supplied.
+The release verification task rejects non-HTTPS URLs, placeholder `.invalid` hosts, embedded URL credentials, missing signing variables, and missing keystore files. The API must be deployed and security-reviewed separately before a release build can be useful. Do not put exchange keys, Telegram tokens, or other secrets in the APK.
 
 ## App features
 
