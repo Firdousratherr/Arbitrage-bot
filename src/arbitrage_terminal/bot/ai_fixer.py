@@ -11,7 +11,6 @@ import httpx
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from .handlers import kb
 
 MAX_SOURCE_CHARS = 90000
 MAX_FILES = 12
@@ -28,6 +27,10 @@ def _state(context):
 
 
 def _menu():
+    # Import the Telegram UI helper only when this command is actually used.
+    # This keeps pure patch-validation helpers importable in isolated tests.
+    from .handlers import kb
+
     return kb([
         [('🩺 Diagnose', 'aifix:diagnose'), ('🛠 Generate Fix', 'aifix:generate')],
         [('👀 Review Patch', 'aifix:review'), ('✅ Apply Fix', 'aifix:apply')],

@@ -79,13 +79,15 @@ def exchange_picker(selected: list[str], available: list[str]) -> tuple[str, Inl
     for name in available:
         mark = "✅" if name in chosen else "▫️"
         buttons.append((f"{mark} {name}", f"ui:exchange:{name}"))
-    buttons.append((f"✨ Done · {len(chosen)} selected", "ui:exchange:done"))
-    buttons.append(("↩️ Back", "ui:dashboard"))
+    exchange_keyboard = nav(*buttons, columns=2)
+    rows = [list(row) for row in exchange_keyboard.inline_keyboard]
+    rows.append([InlineKeyboardButton(f"✨ Done · {len(chosen)} selected", callback_data="ui:exchange:done")])
+    rows.append([InlineKeyboardButton("↩️ Back", callback_data="ui:dashboard")])
     return screen(
         "🌐 EXCHANGE ROUTE",
         "Select two or more exchanges",
-        [f"Selected: <b>{len(chosen)} / {len(available)}</b>"],
-    ), nav(*buttons, columns=2)
+        [f"Selected: <b>{len(chosen)}</b> / {len(available)}"],
+    ), InlineKeyboardMarkup(rows)
 
 
 def settings_menu() -> tuple[str, InlineKeyboardMarkup]:

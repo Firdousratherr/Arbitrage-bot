@@ -26,7 +26,11 @@ def format_error(message: str, action: str="Try again in a moment")->str:return 
 def format_success(message: str)->str:return f"╭─ ✅ SUCCESS\n│ {_safe_text(message)[:240]}\n╰────────────────────"
 
 def format_scan_count(count: int)->str:
-    diagnostics=get_last_scan_diagnostics();snapshot=get_last_scan_snapshot();summary=snapshot.get("summary",{}) or {}
+    snapshot=get_last_scan_snapshot()
+    # Keep market-data gaps separate from per-symbol filter rejections so stale
+    # rejection records from a previous scan cannot inflate this count.
+    diagnostics=snapshot.get("gaps",[]) or []
+    summary=snapshot.get("summary",{}) or {}
     lines=_panel("🔍 SCAN COMPLETE","Live market comparison finished")
     lines.append(f"✨ Found {count} opportunities" if count else "📭 No opportunities found")
     lines.append(f"✨ Opportunities shown : <b>{count}</b>")

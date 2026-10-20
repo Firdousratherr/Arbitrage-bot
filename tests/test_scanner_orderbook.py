@@ -1,52 +1,35 @@
 import pytest
-from datetime import datetime, timezone
 
-from arbitrage_terminal.arbitrage.scanner import ArbitrageScanner
-from arbitrage_terminal.domain.filters import ScanFilters
-from arbitrage_terminal.domain.models import Market, MarketType, ScanState, Ticker
-from arbitrage_terminal.exchanges.base import ExchangeAdapter
+from app.arbitrage_features import calculate_executable_trade
 
 
-class DepthFake(ExchangeAdapter):
-    def __init__(self, name, ask, bid):
-        self.name, self.ask, self.bid = name, ask, bid
-
-    async def health_check(self): pass
-    async def get_markets(self):
-        return [Market(self.name, 'BTC/USDT', 'BTC', 'USDT', MarketType.SPOT)]
-    async def get_tickers(self, symbols=None):
-        return [Ticker(self.name, 'BTC/USDT', 'BTC', 'USDT', self.bid, self.ask, 1_000_000, datetime.now(timezone.utc))]
-    async def get_orderbook(self, symbol, limit=10):
-        return {'bids': [[self.bid, 20]], 'asks': [[self.ask, 20]]}
-    async def get_trading_fees(self, symbols=None): return {'BTC/USDT': 0.0}
-    async def get_transfer_info(self, asset):
-        return {'available': True, 'networks': [{'network': 'ERC20', 'deposit': True, 'withdraw': True, 'contract_address': '0xabc'}]}
-    async def close(self): pass
-
-
-@pytest.mark.asyncio
-async def test_strict_orderbook_validation_uses_executable_prices():
-    scanner = ArbitrageScanner({'buy': DepthFake('buy', 100, 99), 'sell': DepthFake('sell', 105, 104)})
-    result = await scanner.scan(
-        1,
-        ['buy', 'sell'],
-        ScanFilters(min_gap=0, min_net_profit=0, min_volume=0, min_liquidity=0, trade_size=1000, require_orderbook=True),
+def test_orderbook_validation_uses_executable_prices_and_depth():
+    result = calculate_executable_trade(
+        asks=[[100.0, 5.0], [101.0, 10.0]],
+        bids=[[105.0, 5.0], [104.0, 10.0]],
+        quote_size=500.0,
+        buy_fee_rate=0.001,
+        sell_fee_rate=0.001,
     )
-    assert result.state == ScanState.SUCCESS
-    assert result.opportunities_found == 1
-    opportunity = result.opportunities[0]
-    assert opportunity.metadata['orderbook_validated'] is True
-    assert opportunity.metadata['executable_gap_pct'] > 0
-    assert opportunity.metadata['executable_quote_size'] == pytest.approx(1000)
+    assert result.complete is True
+    assert result.spent_quote == pytest.approx(500.0)
+    assert result.base_amount > 0
+    assert result.sell_proceeds > result.spent_quote
+    assert result.net_profit < result.gross_profit
+    assert result.buy_slippage_pct >= 0
+    assert result.sell_slippage_pct >= 0
 
 
-@pytest.mark.asyncio
-async def test_orderbook_validation_rejects_insufficient_depth():
-    scanner = ArbitrageScanner({'buy': DepthFake('buy', 100, 99), 'sell': DepthFake('sell', 105, 104)})
-    result = await scanner.scan(
-        1,
-        ['buy', 'sell'],
-        ScanFilters(min_gap=0, min_net_profit=0, min_volume=0, min_liquidity=0, trade_size=5000, require_orderbook=True),
+def test_orderbook_validation_rejects_insufficient_depth():
+    result = calculate_executable_trade(
+        asks=[[100.0, 20.0]],
+        bids=[[105.0, 2.0]],
+        quote_size=500.0,
     )
-    assert result.opportunities_found == 0
-    assert any('order-book' in r['reason'] or 'depth' in r['reason'] for r in result.filter_rejections)
+    assert result.complete is False
+    assert result.base_amount == pytest.approx(2.0)
+
+
+def test_orderbook_validation_rejects_empty_or_invalid_books():
+    with pytest.raises(ValueError, match="usable levels"):
+        calculate_executable_trade(asks=[[0.0, 5.0]], bids=[[105.0, 5.0]], quote_size=100.0)

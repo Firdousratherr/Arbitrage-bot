@@ -1,0 +1,22 @@
+# Separate image for the mobile API. Do not replace the Telegram bot Dockerfile.
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /srv/arbitrage
+ENV PYTHONPATH=/srv/arbitrage
+COPY pyproject.toml README.md ./
+COPY app ./app
+COPY mobile_api ./mobile_api
+
+RUN pip install --no-cache-dir . \
+    && pip install --no-cache-dir -r mobile_api/requirements.txt \
+    && useradd --create-home --uid 10002 mobileapi \
+    && mkdir -p /data \
+    && chown -R mobileapi:mobileapi /srv/arbitrage /data
+
+USER mobileapi
+ENV MOBILE_API_DATABASE_PATH=/data/mobile-api.sqlite3
+EXPOSE 8000
+CMD ["uvicorn", "mobile_api.app:app", "--host", "0.0.0.0", "--port", "8000"]
