@@ -1,0 +1,34 @@
+name: Publish Android Test Prerelease
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/publish-android-test-prerelease.yml
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish-test-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download verified debug APK artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download 39401734324 --repo "${GITHUB_REPOSITORY}" --name arbitrage-scanner-debug-apk --dir downloaded
+          APK="$(find downloaded -type f -name '*.apk' -print -quit)"
+          test -n "$APK"
+          echo "APK_PATH=$APK" >> "$GITHUB_ENV"
+      - name: Publish GitHub testing prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create android-scanner-test-2026-10-20 "$APK_PATH" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --prerelease \
+            --title "ArbiHunt Scanner — Android Test Build" \
+            --notes "Testing prerelease only. Built from feature branch feat/arbihunt-style-android (commit c9d64717f6bf406fd6eff95e2e7bb7dc1bfb2ad6). This is a debug APK, not a production-signed release. A live production API endpoint is not configured; live scanning on a physical phone is not yet verified. The app is for read-only arbitrage scanning and paper trading, not live order execution."
