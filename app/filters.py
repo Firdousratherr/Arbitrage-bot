@@ -73,12 +73,14 @@ def match_reason(opportunity, filters: dict[str, Any]) -> str | None:
         if quote and quote != quote_currency:
             return reject(f"quote currency {quote} != {quote_currency}")
 
-    required_observations = max(1, int(filters.get("min_stable_observations", 1) or 1))
-    history = (getattr(opportunity, "metadata", None) or {}).get("history", [])
-    if len(history) < required_observations:
-        return reject(
-            f"insufficient stable history ({len(history)}/{required_observations} observations)"
-        )
+    # Apply the stability gate only when explicitly configured.
+    if "min_stable_observations" in filters:
+        required_observations = max(1, int(filters.get("min_stable_observations", 1) or 1))
+        history = (getattr(opportunity, "metadata", None) or {}).get("history", [])
+        if len(history) < required_observations:
+            return reject(
+                f"insufficient stable history ({len(history)}/{required_observations} observations)"
+            )
     return None
 
 
